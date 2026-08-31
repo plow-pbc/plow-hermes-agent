@@ -1,7 +1,2 @@
-# Build staging only. The plugin's canonical home is plow-pbc/hermes-plow-chat;
-# this repository pins the commit in plow-chat-plugin.ref and never vendors a
-# copy, so that a plugin change is a one-line pin bump with a reviewable diff
-# rather than a re-vendored tree.
-/plugins/
 __pycache__/
 *.py[co]

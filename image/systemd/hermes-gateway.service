@@ -1,8 +1,8 @@
 [Unit]
 Description=Hermes gateway (native)
-After=network-online.target exe-setup.service
+After=network-online.target agent-setup.service
 Wants=network-online.target
-Requires=exe-setup.service
+Requires=agent-setup.service
 ConditionPathExists=/var/lib/hermes/.env
 [Service]
 User=hermes

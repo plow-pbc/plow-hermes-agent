@@ -4,7 +4,7 @@ REST API. See `SKILL.md` for the action reference and examples.
 
 `status` is a GET; every other action is a POST whose JSON body is the request.
 Auth reuses the gateway's user Bearer token (`PLOW_CONNECTOR_TOKEN` else
-`PLOW_CHAT_TOKEN`) against `PLOW_CHAT_BASE_URL` (default https://api.plow.co). A
+`PLOW_AGENT_TOKEN`) against `PLOW_API_BASE` (default https://api.plow.co). A
 non-2xx response is fatal: status + body to stderr, non-zero exit.
 
 Pass `--paginate` before the connector to walk a list action's opaque
@@ -78,10 +78,10 @@ def _request(connector: str, action: str, payload: dict | None) -> str:
     if action not in allowed:
         raise SystemExit(f"unknown action {action!r} for {connector}; see SKILL.md for the documented actions")
 
-    token = _env("PLOW_CONNECTOR_TOKEN", "PLOW_CHAT_TOKEN")
+    token = _env("PLOW_CONNECTOR_TOKEN", "PLOW_AGENT_TOKEN")
     if not token:
-        raise SystemExit("PLOW_CONNECTOR_TOKEN or PLOW_CHAT_TOKEN is required")
-    base = _env("PLOW_CHAT_BASE_URL", default="https://api.plow.co").rstrip("/")
+        raise SystemExit("PLOW_CONNECTOR_TOKEN or PLOW_AGENT_TOKEN is required")
+    base = _env("PLOW_API_BASE", default="https://api.plow.co").rstrip("/")
 
     method = "GET" if action in GET_ACTIONS else "POST"
     headers = {"Authorization": f"Bearer {token}"}

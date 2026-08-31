@@ -1,0 +1,43 @@
+# Overrides only. Hermes deep-merges this over its own defaults, so everything
+# it already gets right is left out — a copy of the generated config would be
+# 180 lines of upstream defaults that silently pin themselves the day upstream
+# changes one.
+#
+# Credential-free and tenant-free by construction: one public image serves
+# every tenant. The image owns each invariant config shape; first boot writes
+# the referenced values to Hermes' dotenv without copying a credential into
+# this file.
+mcp_servers:
+  plow:
+    url: "${PLOW_MCP_URL}"
+    headers:
+      Authorization: "Bearer ${PLOW_AGENT_TOKEN}"
+    enabled: false
+model:
+  default: anthropic/claude-sonnet-5
+  provider: plow
+  base_url: "${PLOW_API_BASE}/v1"
+  key_env: HERMES_CUSTOM_PLOW_API_KEY
+providers:
+  plow:
+    name: plow
+    base_url: "${PLOW_API_BASE}/v1"
+    model: anthropic/claude-sonnet-5
+    key_env: HERMES_CUSTOM_PLOW_API_KEY
+    stale_timeout_seconds: 55
+    models:
+      anthropic/claude-sonnet-5: {}
+platforms:
+  plow_chat:
+    enabled: true
+# The agent runs as the host user on its own VM; there is no container runtime
+# on the box to hand a terminal to.
+terminal:
+  backend: local
+group_sessions_per_user: false
+onboarding:
+  profile_build: "off"
+plugins:
+  enabled:
+    - plow-chat-platform
+_config_version: 37

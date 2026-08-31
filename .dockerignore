@@ -1,0 +1,14 @@
+# The build context is the repository root so the Dockerfile can reach the
+# plugin tree that `scripts/stage-plow-chat-plugin.sh` stages into
+# `plugins/plow_chat/` right before the build. That also puts local build
+# droppings in scope — `__pycache__` appears there the moment anything imports
+# the plugin, and it would otherwise be baked into an image every tenant runs.
+#
+# `**/` is load-bearing: a bare `__pycache__/` matches only the context root,
+# so the one that actually appears — under `plugins/plow_chat/` — shipped.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+.git/
+.github/
+README.md

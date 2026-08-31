@@ -1,0 +1,25 @@
+[Unit]
+Description=Hermes gateway (native)
+After=network-online.target exe-setup.service
+Wants=network-online.target
+Requires=exe-setup.service
+ConditionPathExists=/var/lib/hermes/.env
+[Service]
+User=hermes
+Group=hermes
+EnvironmentFile=/var/lib/hermes/.env
+Environment=HERMES_HOME=/var/lib/hermes
+Environment=API_SERVER_HOST=127.0.0.1
+Environment=API_SERVER_PORT=8642
+Environment=PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+Environment=PYTHONUNBUFFERED=1
+Environment=HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
+Environment=HERMES_TUI_DIR=/opt/hermes/ui-tui
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
+Environment=HERMES_DISABLE_LAZY_INSTALLS=1
+WorkingDirectory=/opt/hermes
+ExecStart=/opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise
+Restart=always
+RestartSec=5
+[Install]
+WantedBy=multi-user.target

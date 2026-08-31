@@ -13,20 +13,17 @@ boolean; it installs no code.
 
 | path | what it is |
 |---|---|
-| `/var/lib/hermes/` | the agent's home (`HERMES_HOME`), uid 10000, mode 0700 — `config.yaml` (overrides only, every tenant value a `${...}` reference), `soul.d/`, `skills/`, `plugins/plow_chat/` |
-| `/usr/local/lib/plow/first-boot.sh` | composes the soul, then runs `first-boot.d/*.sh` |
+| `/var/lib/hermes/` | the agent's home (`HERMES_HOME`), uid 10000, mode 0700 — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, mode 0600), `skills/`, `plugins/plow_chat/` |
+| `/usr/local/lib/plow/first-boot.sh` | runs the `first-boot.d/*.sh` drop-ins |
 | `/etc/systemd/system/` | `agent-setup.service` (runs the host's `/exe.dev/setup` once) and `hermes-gateway.service`, which `Requires=` it |
 
-## Soul composition
+## Identity
 
-Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity, and it is composed
-at build time. `/usr/local/lib/plow/compose-soul.sh` concatenates `soul.d/*.md`
-in `LC_ALL=C` order into `SOUL.md`, blank-line separated, uid 10000, mode 0600,
-and this image runs it — so the base image already ships a composed `SOUL.md`.
-It always overwrites: a variant adds its part and runs it again, and what it
-produces is visible in the image rather than decided on a VM nobody is watching.
+Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image ships
+one, at `/var/lib/hermes/SOUL.md`, uid 10000 mode 0600. A variant replaces or
+extends it in its own layer — see below.
 
-`first-boot.sh` no longer touches identity; it only runs the `first-boot.d`
+`first-boot.sh` does not touch identity; it only runs the `first-boot.d`
 drop-ins, and a hook that fails fails first boot, which keeps the gateway from
 ever starting — better a VM that visibly never came up than one answering with
 half its configuration.
@@ -39,19 +36,20 @@ starts from this image and adds nothing else:
 ```dockerfile
 FROM public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<sha>
 
-# Identity. 50- so it lands after 00-base.md, then recompose so this image's
-# SOUL.md carries both parts.
-COPY --chown=10000:10000 --chmod=0600 soul.d/50-persona.md /var/lib/hermes/soul.d/50-persona.md
-RUN /usr/local/lib/plow/compose-soul.sh
+# Identity — replace it outright:
+COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
+
+# ...or extend the base one instead:
+#   COPY --chown=10000:10000 persona.md /tmp/persona.md
+#   RUN printf '\n' >> /var/lib/hermes/SOUL.md \
+#    && cat /tmp/persona.md >> /var/lib/hermes/SOUL.md \
+#    && rm /tmp/persona.md
 
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
 
 # First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
 COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh
 ```
-
-To opt out of composition entirely, `COPY` your own `SOUL.md` into
-`/var/lib/hermes/` (uid 10000, mode 0600) and do not call `compose-soul.sh`.
 
 Don't fight the init: no `systemctl start hermes-gateway` from the setup script
 (it deadlocks against `Requires=agent-setup.service`; the ordering already covers it), no credentials in

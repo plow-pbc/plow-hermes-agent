@@ -49,15 +49,12 @@ ARG PLOW_CHAT_PLUGIN_SHA
 LABEL co.plow.plow-chat-plugin.revision="${PLOW_CHAT_PLUGIN_SHA}"
 COPY --from=plugin /staged/plow_chat/ /var/lib/hermes/plugins/plow_chat/
 
+# SOUL.md is the agent's identity and 0600 is part of the contract: nothing else
+# on the box reads it.
 RUN chown -R 10000:10000 /var/lib/hermes \
  && chmod 700 /var/lib/hermes \
+ && chmod 600 /var/lib/hermes/SOUL.md \
  && install -d -m 0755 /usr/local/lib/plow /usr/local/lib/plow/first-boot.d
-
-# Identity is composed here, in the layer that added the last soul part, so the
-# image ships a SOUL.md rather than deferring it to a VM nobody is watching. A
-# variant COPYs its own part into soul.d and runs this again.
-COPY --chmod=0755 image/compose-soul.sh /usr/local/lib/plow/compose-soul.sh
-RUN /usr/local/lib/plow/compose-soul.sh
 
 # Provisioning runs this when it exists; it runs whatever a downstream image
 # dropped into first-boot.d.

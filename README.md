@@ -19,13 +19,16 @@ boolean; it installs no code.
 
 ## Soul composition
 
-Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image ships
-parts, not a soul. On first boot `first-boot.sh` concatenates `soul.d/*.md` in
-`LC_ALL=C` order into `SOUL.md`, blank-line separated, uid 10000, mode 0600.
-A literal `SOUL.md` opts out and is never overwritten, and an existing one is
-never rewritten — so parts are a build-time contract, not a runtime knob. A
-`first-boot.d` hook that fails fails first boot, which keeps the gateway from
-ever starting: better a VM that visibly never came up than one answering with
+Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity, and it is composed
+at build time. `/usr/local/lib/plow/compose-soul.sh` concatenates `soul.d/*.md`
+in `LC_ALL=C` order into `SOUL.md`, blank-line separated, uid 10000, mode 0600,
+and this image runs it — so the base image already ships a composed `SOUL.md`.
+It always overwrites: a variant adds its part and runs it again, and what it
+produces is visible in the image rather than decided on a VM nobody is watching.
+
+`first-boot.sh` no longer touches identity; it only runs the `first-boot.d`
+drop-ins, and a hook that fails fails first boot, which keeps the gateway from
+ever starting — better a VM that visibly never came up than one answering with
 half its configuration.
 
 ## Building a variant image
@@ -36,14 +39,19 @@ starts from this image and adds nothing else:
 ```dockerfile
 FROM public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<sha>
 
-# Identity. 50- so it lands after 00-base.md.
+# Identity. 50- so it lands after 00-base.md, then recompose so this image's
+# SOUL.md carries both parts.
 COPY --chown=10000:10000 --chmod=0600 soul.d/50-persona.md /var/lib/hermes/soul.d/50-persona.md
+RUN /usr/local/lib/plow/compose-soul.sh
+
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
 
-# First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh:
-# replacing that file takes soul composition with it.
+# First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
 COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh
 ```
+
+To opt out of composition entirely, `COPY` your own `SOUL.md` into
+`/var/lib/hermes/` (uid 10000, mode 0600) and do not call `compose-soul.sh`.
 
 Don't fight the init: no `systemctl start hermes-gateway` from the setup script
 (it deadlocks against `Requires=agent-setup.service`; the ordering already covers it), no credentials in

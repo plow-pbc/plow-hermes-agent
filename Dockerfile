@@ -53,8 +53,14 @@ RUN chown -R 10000:10000 /var/lib/hermes \
  && chmod 700 /var/lib/hermes \
  && install -d -m 0755 /usr/local/lib/plow /usr/local/lib/plow/first-boot.d
 
-# Provisioning runs this when it exists; it composes soul.d into SOUL.md and
-# then runs whatever a downstream image dropped into first-boot.d.
+# Identity is composed here, in the layer that added the last soul part, so the
+# image ships a SOUL.md rather than deferring it to a VM nobody is watching. A
+# variant COPYs its own part into soul.d and runs this again.
+COPY --chmod=0755 image/compose-soul.sh /usr/local/lib/plow/compose-soul.sh
+RUN /usr/local/lib/plow/compose-soul.sh
+
+# Provisioning runs this when it exists; it runs whatever a downstream image
+# dropped into first-boot.d.
 COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
 
 COPY image/systemd/agent-setup.service image/systemd/hermes-gateway.service /etc/systemd/system/

@@ -30,6 +30,26 @@ if [ -f /var/lib/hermes/.env ]; then
   chmod 0640 /var/lib/hermes/.env
 fi
 
+# config.yaml is the one file in the home the agent is SUPPOSED to rewrite, and
+# the sticky bit above is what stops it. The plow_chat plugin persists its
+# home-channel block through Hermes' config writer, which writes a temp file and
+# renames it over config.yaml -- and under a sticky directory uid 10000 may not
+# rename over, or unlink, a file it does not own. Left root-owned it fails every
+# boot with
+#
+#   plow_chat error: [Errno 1] Operation not permitted: '/var/lib/hermes/.config_*.tmp'
+#
+# Observed on both variants in prod on 2026-09-01 (agents 97e0e3db, 2ec4c001).
+# It is not fatal today because the plugin falls back to PLOW_HOME_CHANNEL from
+# the dotenv, but nothing that reads the persisted block can work.
+#
+# Giving it to hermes does not weaken what the hardening protects: SOUL.md and
+# .env stay root-owned, so the sticky bit still refuses to let a turn replace
+# either. This hands over the one file whose whole purpose is to be rewritten.
+if [ -f /var/lib/hermes/config.yaml ]; then
+  chown hermes:hermes /var/lib/hermes/config.yaml
+fi
+
 if [ -d /usr/local/lib/plow/first-boot.d ]; then
   for hook in /usr/local/lib/plow/first-boot.d/*.sh; do
     # An empty first-boot.d leaves the pattern unexpanded; -x rejects it.

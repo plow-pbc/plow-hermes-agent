@@ -42,4 +42,25 @@ if [ -d /usr/local/lib/plow/first-boot.d ]; then
   done
 fi
 
+# Defensive restore, last thing before the gateway starts.
+#
+# One provision on 2026-09-01 (plow-agent-704c410c) came up with the home at
+# 0700 root:root instead of 3770 root:hermes. At 0700 the directory is not
+# traversable by uid 10000, so the agent cannot reach its own state and never
+# starts. No candidate path reproduces it -- the image builds it correctly, the
+# API's setup script never chmods the home, and a container running that exact
+# setup end to end comes out right -- so the cause is still unknown and this
+# does not pretend to fix it.
+#
+# What it does is make the mode self-healing at the last moment anything runs
+# as root. The log line goes first and unconditionally: if the clobber recurs,
+# the value it recorded is the evidence that survives, and without it a silent
+# repair would erase the only trace of the bug.
+#
+# Idempotent by construction -- chmod and chown to the values the image already
+# uses are a no-op on a healthy boot.
+echo "first-boot: /var/lib/hermes before restore: $(stat -c '%a %U:%G' /var/lib/hermes)" >&2
+chown root:hermes /var/lib/hermes
+chmod 3770 /var/lib/hermes
+
 exit 0

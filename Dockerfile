@@ -49,11 +49,34 @@ ARG PLOW_CHAT_PLUGIN_SHA
 LABEL co.plow.plow-chat-plugin.revision="${PLOW_CHAT_PLUGIN_SHA}"
 COPY --from=plugin /staged/plow_chat/ /var/lib/hermes/plugins/plow_chat/
 
-# SOUL.md is the agent's identity and 0600 is part of the contract: nothing else
-# on the box reads it.
+# The agent owns its state; it does not own its identity.
+#
+# Everything under the home is the gateway's to write -- it creates state.db,
+# kanban.db, gateway.pid, the session and cron trees and a dozen lock files
+# directly in this directory at runtime, so the directory itself has to stay
+# writable by uid 10000. A plain root-owned home does not boot.
+#
+# The sticky bit is what separates the two. With `t` set, uid 10000 may create
+# and remove its OWN entries here but cannot unlink or rename anyone else's --
+# so root-owned SOUL.md and config.yaml sit in a writable directory and are
+# still unreplaceable. Without it, file modes alone are not enough: an agent
+# that cannot WRITE SOUL.md can still delete it and write its own in its place,
+# because unlink permission comes from the directory, not the file. That is the
+# hole this closes (plow-pbc/plow#1564).
+#
+# skills/ gets the same treatment for the same reason. The gateway writes there
+# on every boot -- it materializes the bundled skill categories and a manifest --
+# so it cannot be read-only, but a variant's own skills are copied in root-owned
+# and must survive a turn. Sticky gives both: the gateway creates and removes
+# what it created, and cannot rename a baked skill out of the scan path.
+#
+# setgid keeps new entries in the hermes group, so the gateway's own files stay
+# group-readable to it however they are created.
 RUN chown -R 10000:10000 /var/lib/hermes \
- && chmod 700 /var/lib/hermes \
- && chmod 600 /var/lib/hermes/SOUL.md \
+ && chown root:hermes /var/lib/hermes /var/lib/hermes/skills \
+ && chmod 3770 /var/lib/hermes /var/lib/hermes/skills \
+ && chown root:root /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
+ && chmod 0644 /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
  && install -d -m 0755 /usr/local/lib/plow /usr/local/lib/plow/first-boot.d
 
 # Provisioning runs this when it exists; it runs whatever a downstream image

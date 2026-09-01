@@ -27,6 +27,13 @@ providers:
     stale_timeout_seconds: 55
     models:
       anthropic/claude-sonnet-5: {}
+# Hermes' 2200-char default is a budget for durable technique notes, and an
+# agent that also records outcomes ("the $1,500 transfer completed") loses them
+# to consolidation within a day or two — the one-line facts are what get dropped
+# when the store is over budget, and a later session then acts as if the thing
+# never happened. 6000 leaves room for both.
+memory:
+  memory_char_limit: 6000
 platforms:
   plow_chat:
     enabled: true

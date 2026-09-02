@@ -130,8 +130,8 @@ and back.
 | path | what it is |
 |---|---|
 | `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned), `skills/` |
-| `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into a home, so it survives a volume or bind mount over `HERMES_HOME` |
-| `/opt/hermes/skills/` | the same seed skills again, as bundled skills, which the gateway reconciles into `$HERMES_HOME/skills` for a runtime whose home is not the baked one |
+| `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into the home, so the agent's phone line does not live in a directory the agent can write |
+| `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway reconciles them into `$HERMES_HOME/skills` on every boot, so a deleted one comes back |
 | `/usr/local/lib/plow/first-boot.sh` | the ownership and mode work, then the `first-boot.d/*.sh` drop-ins |
 | `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh` |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
@@ -172,12 +172,10 @@ COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
 #    && rm /tmp/persona.md
 
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
-# A variant whose agents run on a mounted home needs the bundled placement too
-# -- `COPY skills/ /opt/hermes/skills/` -- because the mount hides this layer.
-# That copy is also the only one a turn cannot touch: everything under
-# /var/lib/hermes/skills is owned by the agent, so the sticky home does not
-# stop it renaming a skill out of the scan path. The bundled tree is what puts
-# it back on the next boot.
+# Copy them to /opt/hermes/skills/ as well. Everything under
+# /var/lib/hermes/skills is owned by the agent -- the sticky home does not stop
+# it renaming a skill out of the scan path -- and the bundled tree, which no
+# turn can write, is what puts one back on the next boot.
 
 # First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
 COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh

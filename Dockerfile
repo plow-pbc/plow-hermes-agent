@@ -44,8 +44,8 @@ ENV HERMES_HOME=/var/lib/hermes \
 # Hermes checkpoints its session and releases its compression lease on SIGTERM,
 # and s6 otherwise allows a service 3s before continuing shutdown -- the
 # replacement gateway then cannot append to that transcript until the orphaned
-# lease expires. s6 supervises the gateway on both paths this image serves, so
-# this is load-bearing on both.
+# lease expires. s6 supervises the gateway wherever this image boots, so this
+# is load-bearing on the VM and under compose alike.
 ENV S6_SERVICES_GRACETIME=30000
 
 # uid/gid 10000 (hermes) already exists in this base.
@@ -55,8 +55,10 @@ COPY image/seed/ /var/lib/hermes/
 #
 # The baked tree is where this image's gateway looks, because HERMES_HOME *is*
 # /var/lib/hermes; the bundled copy does not replace it. What the bundled one
-# covers is a home the image did not populate -- a volume or bind mount over
-# HERMES_HOME hides the baked tree, and the gateway reconciles the bundled tree
+# covers is the home going missing from under it. Compose keeps the home on a
+# volume that outlives the container, and the agent owns most of what is in it,
+# so a skill can be deleted or a whole home can arrive empty -- and /opt/hermes
+# is the one place no turn can write. The gateway reconciles the bundled tree
 # into $HERMES_HOME/skills on every boot: updating a copy the agent has not
 # touched, leaving a customised one alone, never re-adding one it deleted.
 #
@@ -75,10 +77,10 @@ LABEL org.opencontainers.image.source="https://github.com/plow-pbc/plow-hermes-a
 ARG PLOW_CHAT_PLUGIN_SHA
 LABEL co.plow.plow-chat-plugin.revision="${PLOW_CHAT_PLUGIN_SHA}"
 # Bundled, and deliberately in exactly one place -- a second copy under a home
-# would register the platform twice. /opt/hermes is image-owned and survives a
-# mount over the home, where a home-seeded plugin would not, and bundled is the
-# placement Platform._missing_() already accepts for Platform("plow_chat") at
-# import time.
+# would register the platform twice. /opt/hermes is image-owned and outside
+# every home, so the agent's phone line does not depend on the state of a
+# directory the agent can write; bundled is also the placement
+# Platform._missing_() already accepts for Platform("plow_chat") at import time.
 COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 
 # The agent owns its state; it does not own its identity.

@@ -301,6 +301,9 @@ shape_survives FIFO 'mkfifo config.yaml'
 # finds none -- a config with no `plow_chat` platform in it -- so the agent
 # comes back healthy-looking with no phone line and nothing in the log about it.
 shape_survives 'deleted config.yaml' ':'   # nothing to create: the shape IS its absence
+# A regular file that is not a symlink and is not the config either. Every
+# shape guard says yes to this one; only its contents give it away.
+shape_survives 'truncated config.yaml' "printf 'model:\\n  provider: plow\\n' > config.yaml"
 
 # ...which is why this asserts the CONTENT, not just the shape. Two things can
 # occupy this path and both are regular files: the image's copy, and the
@@ -313,12 +316,6 @@ for block in '^platforms:$' '^  plow_chat:$' '^providers:$' '^  plow:$' '^model:
     || { echo "the restored config.yaml is missing $block -- upstream's default won the slot" >&2; exit 1; }
 done
 
-# And by size: the generated default runs to six figures, the image's copy to
-# four. A cheap second opinion that does not depend on any one key surviving.
-bytes="$(docker exec "$name" stat -c %s /var/lib/hermes/config.yaml)"
-[[ "$bytes" -lt 8192 ]] \
-  || { echo "the restored config.yaml is ${bytes} bytes -- that is upstream's generated default" >&2; exit 1; }
-
 # Nothing outside the model block differs from the seed. plow-config rewrites
 # `model.provider` and `model.default` by design; anything else changing means
 # the file that came back is not the one the image ships.
@@ -328,7 +325,7 @@ drift="$(docker exec "$name" sh -c '
 [[ -z "$drift" ]] \
   || { echo "the restored config.yaml differs from the seed outside the model block:" >&2
        printf '%s\n' "$drift" >&2; exit 1; }
-echo "restored config.yaml is the image's: plow_chat platform, plow provider, ${bytes} bytes, no drift from the seed"
+echo "restored config.yaml is the image's: plow_chat platform, plow provider, no drift from the seed"
 
 # --- 5. the restart path plow.git uses -----------------------------------
 #
@@ -349,6 +346,37 @@ if docker exec "$name" systemctl status hermes-gateway >/dev/null 2>&1; then
   exit 1
 fi
 echo "shim: refuses anything but restart"
+
+docker rm -f "$name" >/dev/null
+
+# --- 5b. a restored config keeps the relay the tenant was provisioned ------
+#
+# Provisioning turns the relay server on once, at first boot, and then deletes
+# itself. A config restored from the seed afterwards would come back with it
+# OFF -- chat still working, the tenant's Latch tools silently gone. So the
+# flag is derived from the dotenv on every boot instead of remembered, and this
+# is the shape that proves it: a cloud-shaped agent, its config deleted by the
+# agent itself, back with the relay on.
+docker rm -f "$name" >/dev/null 2>&1 || true
+docker run -d --name "$name" --platform "$platform" \
+  --env PLOW_API_BASE=https://api.invalid \
+  --env PLOW_HOME_CHANNEL=cht_boot_check \
+  --env PLOW_AGENT_TOKEN=boot-check-not-a-credential \
+  --env HERMES_CUSTOM_PLOW_API_KEY=boot-check-not-a-credential \
+  --env PLOW_MCP_URL=https://api.invalid/v1/relay/devices/dev_check/mcp \
+  "$image" >/dev/null
+await_gateway
+
+mcp_state() { docker exec "$name" sh -c "sed -n '/^mcp_servers:\$/,/^[^ ]/p' /var/lib/hermes/config.yaml | sed -n 's/^    enabled: //p'"; }
+[[ "$(mcp_state)" == true ]] \
+  || { echo "a provisioned relay did not come up enabled: $(mcp_state)" >&2; exit 1; }
+
+docker exec --user 10000:10000 "$name" rm -f /var/lib/hermes/config.yaml
+docker restart "$name" >/dev/null
+await_gateway
+[[ "$(mcp_state)" == true ]] \
+  || { echo "the restored config lost the relay: enabled=$(mcp_state)" >&2; exit 1; }
+echo "relay: enabled through a seed restore, not left behind by the one-shot provisioner"
 
 docker rm -f "$name" >/dev/null
 

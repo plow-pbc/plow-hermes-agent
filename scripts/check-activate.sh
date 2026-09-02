@@ -73,7 +73,14 @@ case "$(sed -n 's/^PLOW_API_BASE=//p' "$work/env")" in
 esac
 echo "ok: inference key == agent token, and the API base has no /v1" >&2
 
-status() { curl -sS -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $token" "$api_host$1"; }
+# The header in a file, never in argv: `$work` is a mktemp -d, so 0700, and a
+# curl command line is readable from the process table by every account on the
+# machine. This token can read and send the agent's chats and spend its
+# inference.
+printf 'Authorization: Bearer %s\n' "$token" > "$work/auth"
+chmod 600 "$work/auth"
+
+status() { curl -sS -o /dev/null -w '%{http_code}' -H @"$work/auth" "$api_host$1"; }
 
 # The credential is narrowed, proven by what it can no longer do. An account-wide
 # token -- what activation hands back before the tool narrows it -- answers 200
@@ -85,7 +92,7 @@ echo "ok: keys:manage refused, its own chat readable" >&2
 # ...and by what it is scoped to: the line of the chat it was actually given,
 # which is not always the line the activation was assigned.
 granted="$(sed -n 's/^  chats:  //p' "$work/err")"
-chat_line="line:$(curl -fsS -H "Authorization: Bearer $token" "$api_host/v1/chats/$home" \
+chat_line="line:$(curl -fsS -H @"$work/auth" "$api_host/v1/chats/$home" \
   | python3 -c 'import json,sys
 chat = json.load(sys.stdin)
 agents = [p for p in chat["participants"] if p.get("type") == "agent"]

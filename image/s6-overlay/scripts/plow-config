@@ -50,6 +50,22 @@ if [ -L "$CONFIG" ]; then
   exit 1
 fi
 
+# The relay server's enabled flag, rendered rather than remembered.
+#
+# Provisioning writes it once, at first boot, and then deletes itself -- so a
+# config.yaml restored from the seed afterwards comes back with the relay OFF
+# and the tenant's Latch tools silently gone, chat still working. The dotenv is
+# the durable record of whether this agent has a relay at all, so the flag is
+# derived from it on every boot: present means on, absent means off, which is
+# exactly what the provisioner decided (api/plow/cloud_agent/exe.py renders the
+# same boolean from the same value). Idempotent, and a no-op on the local path,
+# where there is no relay and the seed already says false.
+if [ -n "${PLOW_MCP_URL:-}" ]; then
+  plow_mcp_enabled=true
+else
+  plow_mcp_enabled=false
+fi
+
 # Scoped to the `model:` block: `provider` and `default` are common key names
 # and an unscoped substitution would reach the ones under `providers:`. A key
 # the block does not carry is inserted rather than skipped -- a home volume
@@ -77,8 +93,11 @@ staged="$(mktemp)"
 cat "$CONFIG" > "$staged"
 set_key "$staged" provider "$provider"
 if [ -n "$model" ]; then set_key "$staged" default "$model"; fi
+# Scoped to the mcp_servers block, and to the one key: the same edit
+# provisioning makes, so a restored config and a provisioned one agree.
+sed -i "/^mcp_servers:\$/,/^[^ ]/ s/^    enabled: .*/    enabled: ${plow_mcp_enabled}/" "$staged"
 if ! cmp -s "$staged" "$CONFIG"; then
   cat "$staged" > "$CONFIG"
-  echo "plow-config: model.provider=${provider}${model:+ model.default=${model}}" >&2
+  echo "plow-config: model.provider=${provider}${model:+ model.default=${model}} mcp_servers.plow.enabled=${plow_mcp_enabled}" >&2
 fi
 rm -f "$staged"

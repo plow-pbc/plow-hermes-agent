@@ -70,13 +70,8 @@ fi
 # So the file is restored rather than repaired. `rm` on a symlink removes the
 # link, never its target, and the copy comes from outside the home, where no
 # turn can reach it.
-if [ -L /var/lib/hermes/config.yaml ] || [ ! -f /var/lib/hermes/config.yaml ]; then
-  echo "first-boot: /var/lib/hermes/config.yaml is not a regular file -- restoring the image's copy" >&2
-  # -r as well as -f: a directory is one of the shapes this catches, an absent
-  # file is another, and neither flag follows a symlink.
-  rm -rf /var/lib/hermes/config.yaml
-  cp /opt/hermes/plow-seed/config.yaml /var/lib/hermes/config.yaml
-fi
+. /usr/local/lib/plow/config-restore.sh
+plow_restore_config first-boot
 
 if [ -f /var/lib/hermes/config.yaml ]; then
   chown hermes:hermes /var/lib/hermes/config.yaml

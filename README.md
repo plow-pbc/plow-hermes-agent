@@ -23,9 +23,20 @@ docker compose run --rm agent plow-activate > .env   # prints a code; text it
 docker compose up -d                                 # boots the agent
 ```
 
-Pick the tag from the list under **Publishing** below; the compose default names
-one that does not exist, so an unset variable fails on the pull rather than
-booting some other commit's image.
+The compose default names a tag that does not exist, so an unset variable fails
+on the pull rather than booting some other commit's image. List the real ones —
+no AWS credential needed, the repository is public:
+
+```sh
+token=$(curl -fsSL \
+  'https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:e1h7x4a2/plow-cloud-agents:pull' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -fsSL -H "Authorization: Bearer $token" \
+  https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
+```
+
+for example `base-9636490e7838eab89f62d10477febd07a4743907`. Each names the
+commit it was built from; **Publishing** below says which repository that is.
 
 `plow-activate` starts a Plow activation, prints the code and the number to
 text it to, waits for that text, and writes the five variables the agent needs
@@ -117,7 +128,9 @@ and back.
 
 Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image ships
 one, at `/var/lib/hermes/SOUL.md`, root-owned in a sticky home so a turn can
-neither rewrite nor unlink it. A variant replaces or extends it in its own
+neither rewrite nor unlink it — the same pair protects `config.yaml`'s
+ownership, and nothing deeper: entries the agent owns, `skills/` included, it
+can still remove. A variant replaces or extends it in its own
 layer — see below; first boot re-asserts root ownership either way.
 
 A `first-boot.d` hook that fails fails first boot. `plow-init` is a oneshot and
@@ -144,6 +157,10 @@ COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
 # A variant whose agents run on a mounted home needs the bundled placement too
 # -- `COPY skills/ /opt/hermes/skills/` -- because the mount hides this layer.
+# That copy is also the only one a turn cannot touch: everything under
+# /var/lib/hermes/skills is owned by the agent, so the sticky home does not
+# stop it renaming a skill out of the scan path. The bundled tree is what puts
+# it back on the next boot.
 
 # First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
 COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh

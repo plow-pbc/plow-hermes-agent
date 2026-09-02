@@ -190,6 +190,10 @@ def narrow(api_base: str, token: str, line_uid: str, name: str) -> None:
         raise NarrowingFailed(f"the credential holds chats {chats}, not {grant}", applied=True)
 
 
+DISARM_ATTEMPTS = 3
+DISARM_BACKOFF_S = 2
+
+
 def disarm(api_base: str, token: str) -> bool:
     """Leave a credential that cannot be used, when narrowing did not verify.
 
@@ -200,15 +204,24 @@ def disarm(api_base: str, token: str) -> bool:
     demands at least one, and an empty chat grant, which is a legitimate value
     meaning no chat at all. The result reaches no chat and no inference.
     """
-    try:
-        status, payload = request(
-            "PUT",
-            f"{api_base}/v1/api-keys/current",
-            body={"name": "revoked by plow-activate", "scopes": ["chats:use"], "chat_uids": []},
-            token=token,
-        )
-    except (Unreachable, ValueError):
-        return False
+    # Retried, because the common reason the first narrowing failed is that the
+    # API was briefly unreachable -- and that is exactly the case where giving
+    # up leaves an account-wide credential alive. A refusal is not retried: the
+    # server answered, and asking again will not change its mind.
+    for attempt in range(DISARM_ATTEMPTS):
+        try:
+            status, payload = request(
+                "PUT",
+                f"{api_base}/v1/api-keys/current",
+                body={"name": "revoked by plow-activate", "scopes": ["chats:use"], "chat_uids": []},
+                token=token,
+            )
+            break
+        except (Unreachable, ValueError) as error:
+            if attempt == DISARM_ATTEMPTS - 1:
+                log(f"  could not reach the API to dispose of the credential: {error}")
+                return False
+            time.sleep(DISARM_BACKOFF_S * (attempt + 1))
     # Both halves, from the server's own answer. A 2xx alone would let this
     # claim a credential is harmless on the strength of a response that never
     # said so.

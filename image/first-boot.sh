@@ -8,6 +8,11 @@
 # rather than by replacing this file.
 set -eu
 
+# Set, not inherited: everything below runs as root, and PATH is one of the
+# things a dotenv or a caller could otherwise choose for it.
+PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 LC_ALL=C
 export LC_ALL
 

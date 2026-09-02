@@ -6,6 +6,11 @@
 # values arrive (`env_file:`), and which on a VM is simply the image's own.
 set -eu
 
+# Set, not inherited: everything below runs as root, and PATH is one of the
+# things a dotenv or a caller could otherwise choose for it.
+PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 # The dotenv the VM host wrote, if there is one. It wins over the container
 # environment: on a VM it is the only source of tenant values, and a stale
 # variable inherited from the image must not shadow the one provisioning just
@@ -31,5 +36,5 @@ export API_SERVER_PORT=8642
 export HOME=/var/lib/hermes
 
 cd /opt/hermes
-exec s6-setuidgid hermes \
+exec /command/s6-setuidgid hermes \
   /opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise

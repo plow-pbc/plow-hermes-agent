@@ -93,10 +93,10 @@ printf '%s\n' "$out"
 
 # --- the booted container the rest of the checks share ---------------------
 #
-# The same shape a tenant gets: the values the VM host's setup script writes
-# into the dotenv, here as container environment. API_SERVER_KEY is the one the
-# gateway needs to open its loopback API server at all — without it there is no
-# listener to find, on any path.
+# The same shape a developer gets: the tenant values as container environment
+# and nothing else. API_SERVER_KEY is deliberately NOT among them — the gateway
+# will not open its loopback API server without one, and generating it is init's
+# job on this path, so leaving it out is what puts that under test.
 name="check-image-$$"
 cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "${hookdir:-}"; }
 trap cleanup EXIT
@@ -106,7 +106,6 @@ docker run -d --name "$name" --platform "$platform" \
   --env PLOW_HOME_CHANNEL=cht_boot_check \
   --env PLOW_AGENT_TOKEN=boot-check-not-a-credential \
   --env HERMES_CUSTOM_PLOW_API_KEY=boot-check-not-a-credential \
-  --env API_SERVER_KEY=0123456789abcdef0123456789abcdef \
   "$image" >/dev/null
 
 # The API's own readiness contract, verbatim: a loopback listener on 8642,
@@ -163,14 +162,10 @@ grep -qx 'HERMES_WRITE_SAFE_ROOT=/var/lib/hermes' <<<"$env1" || { echo "the gate
 # owned by whoever ran the setup script. Init normalizes it, and it is in the
 # snapshot because it is what a rendered provider block would be written into —
 # an init that rewrote it on every boot would be invisible without this.
-docker exec "$name" sh -c 'umask 077; cat > /var/lib/hermes/.env <<EOF
-PLOW_API_BASE=https://api.invalid
-PLOW_HOME_CHANNEL=cht_boot_check
-PLOW_AGENT_TOKEN=boot-check-not-a-credential
-HERMES_CUSTOM_PLOW_API_KEY=boot-check-not-a-credential
-API_SERVER_KEY=0123456789abcdef0123456789abcdef
-EOF
-chown 10000:10000 /var/lib/hermes/.env'
+# init wrote this file on the first boot; assert it, because a generated
+# API_SERVER_KEY that did not persist would give every boot a different one.
+docker exec "$name" grep -q '^API_SERVER_KEY=..*' /var/lib/hermes/.env \
+  || { echo "init did not persist a generated API_SERVER_KEY" >&2; exit 1; }
 
 # Running state, not the compiled service list: s6-rc lists what the database
 # says should be up, which is identical whether a longrun is answering or
@@ -239,14 +234,16 @@ docker exec --user 10000:10000 "$name" sh -c 'ls /var/lib/hermes >/dev/null' \
 # any privilege drop. `.` on that file would give every line of it a root
 # shell, and the file is written by whoever provisioned the box. A value that
 # looks like a command substitution has to arrive as those characters.
-docker exec "$name" sh -c "printf 'PLOW_PROBE=\$(touch /pwned)\n' >> /var/lib/hermes/.env"
+# Carried on TZ because the value has to reach the gateway to be checked, and
+# only an allowlisted name gets that far — check 9 covers the names.
+docker exec "$name" sh -c "printf 'TZ=\$(touch /pwned)\n' >> /var/lib/hermes/.env"
 docker restart "$name" >/dev/null
 await_gateway
 docker exec "$name" test -e /pwned \
   && { echo "a value in the dotenv was executed as a command" >&2; exit 1; }
 probe="$(docker exec --user 10000:10000 "$name" sh -c '
   pid=$(pgrep -f "hermes gateway run" | head -1)
-  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_PROBE=//p"')"
+  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^TZ=//p" | tail -1')"
 [[ "$probe" == '$(touch /pwned)' ]] \
   || { echo "the dotenv value did not reach the gateway verbatim: $probe" >&2; exit 1; }
 echo "dotenv: a command substitution arrived as characters, not a command"
@@ -321,5 +318,32 @@ docker run --rm --platform "$platform" --user 10000:10000 \
   -r /opt/hermes/skills/productivity/plow-connectors/SKILL.md \
   || { echo "the bundled skills tree is missing or unreadable by uid 10000" >&2; exit 1; }
 echo "bundled skills: readable by the gateway user"
+
+# --- 9. a dotenv cannot name what it is not allowed to ---------------------
+#
+# Refusing to *run* the file is half of it. A NAME can be as dangerous as a
+# value while the reader is still root: PATH sends every later command
+# somewhere of the file's choosing, LD_PRELOAD loads a library into the
+# gateway. The names are an allowlist, so a dotenv carrying either is refused
+# and nothing starts -- placed into the home before first boot, which is where
+# a hostile one would come from.
+docker rm -f "$name" >/dev/null
+docker create --name "$name" --platform "$platform" "$image" >/dev/null
+printf 'PLOW_AGENT_TOKEN=boot-check-not-a-credential\nPATH=/var/lib/hermes/bin\nLD_PRELOAD=x\n' \
+  > "$hookdir/bad.env"
+docker cp "$hookdir/bad.env" "$name:/var/lib/hermes/.env" >/dev/null
+docker start "$name" >/dev/null 2>&1 || true
+docker wait "$name" >/dev/null 2>&1 || true
+
+out="$(docker logs "$name" 2>&1)"
+grep -q 'sets PATH, which this image does not read' <<<"$out" \
+  || { echo "a dotenv setting PATH was not refused" >&2; printf '%s\n' "$out" >&2; exit 1; }
+grep -q 'hermes-gateway: starting' <<<"$out" \
+  && { echo "the gateway started from a dotenv naming PATH" >&2; exit 1; }
+code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
+[[ "$code" != 0 ]] || { echo "a refused dotenv left PID 1 exiting 0" >&2; exit 1; }
+echo "dotenv: PATH/LD_PRELOAD refused, gateway never started, PID 1 exited $code"
+
+docker rm -f "$name" >/dev/null
 
 echo "ok: $image ($platform) builds, imports, boots under s6, keeps its hardening, and fails closed" >&2

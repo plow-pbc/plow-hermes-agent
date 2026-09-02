@@ -11,6 +11,28 @@
 # value that looks like shell is a value that looks like shell. Everything that
 # is not `NAME=` followed by a value is refused out loud rather than skipped
 # quietly: a dotenv this cannot read is a dotenv nobody should be guessing at.
+#
+# Not re-parsing a value is not enough on its own, because a NAME can be as
+# dangerous as a value: PATH sends every later command somewhere of the file's
+# choosing, LD_PRELOAD loads a library into the gateway, and both are read by
+# processes that are still root here. So the names are an allowlist, not a
+# pattern. It is exactly what the cloud setup script writes
+# (api/plow/cloud_agent/exe.py) plus the two that choose the inference
+# provider, and a dotenv naming anything else is refused rather than filtered:
+# a file carrying a variable this image does not set is a file whose author
+# expected something that is not going to happen.
+
+PLOW_DOTENV_ALLOWED='
+PLOW_API_BASE
+PLOW_HOME_CHANNEL
+PLOW_AGENT_TOKEN
+HERMES_CUSTOM_PLOW_API_KEY
+PLOW_MCP_URL
+API_SERVER_KEY
+TZ
+HERMES_PROVIDER
+HERMES_MODEL
+'
 
 # Strip one layer of matching outer quotes, the shape `shlex.quote` produces.
 # Left alone when the quote character appears again inside, because then the
@@ -47,6 +69,16 @@ plow_load_dotenv() {
     case $plow_dotenv_key in
       ''|[0-9]*|*[!A-Za-z0-9_]*)
         echo "plow: $plow_dotenv_file:$plow_dotenv_line has no usable variable name -- refusing to load it" >&2
+        return 1
+        ;;
+    esac
+    case "
+$PLOW_DOTENV_ALLOWED" in
+      *"
+$plow_dotenv_key
+"*) ;;
+      *)
+        echo "plow: $plow_dotenv_file:$plow_dotenv_line sets $plow_dotenv_key, which this image does not read -- refusing to load it" >&2
         return 1
         ;;
     esac

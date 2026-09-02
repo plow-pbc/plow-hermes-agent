@@ -96,11 +96,15 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 # because unlink permission comes from the directory, not the file. That is the
 # hole this closes (plow-pbc/plow#1564).
 #
-# skills/ gets the same treatment for the same reason. The gateway writes there
-# on every boot -- it materializes the bundled skill categories and a manifest --
-# so it cannot be read-only, but a variant's own skills are copied in root-owned
-# and must survive a turn. Sticky gives both: the gateway creates and removes
-# what it created, and cannot rename a baked skill out of the scan path.
+# skills/ gets the same mode, but NOT the same protection, and the difference
+# matters. `chown -R` above hands everything under skills/ to uid 10000; only
+# the two directories named below are re-owned. The sticky bit stops a turn
+# unlinking an entry it does not own, and inside skills/ it owns them all -- so
+# a baked skill can still be renamed out of the scan path. What sticky protects
+# is the root-owned files sitting directly in the home: SOUL.md and
+# config.yaml. Do not read it as protecting the skills themselves; the bundled
+# copy at /opt/hermes/skills, which no turn can write, is what makes a lost one
+# recoverable on the next boot.
 #
 # setgid keeps new entries in the hermes group, so the gateway's own files stay
 # group-readable to it however they are created.

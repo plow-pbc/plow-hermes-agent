@@ -8,6 +8,11 @@
 # exercises the local API server) and is wrong in a way nobody sees.
 set -eu
 
+# Set, not inherited: everything below runs as root, and PATH is one of the
+# things a dotenv or a caller could otherwise choose for it.
+PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 LC_ALL=C
 export LC_ALL
 
@@ -59,6 +64,18 @@ fi
 # gateway's own authority for these values on both paths, and a home the agent
 # can write is a home where uid 10000 could otherwise CREATE this file and
 # choose the API base its own bearer token is sent to.
+# The gateway's loopback API server refuses to start without a strong key, and
+# without that listener there is nothing for readiness to find and nowhere for
+# cron to deliver. Provisioning generates one per tenant; locally nobody does,
+# and an image whose local boot is missing a service the cloud boot has is an
+# image that tests something other than what tenants run. Generated once and
+# persisted below, so it survives a restart the way the tenant's does.
+if [ -z "${API_SERVER_KEY:-}" ]; then
+  API_SERVER_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
+  export API_SERVER_KEY
+  plow_generated_api_key=1
+fi
+
 if [ ! -e /var/lib/hermes/.env ]; then
   umask 077
   : > /var/lib/hermes/.env
@@ -75,7 +92,13 @@ if [ ! -e /var/lib/hermes/.env ]; then
   chown root:hermes /var/lib/hermes/.env
   chmod 0640 /var/lib/hermes/.env
   echo "plow-init: wrote /var/lib/hermes/.env from the container environment" >&2
+elif [ -n "${plow_generated_api_key:-}" ]; then
+  # A dotenv that predates this, or one placed by hand: it is the file the
+  # gateway reads, so the key belongs in it rather than only in this boot.
+  printf 'API_SERVER_KEY=%s\n' "$API_SERVER_KEY" >> /var/lib/hermes/.env
+  echo "plow-init: added a generated API_SERVER_KEY to /var/lib/hermes/.env" >&2
 fi
+unset plow_generated_api_key
 
 # Last, because it rewrites config.yaml and wants the ownership first-boot.sh
 # has just settled. Reads the container environment, which first-boot.sh does

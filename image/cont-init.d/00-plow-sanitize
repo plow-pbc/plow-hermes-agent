@@ -26,3 +26,23 @@ set -eu
 # all -- fails `-f` and is dealt with the same way.
 . /usr/local/lib/plow/config-restore.sh
 plow_restore_config 00-plow-sanitize
+
+# Claim the dotenv's name before the runtime seeds its own.
+#
+# Upstream copies its `.env.example` to $HERMES_HOME/.env when it finds none --
+# 535 lines of every variable the runtime knows, TERMINAL_MODAL_IMAGE through
+# BROWSERBASE_ADVANCED_STEALTH. This image reads that file as root and accepts
+# only the names it sets, so an example dropped there is a refused boot: the
+# right answer to a dotenv full of names nobody asked for, and a useless one
+# when the runtime put them there itself.
+#
+# An empty file is enough to stop the copy -- `seed_one` only writes when the
+# destination is absent -- and enough for the parser, which has nothing to
+# refuse. What belongs in it arrives later: the VM host's setup script writes
+# it whole, or `plow-init` fills it from the container environment.
+if [ ! -e /var/lib/hermes/.env ]; then
+  umask 077
+  : > /var/lib/hermes/.env
+  chown root:hermes /var/lib/hermes/.env
+  chmod 0640 /var/lib/hermes/.env
+fi

@@ -80,13 +80,25 @@ echo "ok: inference key == agent token, and the API base has no /v1" >&2
 printf 'Authorization: Bearer %s\n' "$token" > "$work/auth"
 chmod 600 "$work/auth"
 
-status() { curl -sS -o /dev/null -w '%{http_code}' -H @"$work/auth" "$api_host$1"; }
+# `000` is curl's answer when it never got one -- an unresolvable host, a
+# refused connection. Reported as itself, because "the token can still list
+# account keys" is a claim about the credential, and a request that never left
+# the machine says nothing about it either way.
+status() {
+  code="$(curl -sS -o /dev/null -w '%{http_code}' -H @"$work/auth" "$api_host$1" || true)"
+  case "$code" in
+    ''|000) echo "FAIL: no response from $api_host$1 -- the check proved nothing" >&2; return 1 ;;
+  esac
+  printf '%s' "$code"
+}
 
 # The credential is narrowed, proven by what it can no longer do. An account-wide
 # token -- what activation hands back before the tool narrows it -- answers 200
 # on both of these.
-[ "$(status /v1/api-keys)" = 403 ] || { echo "FAIL: the token can still list account keys" >&2; exit 1; }
-[ "$(status /v1/chats/$home/messages?limit=1)" = 200 ] || { echo "FAIL: the token cannot read its own chat" >&2; exit 1; }
+keys_code="$(status /v1/api-keys)" || exit 1
+[ "$keys_code" = 403 ] || { echo "FAIL: the token can still list account keys (HTTP $keys_code)" >&2; exit 1; }
+chat_code="$(status /v1/chats/$home/messages?limit=1)" || exit 1
+[ "$chat_code" = 200 ] || { echo "FAIL: the token cannot read its own chat (HTTP $chat_code)" >&2; exit 1; }
 echo "ok: keys:manage refused, its own chat readable" >&2
 
 # ...and by what it is scoped to: the line of the chat it was actually given,

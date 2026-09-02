@@ -316,11 +316,16 @@ for block in '^platforms:$' '^  plow_chat:$' '^providers:$' '^  plow:$' '^model:
     || { echo "the restored config.yaml is missing $block -- upstream's default won the slot" >&2; exit 1; }
 done
 
-# Nothing outside the model block differs from the seed. plow-config rewrites
-# `model.provider` and `model.default` by design; anything else changing means
-# the file that came back is not the one the image ships.
+# Nothing outside the model block differs from the seed, comparing settings
+# rather than bytes. The runtime rewrites this file through its own YAML writer
+# on the way up -- comments go, quoting changes -- so a byte comparison would
+# fail on a config that is semantically the seed. Comments are not the
+# contract; the keys are. plow-config rewrites `model.provider` and
+# `model.default` by design, and anything else changing means the file that
+# came back is not the one the image ships.
 drift="$(docker exec "$name" sh -c '
-  diff /opt/hermes/plow-seed/config.yaml /var/lib/hermes/config.yaml || true' \
+  strip() { grep -vE "^[[:space:]]*(#|$)" "$1"; }
+  diff <(strip /opt/hermes/plow-seed/config.yaml) <(strip /var/lib/hermes/config.yaml) || true' \
   | grep -E '^[<>]' | grep -vE '^[<>]   *(provider|default):' || true)"
 [[ -z "$drift" ]] \
   || { echo "the restored config.yaml differs from the seed outside the model block:" >&2

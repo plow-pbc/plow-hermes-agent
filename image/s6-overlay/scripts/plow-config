@@ -11,10 +11,7 @@
 # line in a dotenv, and switching back changes nothing else.
 set -eu
 
-# Set, not inherited: everything below runs as root, and PATH is one of the
-# things a dotenv or a caller could otherwise choose for it.
-PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export PATH
+. /usr/local/lib/plow/root-path.sh
 
 CONFIG=/var/lib/hermes/config.yaml
 
@@ -43,6 +40,15 @@ if [ "$provider" = plow ] && [ -z "${HERMES_CUSTOM_PLOW_API_KEY:-}" ] && [ -n "$
 fi
 
 [ -f "$CONFIG" ] || exit 0
+
+# first-boot restores a symlinked config before this runs, so reaching here
+# with one means that ordering broke. The write below goes through the file
+# rather than over it -- which is what keeps its ownership, and equally what
+# would follow a link to somewhere else.
+if [ -L "$CONFIG" ]; then
+  echo "plow-config: $CONFIG is a symlink -- refusing to write through it" >&2
+  exit 1
+fi
 
 # Scoped to the `model:` block: `provider` and `default` are common key names
 # and an unscoped substitution would reach the ones under `providers:`. A key

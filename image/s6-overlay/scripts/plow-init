@@ -8,10 +8,7 @@
 # exercises the local API server) and is wrong in a way nobody sees.
 set -eu
 
-# Set, not inherited: everything below runs as root, and PATH is one of the
-# things a dotenv or a caller could otherwise choose for it.
-PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export PATH
+. /usr/local/lib/plow/root-path.sh
 
 LC_ALL=C
 export LC_ALL
@@ -107,6 +104,11 @@ if [ -n "$plow_env_authoritative" ] || [ ! -e /var/lib/hermes/.env ]; then
   chmod 0640 /var/lib/hermes/.env
   echo "plow-init: wrote /var/lib/hermes/.env from the container environment" >&2
 elif [ -n "${plow_generated_api_key:-}" ]; then
+  # A file whose last line has no newline would otherwise take the key onto the
+  # end of it -- `TZ=UTCAPI_SERVER_KEY=...`, one unreadable name, refused boot.
+  if [ -s /var/lib/hermes/.env ] && [ -n "$(tail -c 1 /var/lib/hermes/.env)" ]; then
+    printf '\n' >> /var/lib/hermes/.env
+  fi
   # A dotenv that predates this, or one placed by hand: it is the file the
   # gateway reads, so the key belongs in it rather than only in this boot.
   printf 'API_SERVER_KEY=%s\n' "$API_SERVER_KEY" >> /var/lib/hermes/.env

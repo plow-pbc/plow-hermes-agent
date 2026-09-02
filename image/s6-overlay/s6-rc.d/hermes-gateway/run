@@ -6,10 +6,7 @@
 # values arrive (`env_file:`), and which on a VM is simply the image's own.
 set -eu
 
-# Set, not inherited: everything below runs as root, and PATH is one of the
-# things a dotenv or a caller could otherwise choose for it.
-PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-export PATH
+. /usr/local/lib/plow/root-path.sh
 
 # The tenant values, from whichever side holds them. The container environment
 # wins and the file fills only what it did not set: locally that environment is

@@ -118,7 +118,13 @@ RUN chown -R 10000:10000 /var/lib/hermes \
 # Provisioning runs this when it exists; it runs whatever a downstream image
 # dropped into first-boot.d.
 COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
-COPY --chmod=0644 image/lib/dotenv.sh /usr/local/lib/plow/dotenv.sh
+# The shared shell: the trusted PATH every privileged entry point runs with,
+# and the dotenv reader. Root-owned, outside any home.
+COPY --chmod=0644 image/lib/ /usr/local/lib/plow/
+# A pristine config.yaml, out of the agent's reach. First boot hands the one
+# in the home to uid 10000, so this is the copy it is restored from when it
+# comes back as something other than a regular file.
+COPY --chmod=0644 image/seed/config.yaml /opt/hermes/plow-seed/config.yaml
 
 # Restarting the gateway is now a supervisor signal, not a unit command, and
 # the caller lives in another repository: `systemctl` is a shim over

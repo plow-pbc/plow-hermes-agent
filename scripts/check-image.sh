@@ -248,6 +248,32 @@ probe="$(docker exec --user 10000:10000 "$name" sh -c '
   || { echo "the dotenv value did not reach the gateway verbatim: $probe" >&2; exit 1; }
 echo "dotenv: a command substitution arrived as characters, not a command"
 
+# --- 4d. a symlinked config.yaml is hostile --------------------------------
+#
+# First boot hands config.yaml to uid 10000 -- it is the one file the plugin
+# has to rewrite -- and an agent that owns a file in a sticky directory may
+# unlink it. Replace it with a symlink and the next root boot follows it:
+# `chown` gives away the target, and the config writer writes through it. The
+# file is restored from outside the home instead, and the target is left alone.
+docker exec "$name" sh -c 'printf "root-owned target\n" > /etc/plowvictim; chmod 0644 /etc/plowvictim'
+docker exec --user 10000:10000 "$name" sh -c \
+  'cd /var/lib/hermes && rm -f config.yaml && ln -s /etc/plowvictim config.yaml'
+docker restart "$name" >/dev/null
+await_gateway
+
+victim="$(docker exec "$name" stat -c '%a %U:%G' /etc/plowvictim)"
+[[ "$victim" == "644 root:root" ]] \
+  || { echo "the symlink target changed hands: $victim" >&2; exit 1; }
+[[ "$(docker exec "$name" cat /etc/plowvictim)" == "root-owned target" ]] \
+  || { echo "the symlink target was written through" >&2; exit 1; }
+restored="$(docker exec "$name" stat -c '%F %U:%G' /var/lib/hermes/config.yaml)"
+[[ "$restored" == "regular file hermes:hermes" ]] \
+  || { echo "config.yaml was not restored to a regular file: $restored" >&2; exit 1; }
+docker exec "$name" grep -q '^model:$' /var/lib/hermes/config.yaml \
+  || { echo "the restored config.yaml is not the image's" >&2; exit 1; }
+docker exec "$name" rm -f /etc/plowvictim
+echo "symlinked config.yaml: target untouched, config restored, gateway up"
+
 # --- 5. the restart path plow.git uses -----------------------------------
 #
 # Credential updates and their rollback shell in and restart the gateway. The

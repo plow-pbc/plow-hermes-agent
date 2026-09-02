@@ -118,11 +118,8 @@ RUN chown -R 10000:10000 /var/lib/hermes \
  && chmod 3770 /var/lib/hermes /var/lib/hermes/skills \
  && chown root:root /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
  && chmod 0644 /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
- && install -d -m 0755 /usr/local/lib/plow /usr/local/lib/plow/first-boot.d
+ && install -d -m 0755 /usr/local/lib/plow
 
-# Provisioning runs this when it exists; it runs whatever a downstream image
-# dropped into first-boot.d.
-COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
 # `plow-init` declares its credential file and Plow's answer as models rather
 # than parsing either by hand. pydantic, python-dotenv and PyYAML are already
 # in the runtime's environment at the versions its lock pins; this adds the one
@@ -144,7 +141,7 @@ COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 # supervision tree and the s6-rc database are all there — so this adds two
 # service definitions to it and installs no init of its own:
 #
-#   plow-init       oneshot, runs the host drop-in and first-boot.sh as root
+#   plow-init       oneshot, configures the agent from its credential
 #   hermes-gateway  longrun, the gateway as uid 10000, depends on plow-init
 #
 # COPY merges into the upstream tree, so the base image's own `user` bundle

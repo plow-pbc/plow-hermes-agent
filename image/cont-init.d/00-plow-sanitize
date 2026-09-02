@@ -1,68 +1,33 @@
 #!/bin/sh
-# Take away anything wearing config.yaml's name, before the runtime meets it.
+# Two things, as root, before any service starts.
 #
-# `00-` because it has to run ahead of upstream's own `01-hermes-setup`, which
-# is the first thing to touch that path: it chowns and chmods the file, and
-# runs a config migration that opens it. Every one of those follows a symlink
-# and none of them expects a directory or a FIFO. A FIFO is the sharp one --
-# opening it for reading blocks until somebody writes, and nobody will, so the
-# whole container hangs in cont-init with no gateway and no error. That is a
-# denial of service the agent can arrange for itself with one `mkfifo` in a
-# directory it is given on purpose.
-#
-# Restoring here rather than leaving it to first boot, because upstream seeds
-# its OWN config.yaml when it finds none -- a 100 KB generated default with no
-# `plow_chat` platform in it. An agent that simply deletes its config would
-# otherwise come back looking healthy with no phone line and nothing in the log
-# to say so: `rm config.yaml` as the agent and restart, and without this the
-# gateway comes up on that default with zero platform connections.
+# 1. Seed the agent's config.yaml if it has none, so the runtime does not seed
+#    its own -- a generated default with no chat platform and no provider,
+#    which boots clean and answers nobody.
+# 2. Promote the credential a developer bind-mounted, so `plow-init` finds it
+#    at the path it reads.
 set -eu
 
 CONFIG=/var/lib/hermes/config.yaml
 SEED=/opt/hermes/plow-seed/config.yaml
+CREDENTIALS=/var/lib/plow/credentials
 
-# Two questions, asked the safe way round. Is this a regular file that is not a
-# symlink? `-f` follows links, so `-L` has to be asked first and separately;
-# after that everything else -- directory, FIFO, dangling link, nothing at
-# all -- fails `-f` and is dealt with the same way.
-#
-# And is it OURS? A config that passes every shape guard can still be empty, or
-# forty bytes of nothing, and the gateway then boots with no platform and no
-# provider -- the same silent outcome, reached by looking harmless.
-# `platforms.plow_chat` is the block nothing else writes: the model and
-# provider settings are the operator's, and the home-channel block under this
-# one is the plugin's, and both survive a rewrite.
-if [ -L "$CONFIG" ] || [ ! -f "$CONFIG" ] ||
-   ! sed -n '/^platforms:$/,/^[^ ]/p' "$CONFIG" 2>/dev/null | grep -q '^  plow_chat:$'; then
-  echo "00-plow-sanitize: $CONFIG is not this image's config -- restoring it" >&2
-  # Staged beside the target and renamed onto it, so the real name never refers
-  # to a half-written or momentarily root-owned file. The `rm` is only for what
-  # a rename cannot replace -- a directory, or another shape -- because over a
-  # regular file the rename IS the replacement, and removing it first would
-  # open the one gap this exists to close.
-  rm -rf -- "$CONFIG.plow-staged"
-  cp "$SEED" "$CONFIG.plow-staged"
-  chmod 0640 "$CONFIG.plow-staged"
-  chown hermes:hermes "$CONFIG.plow-staged"
-  if [ -L "$CONFIG" ] || { [ -e "$CONFIG" ] && [ ! -f "$CONFIG" ]; }; then
-    rm -rf -- "$CONFIG"
+# Never following an existing path: `cp` would write through a symlink the
+# agent left here, and this runs as root. Redirecting into a `set -C` create
+# fails instead, which is the whole guard -- if anything is already at that
+# name, this leaves it alone and the agent's own config edit deals with it.
+if [ ! -e "$CONFIG" ]; then
+  ( set -C; cat "$SEED" > "$CONFIG" ) 2>/dev/null || true
+  if [ -f "$CONFIG" ]; then
+    chown hermes:hermes "$CONFIG"
+    chmod 0640 "$CONFIG"
   fi
-  mv -f "$CONFIG.plow-staged" "$CONFIG"
 fi
 
-# Claim the dotenv's name before the runtime seeds its own.
-#
-# Upstream copies its `.env.example` to $HERMES_HOME/.env when it finds none --
-# 535 lines of every variable the runtime knows, TERMINAL_MODAL_IMAGE through
-# BROWSERBASE_ADVANCED_STEALTH. This image reads that file as root and accepts
-# only the names it sets, so an example dropped there is a refused boot: the
-# right answer to a dotenv full of names nobody asked for, and a useless one
-# when the runtime put them there itself.
-#
-# An empty file is enough to stop the copy -- `seed_one` only writes when the
-# destination is absent -- and enough for the parser, which has nothing to
-# refuse. What belongs in it arrives later: `plow-init` renders it from the
-# credential and from Plow's answer about the tenant holding it.
+# Upstream copies its own `.env.example` into the home when it finds no dotenv:
+# 535 names nobody here asked for, in a file the agent can read. An empty file
+# is enough to stop that -- the runtime only writes when the destination is
+# absent -- and nothing in this image reads it.
 if [ ! -e /var/lib/hermes/.env ]; then
   umask 077
   : > /var/lib/hermes/.env
@@ -70,50 +35,16 @@ if [ ! -e /var/lib/hermes/.env ]; then
   chmod 0640 /var/lib/hermes/.env
 fi
 
-# Promote the host's credential drop-in, when it arrives as a bind mount.
-#
-# `plow-init` refuses a credentials file that is not a root:root regular file
-# at 0600 or 0400: it decides which API the agent's own bearer token is sent
-# to, so anyone else owning or reading it chooses that. A bind mount cannot
-# satisfy that rule and nothing inside the container may change it -- the file
-# belongs to whoever owns it on the host, and on a Linux host that is never
-# root. So the mount lands under a name of its own, and this copies it, as root
-# and before anything has read either, into the path the gate then applies to
-# unchanged. A VM host writes the real file directly and never uses this.
-#
-# Copied only when it is newer, so a rotation is a rewrite on the host and a
-# restart, and an unchanged mount leaves an already-promoted credential alone.
-PLOW_CREDENTIALS=/var/lib/plow/credentials
-PLOW_CREDENTIALS_HOST=$PLOW_CREDENTIALS.host
-
-# Asked the safe way round, as above: `-f` follows a symlink, so `-L` first.
-if [ -L "$PLOW_CREDENTIALS_HOST" ] ||
-   { [ -e "$PLOW_CREDENTIALS_HOST" ] && [ ! -f "$PLOW_CREDENTIALS_HOST" ]; }; then
-  echo "00-plow-sanitize: $PLOW_CREDENTIALS_HOST is not a regular file -- refusing to copy it" >&2
-  exit 1
-fi
-
-if [ -f "$PLOW_CREDENTIALS_HOST" ]; then
-  # And the destination, before anything is moved onto it: `mv` onto a
-  # directory puts the credential INSIDE it rather than replacing it, which
-  # would leave the gate reading a path that is not this file.
-  if [ -L "$PLOW_CREDENTIALS" ] ||
-     { [ -e "$PLOW_CREDENTIALS" ] && [ ! -f "$PLOW_CREDENTIALS" ]; }; then
-    echo "00-plow-sanitize: $PLOW_CREDENTIALS is not a regular file -- refusing to replace it" >&2
-    exit 1
-  fi
-fi
-
-if [ -f "$PLOW_CREDENTIALS_HOST" ] &&
-   { [ ! -e "$PLOW_CREDENTIALS" ] || [ "$PLOW_CREDENTIALS_HOST" -nt "$PLOW_CREDENTIALS" ]; }; then
-  mkdir -p "${PLOW_CREDENTIALS%/*}"
-  # Contents, not the file: a copy that preserved the mount's mode or owner
-  # would land as exactly what plow-init refuses. Written beside it and moved
-  # into place, so no boot ever reads a half-written credential.
+# A bind-mounted credential carries its host's ownership and mode, which on a
+# Linux host is never root's -- and `plow-init` reads that file as root to
+# decide where the agent's own bearer token is sent, so it will not accept one
+# anybody else can read or replace. Relaxing that rule for the mount would
+# relax it for a VM too. So the mount lands under a name of its own and is
+# copied here, contents only, into the file the rule then applies to unchanged.
+if [ -f "$CREDENTIALS.host" ] && [ ! -L "$CREDENTIALS.host" ]; then
   umask 077
-  cat "$PLOW_CREDENTIALS_HOST" > "$PLOW_CREDENTIALS.tmp"
-  chown root:root "$PLOW_CREDENTIALS.tmp"
-  chmod 0600 "$PLOW_CREDENTIALS.tmp"
-  mv -f "$PLOW_CREDENTIALS.tmp" "$PLOW_CREDENTIALS"
-  echo "00-plow-sanitize: promoted $PLOW_CREDENTIALS_HOST to $PLOW_CREDENTIALS" >&2
+  cat "$CREDENTIALS.host" > "$CREDENTIALS.tmp"
+  chown root:root "$CREDENTIALS.tmp"
+  chmod 0600 "$CREDENTIALS.tmp"
+  mv -f "$CREDENTIALS.tmp" "$CREDENTIALS"
 fi

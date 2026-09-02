@@ -16,8 +16,8 @@ Running one is [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents)
 — a compose file, a credential, and any image that meets the contract below.
 Nothing in this repository is about running it.
 
-The bake builds `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac can
-run it natively; the tags published so far carry `amd64` alone.
+`docker build` produces the architecture you are on; the tags published so far
+carry `amd64` alone.
 
 ## What is in the image
 
@@ -26,11 +26,10 @@ run it natively; the tags published so far carry `amd64` alone.
 | `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned), `skills/` |
 | `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into the home, so the agent's phone line does not live in a directory the agent can write |
 | `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway seeds them into a home that lacks them and updates the ones the agent has not customised. A skill the agent deleted stays deleted — the runtime records that and honours it |
-| `/usr/local/lib/plow/first-boot.sh` | the ownership and mode work, then the `first-boot.d/*.sh` drop-ins |
 | `/var/lib/plow/credentials` | not shipped — the host's drop-in, if there is one; see below |
 | `/var/lib/plow/credentials.host` | not shipped either — the same file bind-mounted from a developer's machine, promoted into the one above at cont-init |
-| `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh`, then reads the credential drop-in and renders the dotenv |
-| `/etc/cont-init.d/00-plow-sanitize` | takes away anything wearing `config.yaml`'s name, and promotes a bind-mounted credential into the drop-in path |
+| `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads the credential, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
+| `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none, and promotes a bind-mounted credential into the path below |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
 
 ## The credential drop-in
@@ -113,9 +112,9 @@ not this image's config, from a copy outside every home. A deleted skill is not
 covered at all — the runtime records that deletion and honours it. A variant replaces or extends `SOUL.md` in its own
 layer — see below; first boot re-asserts root ownership either way.
 
-A `first-boot.d` hook that fails fails first boot. `plow-init` is a oneshot and
-every service depends on it, so nothing starts — better a box that visibly never
-came up than one answering with half its configuration.
+`plow-init` is a oneshot and every service depends on it, so anything it
+refuses starts nothing — better a box that visibly never came up than one
+answering with half its configuration.
 
 ## Building a variant image
 
@@ -140,8 +139,6 @@ COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
 # skill the agent deleted is recorded as deleted and is not re-added, and
 # everything under /var/lib/hermes/skills is the agent's to change.
 
-# First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
-COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh
 ```
 
 A variant that needs a background job adds its own s6 longrun under
@@ -157,62 +154,6 @@ Don't fight the init: nothing starts the gateway by hand — the dependency
 already orders it after first boot — no credentials in `config.yaml`, no
 inbound listener, and pin this image by digest or by an immutable `base-<sha>`
 tag.
-
-## Build and check
-
-Requires Docker with buildx. No credential, no pre-steps.
-
-```sh
-scripts/check-image.sh                        # linux/amd64, what the VM host unpacks
-PLATFORM=linux/arm64 scripts/check-image.sh   # the architecture a Mac runs natively
-PLOW_REVISION=$(git rev-parse HEAD) docker buildx bake base   # both, one index
-```
-
-`check-image.sh` builds and then boots the image, and every check is for a
-failure that builds clean and boots looking healthy:
-
-- `plow_chat` imports — same file, interpreter and uid the gateway uses. The
-  runtime is pinned by digest and the plugin moves in its own repository, so a
-  mismatch builds clean and boots deaf.
-- the write guard follows the home — pointed elsewhere, every write the agent
-  makes into its own directory is denied and nothing says so at boot.
-- s6 is PID 1 and the gateway is listening on `127.0.0.1:8642` — the same
-  loopback listener Plow's provisioning waits for.
-- the home, `skills/` and `SOUL.md` still have the ownership the hardening
-  depends on after first boot, and a second boot changes nothing. Both matter:
-  the runtime bootstraps whatever home it is handed, and on the cloud path
-  first boot runs twice.
-- the whole shape end to end, against a stubbed identity endpoint — and it is
-  the shape every other check above runs in, because there is only one: a boot
-  with nothing but the credential drop-in renders the whole dotenv and comes up
-  with the relay on, a rewrite of that file plus a restart puts the new token in
-  the gateway's own environment, and a withdrawn relay switches off rather than
-  surviving in the home.
-- a drop-in that arrived as a bind mount — uid 10000, mode 0644, what a Linux
-  host's own file looks like from in here — is promoted to a root:root 0600
-  copy and boots, the mount itself unchanged, and a rewrite of it rotates the
-  credential.
-- every way of not being told who this agent is starts nothing: a 404 or an
-  answer carrying no `chat_uid` fails at once, a 503 or a dead socket is
-  retried and then fails, and a home holding a full dotenv for that very token
-  does not rescue any of them.
-- the container environment is not a credential source — an inherited
-  `PLOW_AGENT_TOKEN` or `PLOW_API_BASE` is dropped by init and by the gateway,
-  and the credential file wins — while `HERMES_PROVIDER` and `HERMES_MODEL`
-  still arrive that way, switch the provider, and leave the Plow provider
-  block, the relay flag and the agent's home untouched.
-- a drop-in that cannot be used starts nothing: Plow unreachable on a first
-  boot, a name the contract does not allow, or a file that is not root:root at
-  0600 (or 0400) — 0644, 0620 and 0602 are each refused by name.
-- a `first-boot.d` hook that exits non-zero, and a boot with no
-  `PLOW_AGENT_TOKEN`, both leave the gateway unstarted and `/init` exiting
-  non-zero. The second matters because the gateway comes up perfectly well
-  without a credential: it serves its API and runs cron with no adapter
-  attached, and no owner can reach it.
-
-Multi-platform bake needs a `docker-container` builder
-(`docker buildx create --driver docker-container`); the default driver builds
-one architecture at a time.
 
 ## The plugin pin
 
@@ -256,4 +197,28 @@ token=$(curl -fsSL \
   | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
 curl -fsSL -H "Authorization: Bearer $token" \
   https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
+```
+
+## Try it
+
+Any credential works: the image asks Plow who holds it, so point it at a Plow
+that will answer.
+
+```sh
+docker build -t plow-agent .
+printf 'PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN=<token>\n' > plow-credentials
+chmod 600 plow-credentials
+docker run --rm -v "$PWD/plow-credentials:/var/lib/plow/credentials.host:ro" plow-agent
+```
+
+`plow-agents` is the compose file and the tool that mints that credential.
+
+## Tests
+
+`plow-init` decides which credentials it will read, what it does with each
+answer from Plow, and what it writes into the agent's config. Those decisions
+are checked without booting anything:
+
+```sh
+uv run --with pydantic --with pydantic-settings --with pyyaml --with pytest pytest
 ```

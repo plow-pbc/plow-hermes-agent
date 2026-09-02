@@ -36,10 +36,9 @@ agent:
     # `browser` is Hermes' own browser_* / browser_exec stack. Nothing on
     # this box can back it: the Browser Use harness needs a desktop Chrome and
     # the agent-browser CLI is not installed, so every call ends in
-    # chrome-not-running. Advertised anyway, a fresh agent picks it over
-    # Latch's plow_browser tools, fails, and tells the owner "the browser is
-    # down" (measured live, 2026-09-02). Browsing goes through Latch, on the
-    # owner's own Mac.
+    # chrome-not-running. Advertised anyway, a fresh agent picks it over the
+    # relay's own browser tools, fails, and tells the owner the browser is
+    # down. Browsing goes through the relay, on the owner's own machine.
     - browser
 
 model:

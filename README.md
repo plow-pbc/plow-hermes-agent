@@ -56,8 +56,14 @@ is an agent talking to the wrong people. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every
 service inherits — deriving the inference key alias from the credential and
-generating a fresh `API_SERVER_KEY` on every boot. Nothing is persisted: the
-key is read from the environment, never from a file.
+generating a fresh `API_SERVER_KEY` on every boot.
+
+The tenant's credential is never written to disk inside the container. The
+loopback `API_SERVER_KEY` is the one exception, and only because it has to be:
+the runtime writes a key of its own into `$HERMES_HOME/.env` during cont-init
+and loads that file over its process environment, so `plow-init` overwrites
+that file with the key it just published — one name, `root:hermes 0640`. Both
+sources then agree, and the value is still regenerated on every boot.
 
 ```json
 {
@@ -79,8 +85,14 @@ identity. `line` is this agent's own line; the image does not read it, and
 carries it only because it is part of that answer. `mcp_url` is the relay
 endpoint, or null when the tenant has none.
 
-Getting a token in the first place is `plow-agents`: `login` once, then `mint`
-against the line you want the agent to answer on.
+Getting a token in the first place is `plow-agents`. First time on an account:
+
+```sh
+plow-agents login --new-line   # provisions the line and stores the account token
+plow-agents mint <line-uid>    # the agent's own credential, scoped to that line
+```
+
+`login` is once per account; `mint` once per agent.
 
 `plow-init` waits up to 60 seconds for that file to appear before giving up,
 so a host may write it into a container that is already running; a file present
@@ -151,9 +163,12 @@ one, at `/var/lib/hermes/SOUL.md`, root-owned in a sticky home so a turn can
 neither rewrite nor unlink it. That protects what root owns and nothing else:
 `config.yaml` is handed to the agent on purpose — the chat plugin has to
 rewrite it — so the agent can delete it or put something else in its place, and
-`skills/` likewise. Nothing puts `config.yaml` back: cont-init seeds one only
-when the home has none, and the edit that follows runs as the agent's own user,
-so whatever the agent leaves at that path is its own to answer for. A deleted
+`skills/` likewise. A **missing** `config.yaml` is seeded from the image's own
+copy — cont-init writes one when the home has none, which is what stops the
+runtime seeding a default with no chat platform in it. A **damaged** one is not
+repaired: nothing inspects the file's contents, and the edit that follows runs
+as the agent's own user, so whatever the agent leaves at that path is its own
+to answer for. A deleted
 skill is the same — the runtime records that deletion and honours it. A variant replaces or extends `SOUL.md` in its own
 layer — see below; first boot re-asserts root ownership either way.
 

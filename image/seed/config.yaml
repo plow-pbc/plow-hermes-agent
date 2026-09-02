@@ -27,13 +27,24 @@ providers:
     stale_timeout_seconds: 55
     models:
       anthropic/claude-sonnet-5: {}
-# Hermes delivers any prose the model emits before or between tool calls as its
-# own chat message, and announces every memory write. Both default on, and both
-# are noise to an owner who asked one question over iMessage: a new owner saw
-# "Good, assets exist. Let me send the opener now." arrive as a message of its
-# own. Final answers only.
+# Hermes announces every memory write, and that is noise to an owner who asked
+# one question over iMessage.
+#
+# NOT set here: display.interim_assistant_messages. Hermes also delivers any
+# prose the model emits before or between tool calls as its own chat message,
+# and turning that off looked like the structural fix for commentary reaching
+# the owner. It is the opposite. Measured live, twice: with interim delivery
+# off the entire introduction disappeared — the pitch, the privacy line, the
+# Latch link — and the whole of the owner's turn was "Already saved that. Now
+# I'll wait for her next reply."
+#
+# The model writes the real message mid-turn, before its last tool call, and a
+# note to itself afterwards. Interim delivery is what carries the real message;
+# switching it off deletes that and keeps only the note. A leaked note is
+# cosmetic; a missing introduction is the product. So the commentary stays a
+# prompt problem, and this key stays absent until something can suppress the
+# notes without suppressing the message they were written beside.
 display:
-  interim_assistant_messages: false
   memory_notifications: "off"
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them

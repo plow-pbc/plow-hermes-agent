@@ -21,6 +21,7 @@ natively rather than under emulation.
 | `/usr/local/lib/plow/first-boot.sh` | the ownership and mode work, then the `first-boot.d/*.sh` drop-ins |
 | `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh` |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
+| `/usr/local/bin/plow-restart-gateway` | restarts the gateway through the supervisor and waits for the listener |
 
 ## Identity
 
@@ -65,6 +66,13 @@ already orders it after first boot — no credentials in `config.yaml`, no
 inbound listener, and pin this image by digest or by an immutable `base-<sha>`
 tag.
 
+## Restarting the gateway
+
+`plow-restart-gateway` — it signals the supervisor and waits until a new
+process is answering on `127.0.0.1:8642`. `systemctl restart hermes-gateway`
+is bridged to it for callers written against the systemd image, and refuses
+every other command rather than returning 0 for work it did not do.
+
 ## Build and check
 
 Requires Docker with buildx. No credential, no pre-steps.
@@ -89,6 +97,9 @@ failure that builds clean and boots looking healthy:
   depends on after first boot, and a second boot changes nothing. Both matter:
   the runtime bootstraps whatever home it is handed, and on the cloud path
   first boot runs twice.
+- the restart Plow's credential update performs hands back a NEW process that
+  is listening — otherwise an update verifies the credential the old process is
+  still holding.
 - a `first-boot.d` hook that exits non-zero leaves the gateway unstarted and
   `/init` exiting non-zero.
 

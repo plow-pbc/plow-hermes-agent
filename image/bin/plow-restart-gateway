@@ -1,0 +1,40 @@
+#!/bin/sh
+# Restart the gateway and wait until it is answering again.
+#
+# The supervisor owns the process, so a restart is a signal to it, not a
+# `kill` and a respawn — and the caller that matters is Plow's credential
+# update, which rewrites the dotenv and needs the running gateway to be the one
+# that read the new file before it calls the update verified. A restart that
+# returns while the old process is still listening would let it verify the old
+# credential.
+#
+# So this waits for two facts, in order: the supervisor reports a NEW pid, and
+# that pid has opened the loopback port. 0100007F:21C2 is 127.0.0.1:8642 in
+# /proc/net/tcp — the same listener Plow's provisioning waits for.
+set -eu
+
+SERVICE=/run/service/hermes-gateway
+TIMEOUT=60
+
+[ -d "$SERVICE" ] || {
+  echo "plow-restart-gateway: $SERVICE is not a supervised service" >&2
+  exit 1
+}
+
+before="$(/command/s6-svstat -o pid "$SERVICE" 2>/dev/null || echo none)"
+/command/s6-svc -r "$SERVICE"
+
+i=0
+while [ "$i" -lt "$TIMEOUT" ]; do
+  now="$(/command/s6-svstat -o pid "$SERVICE" 2>/dev/null || echo none)"
+  if [ "$now" != "$before" ] && [ "$(/command/s6-svstat -o up "$SERVICE")" = true ] \
+     && grep -q '0100007F:21C2 ' /proc/net/tcp; then
+    echo "plow-restart-gateway: gateway back on 127.0.0.1:8642 (pid $now) after ${i}s"
+    exit 0
+  fi
+  i=$((i + 1))
+  sleep 1
+done
+
+echo "plow-restart-gateway: no listener ${TIMEOUT}s after the restart" >&2
+exit 1

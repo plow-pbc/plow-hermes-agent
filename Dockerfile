@@ -88,6 +88,12 @@ RUN chown -R 10000:10000 /var/lib/hermes \
 # dropped into first-boot.d.
 COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
 
+# Restarting the gateway is now a supervisor signal, not a unit command, and
+# the caller lives in another repository: `systemctl` is a shim over
+# plow-restart-gateway for exactly the one command line plow.git sends, and it
+# goes away when that caller moves.
+COPY --chmod=0755 image/bin/plow-restart-gateway image/bin/systemctl /usr/local/bin/
+
 # The boot layer. s6-overlay is already in the upstream image — /init, the
 # supervision tree and the s6-rc database are all there — so this adds two
 # service definitions to it and installs no init of its own:

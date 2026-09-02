@@ -128,13 +128,11 @@ RUN set -eu; \
     /opt/hermes/.venv/bin/python -c 'import pydantic, dotenv, yaml'; \
     uv pip install --python /opt/hermes/.venv/bin/python --no-deps pydantic-settings==2.14.2; \
     /opt/hermes/.venv/bin/python -c 'import pydantic_settings'
-# A pristine config.yaml, out of the agent's reach. First boot hands the one
-# in the home to uid 10000, so this is the copy it is restored from when it
-# comes back as something other than a regular file.
+# A pristine config.yaml, out of the agent's reach: the copy cont-init seeds
+# into a home that has none. The home's own copy belongs to uid 10000.
 COPY --chmod=0644 image/seed/config.yaml /opt/hermes/plow-seed/config.yaml
-# Ahead of upstream's own cont-init, which is the first thing to touch
-# config.yaml and follows a symlink, blocks on a FIFO and does not expect a
-# directory.
+# Ahead of upstream's own cont-init, which seeds a config of its own into a
+# home that has none -- one with no chat platform and no provider in it.
 COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 
 # The boot layer. s6-overlay is already in the upstream image — /init, the

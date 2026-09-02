@@ -51,6 +51,19 @@ def test_a_credential_at_0600_is_read(tmp_path, owned_by_root):
     assert plow_init.read_credentials().plow_agent_token == "t"
 
 
+def test_the_process_environment_cannot_outrank_the_file(tmp_path, owned_by_root, monkeypatch):
+    """A settings model reads the environment first unless told not to.
+
+    `docker run -e PLOW_AGENT_TOKEN=...` would otherwise outrank the credential
+    the image was given, which is a rotation silently not taking.
+    """
+    monkeypatch.setenv("PLOW_API_BASE", "https://elsewhere.invalid")
+    monkeypatch.setenv("PLOW_AGENT_TOKEN", "inherited-not-the-credential")
+    credential(tmp_path)
+    read = plow_init.read_credentials()
+    assert (read.plow_api_base, read.plow_agent_token) == ("https://api.plow.co", "t")
+
+
 @pytest.mark.parametrize("mode", [0o644, 0o620, 0o602, 0o666])
 def test_a_credential_anyone_else_can_reach_is_refused(tmp_path, owned_by_root, mode):
     credential(tmp_path, mode=mode)
@@ -71,14 +84,22 @@ def test_a_missing_credential_is_refused(tmp_path):
         plow_init.read_credentials()
 
 
-def chat(uid, status="active", roles=("owner",), selves=1):
-    agents = [{"type": "agent", "relationship": "self"} for _ in range(selves)]
-    members = [{"type": "member", "uid": f"m{n}", "role": r} for n, r in enumerate(roles)]
-    return {"uid": uid, "status": status, "participants": agents + members}
+def chat(uid, status="active", roles=("owner",), agents=("self",)):
+    participants = [{"type": "agent", "relationship": rel} for rel in agents]
+    participants += [{"type": "member", "uid": f"m{n}", "role": r} for n, r in enumerate(roles)]
+    return {"uid": uid, "status": status, "participants": participants}
 
 
 def identity(*chats, mcp_url=None):
-    return plow_init.Identity.model_validate({"chats": list(chats), "mcp_url": mcp_url})
+    return plow_init.Identity.model_validate({"line": {}, "chats": list(chats), "mcp_url": mcp_url})
+
+
+@pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
+def test_an_answer_missing_a_key_is_not_an_identity(missing):
+    body = {"line": {}, "chats": [], "mcp_url": None}
+    del body[missing]
+    with pytest.raises(Exception, match="[Vv]alidation"):
+        plow_init.Identity.model_validate(body)
 
 
 def test_the_home_chat_is_the_owner_alone_with_this_agent():
@@ -93,6 +114,7 @@ def test_the_home_chat_is_the_owner_alone_with_this_agent():
         (chat("a", status="pending"),),                 # not active yet
         (chat("a"), chat("b")),                         # two candidates
         (chat("a", roles=("member",)),),                # nobody is the owner
+        (chat("a", agents=("self", "peer")),),          # another assistant is here too
     ],
 )
 def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats):
@@ -119,7 +141,7 @@ def configure(tmp_path, mcp_url=None, env=None):
     os.environ.pop("HERMES_PROVIDER", None)
     os.environ.pop("HERMES_MODEL", None)
     os.environ.update(env or {})
-    plow_init.configure(plow_init.Identity.model_validate({"chats": [], "mcp_url": mcp_url}))
+    plow_init.configure(identity(mcp_url=mcp_url))
     return yaml.safe_load(config.read_text())
 
 
@@ -143,5 +165,5 @@ def test_an_unchanged_config_is_not_rewritten(tmp_path):
     config = tmp_path / "config.yaml"
     configure(tmp_path)
     before = config.stat().st_mtime_ns
-    plow_init.configure(plow_init.Identity.model_validate({"chats": [], "mcp_url": None}))
+    plow_init.configure(identity())
     assert config.stat().st_mtime_ns == before

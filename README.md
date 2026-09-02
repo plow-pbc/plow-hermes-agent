@@ -45,18 +45,25 @@ PLOW_AGENT_TOKEN=<the agent's own credential>
 `plow-init` reads it as data — never sourced, and only those two names, so a
 provisioner that has drifted ahead of the image is refused rather than
 half-obeyed — and then asks Plow the rest with that credential:
-`GET $PLOW_API_BASE/v1/agents/cloud/me` answers with the home channel and the
-relay endpoint. From those, the image publishes the tenant's environment
+`GET $PLOW_API_BASE/v1/agents/cloud/me` answers with this agent's line, the
+chats it is in, and a relay endpoint. Plow does not name a home channel, so the
+image picks one: the active chat holding exactly this agent and exactly one
+member, who is the owner. Zero matches or several stops the boot, printing the
+roster it saw — the home channel is where the agent answers, and the wrong one
+is an agent talking to the wrong people. From that, the image publishes the
+tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every
 service inherits — deriving the inference key alias from the credential and
 generating a fresh `API_SERVER_KEY` on every boot. Nothing is persisted: the
 key is read from the environment, never from a file.
 
-The drop-in wins over the persisted dotenv, and the file is left in place: a
-rotation is a rewrite of those two lines and a restart, with no shell into the
-agent. The identity is re-asked on every boot, so a home channel or a relay
-that moved moves with it — and a relay that went away is switched off rather
-than reinstated from the copy the home kept.
+The file is the only source: a settings model would otherwise read the process
+environment first, letting `docker run -e PLOW_AGENT_TOKEN=…` outrank the
+credential the image was given, so every source but that file is switched off.
+It is left in place, and a rotation is a rewrite of those two lines and a
+restart, with no shell into the agent. The identity is re-asked on every boot,
+so a home channel or a relay that moved moves with it — and a relay that went
+away is switched off rather than left behind.
 
 There is no fallback behind that fetch. Silence — no connection, no answer in
 time, a 429 or a 5xx — is retried briefly, because a VM's network is not always
@@ -92,7 +99,7 @@ Everything about the tenant comes from the drop-in and from Plow's answer.
 `HERMES_PROVIDER` and `HERMES_MODEL` are the exception, and are read from the
 container environment rather than from that file: they choose where inference
 goes, which is an operator's decision about this container, not a fact about
-the agent's identity. `plow-config` writes `model.provider` from the first, and
+the agent's identity. `plow-init` writes `model.provider` from the first, and
 `model.default` only when the second is set — so a provider switch needs both,
 because a model id belongs to the provider it was written for.
 
@@ -106,10 +113,10 @@ one, at `/var/lib/hermes/SOUL.md`, root-owned in a sticky home so a turn can
 neither rewrite nor unlink it. That protects what root owns and nothing else:
 `config.yaml` is handed to the agent on purpose — the chat plugin has to
 rewrite it — so the agent can delete it or put something else in its place, and
-`skills/` likewise. `config.yaml` is covered by restoration rather than
-permission: first boot puts back one that is missing, not a regular file, or
-not this image's config, from a copy outside every home. A deleted skill is not
-covered at all — the runtime records that deletion and honours it. A variant replaces or extends `SOUL.md` in its own
+`skills/` likewise. Nothing puts `config.yaml` back: cont-init seeds one only
+when the home has none, and the edit that follows runs as the agent's own user,
+so whatever the agent leaves at that path is its own to answer for. A deleted
+skill is the same — the runtime records that deletion and honours it. A variant replaces or extends `SOUL.md` in its own
 layer — see below; first boot re-asserts root ownership either way.
 
 `plow-init` is a oneshot and every service depends on it, so anything it

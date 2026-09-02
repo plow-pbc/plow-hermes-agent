@@ -27,7 +27,7 @@ import urllib.request
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 from typing import Annotated, Literal, Union
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, DotEnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
 
 CREDENTIALS = "/var/lib/plow/credentials"
 CONFIG = "/var/lib/hermes/config.yaml"
@@ -49,13 +49,34 @@ def die(message: str) -> typing.NoReturn:
 
 
 class Credentials(BaseSettings):
-    """The two lines a host writes. `extra="forbid"` refuses a provisioner that
-    has drifted ahead of this image, rather than half-obeying it."""
+    """The two lines a host writes, and only ever from that file.
+
+    `extra="forbid"` refuses a provisioner that has drifted ahead of this
+    image, rather than half-obeying it.
+
+    The file is the ONLY source. A settings model reads the process
+    environment first by default, which would let `docker run -e
+    PLOW_AGENT_TOKEN=...` outrank the credential the image was actually given
+    -- and since the token decides what is sent to Plow, that is a rotation
+    silently not taking, or an agent presenting somebody else's credential.
+    So every other source is dropped below.
+    """
 
     model_config = SettingsConfigDict(extra="forbid")
 
     plow_api_base: str
     plow_agent_token: str
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (dotenv_settings,)
 
 
 class AgentParticipant(BaseModel):
@@ -95,8 +116,9 @@ class Identity(BaseModel):
     new without being rebuilt first.
     """
 
-    chats: list[Chat] = []
-    mcp_url: str | None = None
+    line: dict
+    chats: list[Chat]
+    mcp_url: str | None
 
 
 def home_chat(identity: Identity) -> Chat:
@@ -110,8 +132,17 @@ def home_chat(identity: Identity) -> Chat:
     """
     def is_home(chat: Chat) -> bool:
         members = [p for p in chat.participants if isinstance(p, MemberParticipant)]
-        selves = [p for p in chat.participants if isinstance(p, AgentParticipant) and p.relationship == "self"]
-        return chat.status == "active" and len(selves) == 1 and len(members) == 1 and members[0].role == "owner"
+        agents = [p for p in chat.participants if isinstance(p, AgentParticipant)]
+        # Exactly one agent, not merely exactly one `self`: another Plow line
+        # in the thread is a second assistant, which makes this a group rather
+        # than the owner's one-to-one chat with this agent.
+        return (
+            chat.status == "active"
+            and len(agents) == 1
+            and agents[0].relationship == "self"
+            and len(members) == 1
+            and members[0].role == "owner"
+        )
 
     matches = [chat for chat in identity.chats if is_home(chat)]
     if len(matches) != 1:

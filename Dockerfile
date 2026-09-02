@@ -125,6 +125,10 @@ COPY --chmod=0644 image/lib/ /usr/local/lib/plow/
 # in the home to uid 10000, so this is the copy it is restored from when it
 # comes back as something other than a regular file.
 COPY --chmod=0644 image/seed/config.yaml /opt/hermes/plow-seed/config.yaml
+# Ahead of upstream's own cont-init, which is the first thing to touch
+# config.yaml and follows a symlink, blocks on a FIFO and does not expect a
+# directory.
+COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 
 # Restarting the gateway is now a supervisor signal, not a unit command, and
 # the caller lives in another repository: `systemctl` is a shim over

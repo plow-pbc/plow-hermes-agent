@@ -274,6 +274,30 @@ docker exec "$name" grep -q '^model:$' /var/lib/hermes/config.yaml \
 docker exec "$name" rm -f /etc/plowvictim
 echo "symlinked config.yaml: target untouched, config restored, gateway up"
 
+# --- 4e. and so are a directory and a FIFO ---------------------------------
+#
+# The same door as the symlink, two other shapes through it. Upstream's own
+# cont-init reaches config.yaml before anything here does, and a FIFO is the
+# sharp one: opening it for reading blocks until somebody writes and nobody
+# will, so the container hangs in cont-init with no gateway and no error --
+# a denial of service the agent arranges for itself with one mkfifo in a
+# directory it was given on purpose. Both must boot to a working gateway with
+# the image's config back in place.
+shape_survives() {   # shape_survives <label> <shell that creates the shape>
+  docker exec --user 10000:10000 "$name" sh -c "cd /var/lib/hermes && rm -rf config.yaml && $2"
+  docker restart "$name" >/dev/null
+  await_gateway || { echo "the container did not come back with a $1 at config.yaml" >&2; exit 1; }
+  shape="$(docker exec "$name" stat -c '%F %U:%G' /var/lib/hermes/config.yaml)"
+  [[ "$shape" == "regular file hermes:hermes" ]] \
+    || { echo "after a $1, config.yaml is $shape" >&2; exit 1; }
+  docker exec "$name" grep -q '^model:$' /var/lib/hermes/config.yaml \
+    || { echo "after a $1, config.yaml is not the image's" >&2; exit 1; }
+  echo "$1 at config.yaml: removed before the runtime saw it, gateway up"
+}
+
+shape_survives directory 'mkdir config.yaml && : > config.yaml/decoy'
+shape_survives FIFO 'mkfifo config.yaml'
+
 # --- 5. the restart path plow.git uses -----------------------------------
 #
 # Credential updates and their rollback shell in and restart the gateway. The

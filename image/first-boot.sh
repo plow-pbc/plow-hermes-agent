@@ -73,7 +73,9 @@ fi
 if [ -L /var/lib/hermes/config.yaml ] \
    || { [ -e /var/lib/hermes/config.yaml ] && [ ! -f /var/lib/hermes/config.yaml ]; }; then
   echo "first-boot: /var/lib/hermes/config.yaml is not a regular file -- restoring the image's copy" >&2
-  rm -f /var/lib/hermes/config.yaml
+  # -r as well as -f: a directory is one of the shapes this catches, and
+  # neither flag follows a symlink.
+  rm -rf /var/lib/hermes/config.yaml
   cp /opt/hermes/plow-seed/config.yaml /var/lib/hermes/config.yaml
 fi
 

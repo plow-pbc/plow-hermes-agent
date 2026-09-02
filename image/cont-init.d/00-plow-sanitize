@@ -1,0 +1,28 @@
+#!/bin/sh
+# Take away anything wearing config.yaml's name, before the runtime meets it.
+#
+# `00-` because it has to run ahead of upstream's own `01-hermes-setup`, which
+# is the first thing to touch that path: it chowns and chmods the file, and
+# runs a config migration that opens it. Every one of those follows a symlink
+# and none of them expects a directory or a FIFO. A FIFO is the sharp one --
+# opening it for reading blocks until somebody writes, and nobody will, so the
+# whole container hangs in cont-init with no gateway and no error. That is a
+# denial of service the agent can arrange for itself with one `mkfifo` in a
+# directory it is given on purpose.
+#
+# Removing it here is enough: first boot restores the image's copy afterwards,
+# so what upstream and the gateway find is a regular file either way.
+set -eu
+
+. /usr/local/lib/plow/root-path.sh
+
+CONFIG=/var/lib/hermes/config.yaml
+
+# -L first and on its own: a dangling symlink is not -e, and a symlink to a
+# directory is not -f, so neither of the other tests catches every shape.
+if [ -L "$CONFIG" ] || { [ -e "$CONFIG" ] && [ ! -f "$CONFIG" ]; }; then
+  echo "00-plow-sanitize: $CONFIG is not a regular file -- removing it" >&2
+  # -r because a directory is one of the shapes, and -f because a dangling
+  # symlink is another. Neither follows the link.
+  rm -rf "$CONFIG"
+fi

@@ -28,13 +28,18 @@ RUN set -eu; \
 
 FROM base
 
-ENV DEBIAN_FRONTEND=noninteractive
-
-# The container base has no init; the host boots the image's Cmd as PID 1.
-RUN apt-get update -qq \
- && apt-get install -y -qq --no-install-recommends systemd systemd-sysv sudo tzdata \
- && rm -rf /var/lib/apt/lists/* \
- && test -x /sbin/init
+# The agent's home, for everything in the image and not just for the gateway.
+#
+# The upstream image points both of these at /opt/data, and this image's seed
+# has always lived somewhere else -- so anything that read the environment
+# rather than being handed the path explicitly looked at an empty directory and
+# found no identity, no config and no plugin. Setting them here is what makes
+# `docker exec <container> hermes ...`, a variant's background job and the
+# gateway all agree on one home. The write guard travels with it: pointing the
+# home somewhere the guard did not follow denied the agent every write into its
+# own directory.
+ENV HERMES_HOME=/var/lib/hermes \
+    HERMES_WRITE_SAFE_ROOT=/var/lib/hermes
 
 # uid/gid 10000 (hermes) already exists in this base.
 COPY image/seed/ /var/lib/hermes/
@@ -83,12 +88,23 @@ RUN chown -R 10000:10000 /var/lib/hermes \
 # dropped into first-boot.d.
 COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
 
-COPY image/systemd/agent-setup.service image/systemd/hermes-gateway.service /etc/systemd/system/
+# The boot layer. s6-overlay is already in the upstream image — /init, the
+# supervision tree and the s6-rc database are all there — so this adds two
+# service definitions to it and installs no init of its own:
+#
+#   plow-init       oneshot, runs the host drop-in and first-boot.sh as root
+#   hermes-gateway  longrun, the gateway as uid 10000, depends on plow-init
+#
+# COPY merges into the upstream tree, so the base image's own `user` bundle
+# entries survive alongside ours.
+COPY image/s6-overlay/ /etc/s6-overlay/
 
-# An unpacked image has no kernel modules to load. Masking this at build time
-# keeps the static host policy out of every tenant's first-boot script.
-RUN systemctl enable agent-setup.service hermes-gateway.service \
- && systemctl mask systemd-modules-load.service
+# A failed oneshot must be loud. Without this s6 logs the failure, brings up
+# what it can and leaves PID 1 running, so a VM whose credential injection
+# died looks alive from the outside. 2 makes /init exit instead.
+ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 
+# exe.dev unpacks this image into a VM rootfs and boots its Cmd as PID 1;
+# `docker run` does the same in a container. One entry point serves both.
 ENTRYPOINT []
-CMD ["/sbin/init"]
+CMD ["/init"]

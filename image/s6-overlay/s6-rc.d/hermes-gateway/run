@@ -1,0 +1,30 @@
+#!/command/with-contenv sh
+# The Hermes gateway, supervised, as uid 10000.
+#
+# `with-contenv` is what makes one image serve both paths: it hands this script
+# the container environment, which on a developer's machine is where the tenant
+# values arrive (`env_file:`), and which on a VM is simply the image's own.
+set -eu
+
+# The dotenv the VM host wrote, if there is one. It wins over the container
+# environment: on a VM it is the only source of tenant values, and a stale
+# variable inherited from the image must not shadow the one provisioning just
+# wrote. Nothing writes this file on the local path, where the container
+# environment is the only source.
+if [ -f /var/lib/hermes/.env ]; then
+  set -a
+  . /var/lib/hermes/.env
+  set +a
+fi
+
+# The only two values that differ from the image's own ENV. The gateway's API
+# server is loopback-only: the agent's sole path to Plow is the outbound socket
+# the plow_chat plugin opens, so there is nothing to expose. HERMES_HOME and
+# the write guard are image ENV, not service ENV — the whole image agrees on
+# one home.
+export API_SERVER_HOST=127.0.0.1
+export API_SERVER_PORT=8642
+
+cd /opt/hermes
+exec s6-setuidgid hermes \
+  /opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise

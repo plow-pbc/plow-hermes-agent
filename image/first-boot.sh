@@ -1,16 +1,18 @@
 #!/bin/sh
 # Runs the first-boot.d drop-ins, in prefix order.
 #
-# Invoked by the provisioning setup script (agent-setup.service) when it exists
-# and is executable. Downstream images extend first boot by dropping a script
-# into first-boot.d rather than by replacing this file.
+# Invoked by the `plow-init` oneshot, and — on the cloud path — a second time
+# by the VM host's own setup script, which ends by calling this file. Every
+# step below is idempotent so the two calls collapse into one outcome.
+# Downstream images extend first boot by dropping a script into first-boot.d
+# rather than by replacing this file.
 set -eu
 
 LC_ALL=C
 export LC_ALL
 
-# A hook's failure is first boot's failure. agent-setup.service is a oneshot and
-# hermes-gateway.service `Requires=` it, so a non-zero exit here keeps the
+# A hook's failure is first boot's failure. `plow-init` is an s6 oneshot and
+# every service declares it as a dependency, so a non-zero exit here keeps the
 # gateway from ever starting. That is the point: an agent whose setup half ran
 # comes up looking healthy — the readiness probe only exercises the local API
 # server — and is wrong in a way nobody sees. Better a VM that visibly never
@@ -19,15 +21,24 @@ export LC_ALL
 # run, owned by whoever wrote it. Normalize it here, once, while we are still
 # root: owned by root so uid 10000 cannot rewrite the API base and redirect its
 # own bearer token, group hermes 0640 so the gateway can still READ it -- both
-# through systemd's EnvironmentFile and directly, which the life variant's
-# register_crons.py does when it expands a delivery target from the dotenv as
-# its sole source. 0600 would close the read path and break that.
+# when its service script sources the file and directly, which the life
+# variant's register_crons.py does when it expands a delivery target from the
+# dotenv as its sole source. 0600 would close the read path and break that.
 #
 # The home's sticky bit is what makes this hold: without it uid 10000 could
 # unlink a root-owned .env and write its own in place, whatever the mode says.
 if [ -f /var/lib/hermes/.env ]; then
   chown root:hermes /var/lib/hermes/.env
   chmod 0640 /var/lib/hermes/.env
+fi
+
+# SOUL.md is the opposite case: the identity the agent answers as, and the one
+# file a compromised turn would most want to rewrite. The image builds it
+# root-owned; this re-asserts that on every boot so a variant layer that copied
+# its own in under uid 10000 does not silently hand the agent its own identity.
+# The mode is left alone -- a variant may legitimately choose one.
+if [ -f /var/lib/hermes/SOUL.md ]; then
+  chown root:root /var/lib/hermes/SOUL.md
 fi
 
 # config.yaml is the one file in the home the agent is SUPPOSED to rewrite, and
@@ -62,25 +73,28 @@ if [ -d /usr/local/lib/plow/first-boot.d ]; then
   done
 fi
 
-# Defensive restore, last thing before the gateway starts.
+# Defensive restore of the sticky+setgid pair, last thing before any service
+# starts, and the reason this runs on every boot rather than only the first.
 #
-# One provision on 2026-09-01 (plow-agent-704c410c) came up with the home at
-# 0700 root:root instead of 3770 root:hermes. At 0700 the directory is not
-# traversable by uid 10000, so the agent cannot reach its own state and never
-# starts. No candidate path reproduces it -- the image builds it correctly, the
-# API's setup script never chmods the home, and a container running that exact
-# setup end to end comes out right -- so the cause is still unknown and this
-# does not pretend to fix it.
+# The Hermes runtime bootstraps the home it is pointed at: finding one it does
+# not own, it takes it and its seeded subdirectories, leaving both at 0700
+# hermes:hermes. That is right for a plain data volume and wrong for this one,
+# where root ownership plus the sticky bit is the whole of the plow#1564
+# hardening -- at 0700 hermes:hermes the agent owns the directory, and owning
+# the directory is what lets it unlink a root-owned SOUL.md whatever the file's
+# mode says.
 #
-# What it does is make the mode self-healing at the last moment anything runs
-# as root. The log line goes first and unconditionally: if the clobber recurs,
-# the value it recorded is the evidence that survives, and without it a silent
-# repair would erase the only trace of the bug.
+# The same clobber was seen once in prod from an unknown source (agent
+# plow-agent-704c410c, 2026-09-01, home at 0700 root:root), which is why the
+# log line goes first and unconditionally: if a mode arrives that neither the
+# image nor the runtime explains, the value it recorded is the evidence that
+# survives, and a silent repair would erase the only trace.
 #
-# Idempotent by construction -- chmod and chown to the values the image already
-# uses are a no-op on a healthy boot.
+# Idempotent by construction -- chown and chmod to the values the image already
+# uses are a no-op on a boot where nothing touched them.
 echo "first-boot: /var/lib/hermes before restore: $(stat -c '%a %U:%G' /var/lib/hermes)" >&2
-chown root:hermes /var/lib/hermes
-chmod 3770 /var/lib/hermes
+echo "first-boot: /var/lib/hermes/skills before restore: $(stat -c '%a %U:%G' /var/lib/hermes/skills)" >&2
+chown root:hermes /var/lib/hermes /var/lib/hermes/skills
+chmod 3770 /var/lib/hermes /var/lib/hermes/skills
 
 exit 0

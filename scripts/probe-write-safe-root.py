@@ -1,26 +1,24 @@
-"""Check the gateway unit's environment against the runtime's write guard.
+"""Check the image's own environment against the runtime's write guard.
 
-Run by check-image.sh inside the built image. The image's own environment is
-what systemd inherits and hands to the units it starts, so the process
-environment here plus the unit's Environment= lines is what the gateway sees.
-The guard reads HERMES_WRITE_SAFE_ROOT out of exactly that.
+Run by check-image.sh inside the built image. HERMES_HOME and
+HERMES_WRITE_SAFE_ROOT are image ENV, so this process sees exactly what the
+supervised gateway sees: s6's `with-contenv` hands the service the container
+environment, and the gateway's run script overrides neither of them.
+
+The guard is the thing that used to drift. Moving the home without moving the
+guard left it pointed at a directory the agent never uses, and every write into
+its own home came back denied — with nothing at boot to say so.
 """
 
 import os
 import sys
 
-UNIT = "/etc/systemd/system/hermes-gateway.service"
-
-for line in open(UNIT):
-    line = line.strip()
-    if line.startswith("Environment=") and "=" in line[len("Environment=") :]:
-        key, _, value = line[len("Environment=") :].partition("=")
-        os.environ[key] = value
-
 sys.path.insert(0, "/opt/hermes")
 from agent.file_safety import get_write_denied_error  # noqa: E402
 
 home = os.environ["HERMES_HOME"]
+assert home == "/var/lib/hermes", f"HERMES_HOME is {home}"
+assert os.environ["HERMES_WRITE_SAFE_ROOT"] == home, "the write guard does not follow the home"
 
 inside = os.path.join(home, "ld", "config.json")
 denial = get_write_denied_error(inside)

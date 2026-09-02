@@ -1,0 +1,32 @@
+#!/bin/sh
+# First boot, once, as root, before the gateway starts.
+#
+# This is the `plow-init` oneshot's `up`. Everything downstream of it —
+# hermes-gateway here, a variant's own longruns — declares it as a dependency,
+# so a non-zero exit means no service starts at all. That is deliberate: an
+# agent whose setup half ran comes up looking healthy (the readiness probe only
+# exercises the local API server) and is wrong in a way nobody sees.
+set -eu
+
+LC_ALL=C
+export LC_ALL
+
+# The VM host's credential drop-in. `/exe.dev/setup` is exe.dev's contract and
+# its path is that host's to choose, so it cannot be renamed; another provider
+# adds its own branch here rather than renaming this one. It writes the
+# tenant's dotenv and is removed once it has run, so a reboot cannot replay a
+# credential injection.
+#
+# There is no such file on a developer's machine: `docker compose` supplies the
+# same values as container environment instead, and this branch is skipped.
+if [ -x /exe.dev/setup ]; then
+  /exe.dev/setup
+  rm -f /exe.dev/setup
+fi
+
+# Unconditionally, and yes, a second time on the cloud path: exe.dev's setup
+# script ends by calling first-boot.sh itself, and locally nothing else would.
+# Every step in it is idempotent, and the last one — the home-mode restore — is
+# strictly better for running late, so the duplicate costs one extra log line
+# and buys a first boot that behaves the same with or without a host drop-in.
+/usr/local/lib/plow/first-boot.sh

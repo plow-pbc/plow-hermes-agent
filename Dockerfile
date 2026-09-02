@@ -141,10 +141,6 @@ COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 # goes away when that caller moves.
 COPY --chmod=0755 image/bin/plow-restart-gateway image/bin/systemctl /usr/local/bin/
 
-# The local path's credential tool. Nothing on the cloud path runs it: a tenant
-# is credentialled by the setup script before the gateway ever starts.
-COPY --chmod=0755 image/bin/plow-activate /usr/local/bin/plow-activate
-
 # The boot layer. s6-overlay is already in the upstream image — /init, the
 # supervision tree and the s6-rc database are all there — so this adds two
 # service definitions to it and installs no init of its own:

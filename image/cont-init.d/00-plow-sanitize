@@ -46,3 +46,51 @@ if [ ! -e /var/lib/hermes/.env ]; then
   chown root:hermes /var/lib/hermes/.env
   chmod 0640 /var/lib/hermes/.env
 fi
+
+# Promote the host's credential drop-in, when it arrives as a bind mount.
+#
+# `plow-init` refuses a credentials file that is not a root:root regular file
+# at 0600 or 0400: it decides which API the agent's own bearer token is sent
+# to, so anyone else owning or reading it chooses that. A bind mount cannot
+# satisfy that rule and nothing inside the container may change it -- the file
+# belongs to whoever owns it on the host, and on a Linux host that is never
+# root. So the mount lands under a name of its own, and this copies it, as root
+# and before anything has read either, into the path the gate then applies to
+# unchanged. A VM host writes the real file directly and never uses this.
+#
+# Copied only when it is newer, so a rotation is a rewrite on the host and a
+# restart, and an unchanged mount leaves an already-promoted credential alone.
+PLOW_CREDENTIALS=/var/lib/plow/credentials
+PLOW_CREDENTIALS_HOST=$PLOW_CREDENTIALS.host
+
+# Asked the safe way round, as above: `-f` follows a symlink, so `-L` first.
+if [ -L "$PLOW_CREDENTIALS_HOST" ] ||
+   { [ -e "$PLOW_CREDENTIALS_HOST" ] && [ ! -f "$PLOW_CREDENTIALS_HOST" ]; }; then
+  echo "00-plow-sanitize: $PLOW_CREDENTIALS_HOST is not a regular file -- refusing to copy it" >&2
+  exit 1
+fi
+
+if [ -f "$PLOW_CREDENTIALS_HOST" ]; then
+  # And the destination, before anything is moved onto it: `mv` onto a
+  # directory puts the credential INSIDE it rather than replacing it, which
+  # would leave the gate reading a path that is not this file.
+  if [ -L "$PLOW_CREDENTIALS" ] ||
+     { [ -e "$PLOW_CREDENTIALS" ] && [ ! -f "$PLOW_CREDENTIALS" ]; }; then
+    echo "00-plow-sanitize: $PLOW_CREDENTIALS is not a regular file -- refusing to replace it" >&2
+    exit 1
+  fi
+fi
+
+if [ -f "$PLOW_CREDENTIALS_HOST" ] &&
+   { [ ! -e "$PLOW_CREDENTIALS" ] || [ "$PLOW_CREDENTIALS_HOST" -nt "$PLOW_CREDENTIALS" ]; }; then
+  mkdir -p "${PLOW_CREDENTIALS%/*}"
+  # Contents, not the file: a copy that preserved the mount's mode or owner
+  # would land as exactly what plow-init refuses. Written beside it and moved
+  # into place, so no boot ever reads a half-written credential.
+  umask 077
+  cat "$PLOW_CREDENTIALS_HOST" > "$PLOW_CREDENTIALS.tmp"
+  chown root:root "$PLOW_CREDENTIALS.tmp"
+  chmod 0600 "$PLOW_CREDENTIALS.tmp"
+  mv -f "$PLOW_CREDENTIALS.tmp" "$PLOW_CREDENTIALS"
+  echo "00-plow-sanitize: promoted $PLOW_CREDENTIALS_HOST to $PLOW_CREDENTIALS" >&2
+fi

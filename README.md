@@ -7,124 +7,17 @@ supervised by [s6-overlay](https://github.com/just-containers/s6-overlay),
 reachable only through Plow Chat. One image serves two paths: exe.dev unpacks it
 into a VM rootfs and boots its `Cmd`, and `docker run` boots the same `Cmd` in a
 container — `/init` either way, so what the developer runs is what the tenant
-gets. The image is credential-free and tenant-free — provisioning drops two
-lines at `/var/lib/plow/credentials` and the image does the rest; it installs no
-code.
+gets. The image is credential-free and tenant-free — two lines land at
+`/var/lib/plow/credentials` and the image does the rest; it installs no code.
+There is no local mode: a developer's machine writes that same file and gets
+the same boot, which is what makes the one path worth checking.
+
+Running one is [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents)
+— a compose file, a credential, and any image that meets the contract below.
+Nothing in this repository is about running it.
 
 The bake builds `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac can
 run it natively; the tags published so far carry `amd64` alone.
-
-## Run locally
-
-Docker, and a phone that can text. The agent runs against production Plow.
-
-```sh
-export PLOW_AGENT_IMAGE=public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
-touch .env && chmod 600 .env                         # a live credential
-docker compose run --rm agent plow-activate > .env   # prints a code; text it
-docker compose up -d                                 # boots the agent
-```
-
-That first line is not decoration. `>` creates the file under the shell's
-umask, which is usually `022` — a bearer token every account on the machine can
-read — and on a second activation it does not create anything at all: it
-truncates the file that is already there and keeps whatever mode it had. Making
-the file first and setting the mode covers both.
-
-The compose default names a tag that does not exist, so an unset variable fails
-on the pull rather than booting some other commit's image. List the real ones —
-no AWS credential needed, the repository is public:
-
-```sh
-token=$(curl -fsSL \
-  'https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:e1h7x4a2/plow-cloud-agents:pull' \
-  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
-curl -fsSL -H "Authorization: Bearer $token" \
-  https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
-```
-
-for example `base-9636490e7838eab89f62d10477febd07a4743907`. Each names the
-commit it was built from; **Publishing** below says which repository that is.
-
-`plow-activate` starts a Plow activation, prints the code and the number to
-text it to, waits for that text, and writes the five variables the agent needs
-to stdout -- which is why the redirect is the whole of "configure it". It then
-narrows its own credential to that agent's line before printing anything, so
-what lands in `.env` reaches this agent's chats and Plow's inference and
-nothing else on the account. Prompts and progress go to stderr, so they stay
-out of the file.
-
-Then text the number the agent answers on, and it replies. `docker compose
-logs -f agent` is what it is doing.
-
-Every published tag is `amd64` only today, so a Mac runs one under emulation;
-the local build below is native `arm64` there.
-
-`.env.example` documents the five variables. `.env` holds live credentials and
-is gitignored. It is also the source of truth: re-running the activation and
-recreating the agent replaces the token the agent uses, because the copy inside
-the home volume is rewritten to match rather than outliving it. `docker compose down -v` deletes the agent's home volume — its
-sessions, memories and provider logins, with no second copy — but **not** the
-`.env` beside this file: delete that yourself when you are done with the agent,
-or the next `up` brings the same one back.
-
-### Against a Plow stack on this machine
-
-`compose.e2e.yml` builds this checkout instead of pulling, and joins the dev
-stack's own network so the API is reached by container name — no host port to
-guess, and no `PLOW_AGENT_IMAGE` to set:
-
-```sh
-touch .env && chmod 600 .env
-docker compose -f compose.yml -f compose.e2e.yml run --rm agent \
-  plow-activate --api-base http://api:8000 > .env
-docker compose -f compose.yml -f compose.e2e.yml up -d
-```
-
-The activation code arrives at the local stack's iMessage twin instead of a
-phone; deliver it there the way that stack documents.
-`scripts/check-activate.sh` does the whole handshake and checks the credential
-it produced.
-
-## Change inference provider
-
-Inference goes through Plow by default, on the same credential as chat. Any
-provider Hermes supports works instead. Two lines and a login:
-
-```sh
-printf 'HERMES_PROVIDER=openai-codex\nHERMES_MODEL=gpt-5.5\n' >> .env
-docker compose run --rm agent hermes auth add openai-codex   # device-code login
-docker compose up -d
-```
-
-`HERMES_MODEL` is not optional when switching: the seeded default model id
-belongs to the Plow provider and means nothing to another one.
-
-A provider that takes an API key needs no login, just the variable it reads —
-in the `.env` beside this file, which compose passes as container environment.
-Not in the agent's own `/var/lib/hermes/.env`: that one is read by root at boot
-and accepts only the names this image sets, so an unknown one is a refused boot
-rather than a silent miss.
-
-```sh
-printf 'HERMES_PROVIDER=anthropic\nHERMES_MODEL=claude-sonnet-4-5\nANTHROPIC_API_KEY=sk-ant-...\n' >> .env
-docker compose up -d
-```
-
-Switching back needs both lines, because a model id belongs to the provider it
-was written for:
-
-```sh
-printf 'HERMES_PROVIDER=plow\nHERMES_MODEL=anthropic/claude-sonnet-5\n' >> .env
-docker compose up -d
-```
-
-Boot writes `model.default` only when `HERMES_MODEL` is set, so dropping the
-line leaves the previous provider's model id behind rather than restoring the
-one the image shipped. Nothing else has to be restored: the Plow provider's own
-block stays in `config.yaml` untouched the whole time, and the login
-`hermes auth add` writes lives in the home volume and survives a switch away
-and back.
 
 ## What is in the image
 
@@ -135,10 +28,11 @@ and back.
 | `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway seeds them into a home that lacks them and updates the ones the agent has not customised. A skill the agent deleted stays deleted — the runtime records that and honours it |
 | `/usr/local/lib/plow/first-boot.sh` | the ownership and mode work, then the `first-boot.d/*.sh` drop-ins |
 | `/var/lib/plow/credentials` | not shipped — the host's drop-in, if there is one; see below |
+| `/var/lib/plow/credentials.host` | not shipped either — the same file bind-mounted from a developer's machine, promoted into the one above at cont-init |
 | `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh`, then reads the credential drop-in and renders the dotenv |
+| `/etc/cont-init.d/00-plow-sanitize` | takes away anything wearing `config.yaml`'s name, and promotes a bind-mounted credential into the drop-in path |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
 | `/usr/local/bin/plow-restart-gateway` | restarts the gateway through the supervisor and waits for the listener |
-| `/usr/local/bin/plow-activate` | mints this agent's Plow credential and prints its dotenv |
 
 ## The credential drop-in
 
@@ -177,8 +71,32 @@ or 404 — or answers with something that is not an identity, the recorded one i
 precisely what must not be reused, and the boot fails closed however well the
 token matches.
 
-Locally there is no such file, and the container environment carries the same
-values instead.
+### From a developer's machine
+
+The same file, and the same rules — but a bind mount carries its host's
+ownership and mode into the container, which on a Linux host is never
+`root:root 0600`. Relaxing the gate for that would be relaxing it for the VM
+too, so the mount lands beside the drop-in instead, at
+`/var/lib/plow/credentials.host`, and `00-plow-sanitize` copies it as root into
+`/var/lib/plow/credentials` at `0600` before anything reads either. The mount
+itself is never written; a rotation is a rewrite of it and a restart, and only
+a mount newer than the copy is promoted again.
+
+`plow-pbc/plow-agents` is the compose file that does this, and the tool that
+writes the two lines.
+
+## The two environment knobs
+
+Everything about the tenant comes from the drop-in and from Plow's answer.
+`HERMES_PROVIDER` and `HERMES_MODEL` are the exception, and are read from the
+container environment rather than from that file: they choose where inference
+goes, which is an operator's decision about this container, not a fact about
+the agent's identity. `plow-config` writes `model.provider` from the first, and
+`model.default` only when the second is set — so a provider switch needs both,
+because a model id belongs to the provider it was written for.
+
+A credential file naming either is refused: the allowlist for a drop-in is
+`PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, and nothing else.
 
 ## Identity
 
@@ -267,11 +185,16 @@ failure that builds clean and boots looking healthy:
 - the restart Plow's credential update performs hands back a NEW process that
   is listening — otherwise an update verifies the credential the old process is
   still holding.
-- the cloud shape end to end, against a stubbed identity endpoint: a boot with
-  nothing but the credential drop-in renders the whole dotenv and comes up with
-  the relay on, a rewrite of that file plus a restart puts the new token in the
-  gateway's own environment, and a withdrawn relay switches off rather than
+- the whole shape end to end, against a stubbed identity endpoint — and it is
+  the shape every other check above runs in, because there is only one: a boot
+  with nothing but the credential drop-in renders the whole dotenv and comes up
+  with the relay on, a rewrite of that file plus a restart puts the new token in
+  the gateway's own environment, and a withdrawn relay switches off rather than
   surviving in the home.
+- a drop-in that arrived as a bind mount — uid 10000, mode 0644, what a Linux
+  host's own file looks like from in here — is promoted to a root:root 0600
+  copy and boots, the mount itself unchanged, and a rewrite of it rotates the
+  credential.
 - an unreachable Plow does not take a provisioned agent down: it boots on the
   identity its home recorded for that same credential — and refuses when the
   credential has been rotated since, rather than adopting an identity that was

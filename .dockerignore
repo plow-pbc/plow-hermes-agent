@@ -3,4 +3,3 @@ README.md
 **/__pycache__/
 **/*.pyc
 .env
-compose.yml

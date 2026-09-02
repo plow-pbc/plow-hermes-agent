@@ -8,11 +8,12 @@
 # substitution, not a token.
 #
 # The environment wins. A name already set when this runs keeps its value and
-# the file's copy is skipped: locally the container environment is where a
-# rotated credential arrives, and a dotenv persisted in a volume would
-# otherwise reinstate the token it replaced. On a VM nothing sets these before
-# the file is read, so the file remains authoritative there by having no
-# competition rather than by a second rule.
+# the file's copy is skipped, and that one rule is what makes the host's
+# credential drop-in authoritative: it is read into the environment first, so a
+# dotenv persisted in a volume cannot reinstate the token, the home channel or
+# the relay the drop-in just replaced. The same rule carries HERMES_PROVIDER
+# and HERMES_MODEL in from the container environment, which is where an
+# operator switches inference provider.
 #
 # `export "$key=$value"` performs one assignment and re-parses nothing, so a
 # value that looks like shell is a value that looks like shell. Everything that

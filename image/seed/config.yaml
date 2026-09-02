@@ -96,4 +96,11 @@ onboarding:
 plugins:
   enabled:
     - plow-chat-platform
+  entries:
+    plow-chat-platform:
+      # The plugin registers the platform plus its Plow-specific tools, and
+      # none of them replaces an image tool. Denying overrides keeps a future
+      # name collision from silently shadowing one, which would be invisible
+      # from this file.
+      allow_tool_override: false
 _config_version: 37

@@ -19,8 +19,8 @@ export LC_ALL
 # tenant's dotenv and is removed once it has run, so a reboot cannot replay a
 # credential injection.
 #
-# There is no such file on a developer's machine: `docker compose` supplies the
-# same values as container environment instead, and this branch is skipped.
+# There is no such host on a developer's machine, so this branch is skipped;
+# the credential arrives there as the same drop-in, bind-mounted in.
 if [ -x /exe.dev/setup ]; then
   /exe.dev/setup
   rm -f /exe.dev/setup
@@ -37,24 +37,13 @@ fi
 #
 # The gateway comes up either way: it serves its loopback API and runs the cron
 # scheduler with no adapter attached, which looks healthy to every probe and is
-# an agent nobody can reach. The dotenv is the cloud path's source and the
-# container environment is the local one, so this reads both and asks the same
-# question of each.
+# an agent nobody can reach. The credential has one source — the drop-in below
+# — and one persisted copy, the home's dotenv, so this reads both and asks the
+# same question of each.
 #
 # `plow-init` is a oneshot every service depends on, so exiting here starts
 # nothing, and S6_BEHAVIOUR_IF_STAGE2_FAILS=2 takes PID 1 down with it —
 # visibly dead rather than quietly deaf.
-# Which side is the source of truth, decided before anything is read. A
-# container environment carrying a credential is a developer's compose file,
-# and it is what changes when they re-run plow-activate; the dotenv is a
-# persisted volume that would otherwise outlive the token it holds. A VM has no
-# container environment and answers this question with the host's credential
-# drop-in below instead.
-if printenv PLOW_AGENT_TOKEN >/dev/null 2>&1; then
-  plow_env_authoritative=1
-else
-  plow_env_authoritative=
-fi
 
 # Read, never run: a dotenv is data, and `.` would hand every line of it a root
 # shell. It fills only names the environment did not already set. See
@@ -69,8 +58,7 @@ fi
 # copied, and read BEFORE the home's own dotenv, which is what makes it
 # authoritative: a name the file supplies is a name the persisted copy no
 # longer gets to fill, so a rotated token cannot be undone by the volume that
-# outlived it. The same rule the container environment gets, for the same
-# reason.
+# outlived it.
 #
 # It is not deleted after reading. Rotation is a rewrite of this file and a
 # restart -- the host does not shell into the agent -- so a copy that survives
@@ -107,10 +95,6 @@ if [ -f "$PLOW_CREDENTIALS" ]; then
 
   plow_load_dotenv "$PLOW_CREDENTIALS" "$PLOW_CREDENTIALS_ALLOWED" || exit 1
   plow_credentials=1
-  # The host wrote a credential, so the home's copy of one is stale by
-  # definition: rewrite the dotenv from what we now hold, exactly as a
-  # credential-carrying container environment does.
-  plow_env_authoritative=1
 
   if [ -z "${PLOW_API_BASE:-}" ] || [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
     echo "plow-init: $PLOW_CREDENTIALS must give a value for both PLOW_API_BASE and PLOW_AGENT_TOKEN" >&2
@@ -297,18 +281,18 @@ if [ -n "$plow_credentials" ] && [ -z "${TZ:-}" ]; then
 fi
 
 if [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
-  echo "plow-init: PLOW_AGENT_TOKEN is unset — no credential in /var/lib/hermes/.env" >&2
-  echo "plow-init: nor in the container environment. Refusing to start a gateway nobody can reach." >&2
+  echo "plow-init: PLOW_AGENT_TOKEN is unset — no credential drop-in at $PLOW_CREDENTIALS" >&2
+  echo "plow-init: and none in /var/lib/hermes/.env. Refusing to start a gateway nobody can reach." >&2
   exit 1
 fi
 
-# Written from the environment whenever the environment is the source of truth,
-# and once when nothing else has written it. Rewriting rather than creating is
-# what makes a rotated credential take: the file is the gateway's own authority
-# for these values, and a stale copy of it in a persisted volume is a revoked
-# token the agent keeps trying. It is also why uid 10000 never gets to create
-# this file -- a home the agent can write is a home where it could otherwise
-# choose the API base its own bearer token is sent to.
+# Rewritten from the environment whenever a drop-in supplied one, and written
+# once when nothing else ever has. Rewriting rather than creating is what makes
+# a rotated credential take: the file is the gateway's own authority for these
+# values, and a stale copy of it in a persisted volume is a revoked token the
+# agent keeps trying. It is also why uid 10000 never gets to create this file --
+# a home the agent can write is a home where it could otherwise choose the API
+# base its own bearer token is sent to.
 # The gateway's loopback API server refuses to start without a strong key, and
 # without that listener there is nothing for readiness to find and nowhere for
 # cron to deliver. Provisioning generates one per tenant; locally nobody does,
@@ -318,10 +302,9 @@ fi
 if [ -z "${API_SERVER_KEY:-}" ]; then
   API_SERVER_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
   export API_SERVER_KEY
-  plow_generated_api_key=1
 fi
 
-if [ -n "$plow_env_authoritative" ] || [ ! -e /var/lib/hermes/.env ]; then
+if [ -n "$plow_credentials" ] || [ ! -e /var/lib/hermes/.env ]; then
   umask 077
   : > /var/lib/hermes/.env
   # Values verbatim, unquoted, one per line -- the exact shape the parser reads
@@ -337,21 +320,9 @@ if [ -n "$plow_env_authoritative" ] || [ ! -e /var/lib/hermes/.env ]; then
   unset plow_key plow_val
   chown root:hermes /var/lib/hermes/.env
   chmod 0640 /var/lib/hermes/.env
-  if [ -n "$plow_credentials" ]; then plow_source=$PLOW_CREDENTIALS; else plow_source="the container environment"; fi
-  echo "plow-init: wrote /var/lib/hermes/.env from $plow_source" >&2
-  unset plow_source
-elif [ -n "${plow_generated_api_key:-}" ]; then
-  # A file whose last line has no newline would otherwise take the key onto the
-  # end of it -- `TZ=UTCAPI_SERVER_KEY=...`, one unreadable name, refused boot.
-  if [ -s /var/lib/hermes/.env ] && [ -n "$(tail -c 1 /var/lib/hermes/.env)" ]; then
-    printf '\n' >> /var/lib/hermes/.env
-  fi
-  # A dotenv that predates this, or one placed by hand: it is the file the
-  # gateway reads, so the key belongs in it rather than only in this boot.
-  printf 'API_SERVER_KEY=%s\n' "$API_SERVER_KEY" >> /var/lib/hermes/.env
-  echo "plow-init: added a generated API_SERVER_KEY to /var/lib/hermes/.env" >&2
+  echo "plow-init: wrote /var/lib/hermes/.env${plow_credentials:+ from $PLOW_CREDENTIALS}" >&2
 fi
-unset plow_generated_api_key plow_env_authoritative plow_credentials
+unset plow_credentials
 
 # Last, because it rewrites config.yaml and wants the ownership first-boot.sh
 # has just settled. Reads the container environment, which first-boot.sh does

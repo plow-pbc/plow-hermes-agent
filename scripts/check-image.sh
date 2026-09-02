@@ -292,11 +292,43 @@ shape_survives() {   # shape_survives <label> <shell that creates the shape>
     || { echo "after a $1, config.yaml is $shape" >&2; exit 1; }
   docker exec "$name" grep -q '^model:$' /var/lib/hermes/config.yaml \
     || { echo "after a $1, config.yaml is not the image's" >&2; exit 1; }
-  echo "$1 at config.yaml: removed before the runtime saw it, gateway up"
+  echo "$1: replaced before the runtime saw it, gateway up"
 }
 
 shape_survives directory 'mkdir config.yaml && : > config.yaml/decoy'
 shape_survives FIFO 'mkfifo config.yaml'
+# Deleting it is the quiet one. Upstream seeds its own generated default when it
+# finds none -- a config with no `plow_chat` platform in it -- so the agent
+# comes back healthy-looking with no phone line and nothing in the log about it.
+shape_survives 'deleted config.yaml' ':'   # nothing to create: the shape IS its absence
+
+# ...which is why this asserts the CONTENT, not just the shape. Two things can
+# occupy this path and both are regular files: the image's copy, and the
+# generated default upstream seeds when it finds the slot empty. The second
+# declares no platform and no provider -- an agent with no phone line and no
+# inference, healthy to every probe. Tell them apart by what only the image's
+# copy contains.
+for block in '^platforms:$' '^  plow_chat:$' '^providers:$' '^  plow:$' '^model:$'; do
+  docker exec "$name" grep -q "$block" /var/lib/hermes/config.yaml \
+    || { echo "the restored config.yaml is missing $block -- upstream's default won the slot" >&2; exit 1; }
+done
+
+# And by size: the generated default runs to six figures, the image's copy to
+# four. A cheap second opinion that does not depend on any one key surviving.
+bytes="$(docker exec "$name" stat -c %s /var/lib/hermes/config.yaml)"
+[[ "$bytes" -lt 8192 ]] \
+  || { echo "the restored config.yaml is ${bytes} bytes -- that is upstream's generated default" >&2; exit 1; }
+
+# Nothing outside the model block differs from the seed. plow-config rewrites
+# `model.provider` and `model.default` by design; anything else changing means
+# the file that came back is not the one the image ships.
+drift="$(docker exec "$name" sh -c '
+  diff /opt/hermes/plow-seed/config.yaml /var/lib/hermes/config.yaml || true' \
+  | grep -E '^[<>]' | grep -vE '^[<>]   *(provider|default):' || true)"
+[[ -z "$drift" ]] \
+  || { echo "the restored config.yaml differs from the seed outside the model block:" >&2
+       printf '%s\n' "$drift" >&2; exit 1; }
+echo "restored config.yaml is the image's: plow_chat platform, plow provider, ${bytes} bytes, no drift from the seed"
 
 # --- 5. the restart path plow.git uses -----------------------------------
 #

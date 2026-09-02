@@ -59,9 +59,9 @@ fi
 # Giving it to hermes does not weaken what the hardening protects: SOUL.md and
 # .env stay root-owned, so the sticky bit still refuses to let a turn replace
 # either. This hands over the one file whose whole purpose is to be rewritten.
-# ...and handing it over is what makes the next two lines necessary. An agent
-# that owns a file in a sticky directory may unlink it, so it may also replace
-# it with a symlink -- and then `[ -f ]` is true of the TARGET, `chown` follows
+# ...and handing it over is what makes the next lines necessary. An agent that
+# owns a file in a sticky directory may unlink it -- so it may delete this one
+# outright, or replace it with a symlink -- and then `[ -f ]` is true of the TARGET, `chown` follows
 # it, and the config writer below writes through it. Root gives away the
 # ownership of an arbitrary file and overwrites its contents. Reproduced: a
 # symlink to a root-owned file came back hermes-owned with a `model:` block
@@ -70,11 +70,10 @@ fi
 # So the file is restored rather than repaired. `rm` on a symlink removes the
 # link, never its target, and the copy comes from outside the home, where no
 # turn can reach it.
-if [ -L /var/lib/hermes/config.yaml ] \
-   || { [ -e /var/lib/hermes/config.yaml ] && [ ! -f /var/lib/hermes/config.yaml ]; }; then
+if [ -L /var/lib/hermes/config.yaml ] || [ ! -f /var/lib/hermes/config.yaml ]; then
   echo "first-boot: /var/lib/hermes/config.yaml is not a regular file -- restoring the image's copy" >&2
-  # -r as well as -f: a directory is one of the shapes this catches, and
-  # neither flag follows a symlink.
+  # -r as well as -f: a directory is one of the shapes this catches, an absent
+  # file is another, and neither flag follows a symlink.
   rm -rf /var/lib/hermes/config.yaml
   cp /opt/hermes/plow-seed/config.yaml /var/lib/hermes/config.yaml
 fi

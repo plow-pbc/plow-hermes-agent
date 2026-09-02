@@ -10,19 +10,26 @@
 # denial of service the agent can arrange for itself with one `mkfifo` in a
 # directory it is given on purpose.
 #
-# Removing it here is enough: first boot restores the image's copy afterwards,
-# so what upstream and the gateway find is a regular file either way.
+# Restoring here rather than leaving it to first boot, because upstream seeds
+# its OWN config.yaml when it finds none -- a 100 KB generated default with no
+# `plow_chat` platform in it. An agent that simply deletes its config would
+# otherwise come back looking healthy with no phone line and nothing in the log
+# to say so. Measured before this ran: `rm config.yaml` as the agent, restart,
+# and the gateway came up with that default and zero platform connections.
 set -eu
 
 . /usr/local/lib/plow/root-path.sh
 
 CONFIG=/var/lib/hermes/config.yaml
 
-# -L first and on its own: a dangling symlink is not -e, and a symlink to a
-# directory is not -f, so neither of the other tests catches every shape.
-if [ -L "$CONFIG" ] || { [ -e "$CONFIG" ] && [ ! -f "$CONFIG" ]; }; then
-  echo "00-plow-sanitize: $CONFIG is not a regular file -- removing it" >&2
+# One question, asked the safe way round: is this a regular file that is not a
+# symlink? `-f` follows links, so `-L` has to be asked first and separately;
+# after that, everything else -- directory, FIFO, dangling link, nothing at
+# all -- fails `-f` and is dealt with the same way.
+if [ -L "$CONFIG" ] || [ ! -f "$CONFIG" ]; then
+  echo "00-plow-sanitize: $CONFIG is not a regular file -- restoring the image's copy" >&2
   # -r because a directory is one of the shapes, and -f because a dangling
-  # symlink is another. Neither follows the link.
+  # symlink is another and an absent file is a third. Neither follows the link.
   rm -rf "$CONFIG"
+  cp /opt/hermes/plow-seed/config.yaml "$CONFIG"
 fi

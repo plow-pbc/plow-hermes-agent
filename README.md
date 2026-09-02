@@ -142,9 +142,12 @@ and back.
 
 Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image ships
 one, at `/var/lib/hermes/SOUL.md`, root-owned in a sticky home so a turn can
-neither rewrite nor unlink it — the same pair protects `config.yaml`'s
-ownership, and nothing deeper: entries the agent owns, `skills/` included, it
-can still remove. A variant replaces or extends it in its own
+neither rewrite nor unlink it. That protects what root owns and nothing else:
+`config.yaml` is handed to the agent on purpose — the chat plugin has to
+rewrite it — so the agent can delete it or put something else in its place, and
+`skills/` likewise. What covers those is restoration, not permission: first
+boot puts back a `config.yaml` that is missing or is not a regular file, from a
+copy outside every home. A variant replaces or extends `SOUL.md` in its own
 layer — see below; first boot re-asserts root ownership either way.
 
 A `first-boot.d` hook that fails fails first boot. `plow-init` is a oneshot and

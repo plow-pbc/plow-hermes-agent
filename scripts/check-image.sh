@@ -48,4 +48,16 @@ PY
 printf '%s\n' "$out"
 [[ "$out" == *PLUGIN_IMPORT_OK* ]] \
   || { echo "the import probe did not run" >&2; exit 1; }
-echo "ok: $image builds and plow_chat imports on the pinned runtime" >&2
+
+# The gateway unit overrides environment the upstream image set for a different
+# home, and a stale override is invisible: the gateway boots, serves, and only
+# denies writes once the agent reaches for a file. The probe is a file rather
+# than a heredoc because bash 3.2 — what macOS still ships — mis-parses a
+# heredoc inside a command substitution.
+out="$(docker run --rm --interactive --platform linux/amd64 --user 10000:10000 \
+  --entrypoint /opt/hermes/.venv/bin/python "$image" - < scripts/probe-write-safe-root.py)"
+
+printf '%s\n' "$out"
+[[ "$out" == *WRITE_SAFE_ROOT_OK* ]] \
+  || { echo "the write-safe-root probe did not run" >&2; exit 1; }
+echo "ok: $image builds, plow_chat imports, and the agent may write its own home" >&2

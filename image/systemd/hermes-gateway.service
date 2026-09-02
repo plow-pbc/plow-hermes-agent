@@ -9,6 +9,11 @@ User=hermes
 Group=hermes
 EnvironmentFile=/var/lib/hermes/.env
 Environment=HERMES_HOME=/var/lib/hermes
+# The upstream image sets both of these to /opt/data, and systemd hands its
+# own inherited environment to the units it starts — so overriding the home
+# alone left the write guard pointed at a directory the agent never uses, and
+# every write_file into its own home came back denied.
+Environment=HERMES_WRITE_SAFE_ROOT=/var/lib/hermes
 Environment=API_SERVER_HOST=127.0.0.1
 Environment=API_SERVER_PORT=8642
 Environment=PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

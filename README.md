@@ -19,14 +19,16 @@ Docker, and a phone that can text. The agent runs against production Plow.
 
 ```sh
 export PLOW_AGENT_IMAGE=public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
-umask 077                                            # .env is a live credential
+touch .env && chmod 600 .env                         # a live credential
 docker compose run --rm agent plow-activate > .env   # prints a code; text it
 docker compose up -d                                 # boots the agent
 ```
 
-The `umask` is not decoration: the shell creates that file, and under the usual
-`022` it would be world-readable — a bearer token every account on the machine
-can read.
+That first line is not decoration. `>` creates the file under the shell's
+umask, which is usually `022` — a bearer token every account on the machine can
+read — and on a second activation it does not create anything at all: it
+truncates the file that is already there and keeps whatever mode it had. Making
+the file first and setting the mode covers both.
 
 The compose default names a tag that does not exist, so an unset variable fails
 on the pull rather than booting some other commit's image. List the real ones —
@@ -72,7 +74,7 @@ stack's own network so the API is reached by container name — no host port to
 guess, and no `PLOW_AGENT_IMAGE` to set:
 
 ```sh
-umask 077
+touch .env && chmod 600 .env
 docker compose -f compose.yml -f compose.e2e.yml run --rm agent \
   plow-activate --api-base http://api:8000 > .env
 docker compose -f compose.yml -f compose.e2e.yml up -d

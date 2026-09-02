@@ -1,1 +1,1 @@
-/etc/s6-overlay/scripts/plow-init
+/command/with-contenv /etc/s6-overlay/scripts/plow-init

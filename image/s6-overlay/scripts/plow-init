@@ -30,3 +30,26 @@ fi
 # strictly better for running late, so the duplicate costs one extra log line
 # and buys a first boot that behaves the same with or without a host drop-in.
 /usr/local/lib/plow/first-boot.sh
+
+# Fail closed on a credential-free boot.
+#
+# The gateway comes up either way: it serves its loopback API and runs the cron
+# scheduler with no adapter attached, which looks healthy to every probe and is
+# an agent nobody can reach. The dotenv is the cloud path's source and the
+# container environment is the local one, so this reads both and asks the same
+# question of each.
+#
+# `plow-init` is a oneshot every service depends on, so exiting here starts
+# nothing, and S6_BEHAVIOUR_IF_STAGE2_FAILS=2 takes PID 1 down with it —
+# visibly dead rather than quietly deaf.
+if [ -f /var/lib/hermes/.env ]; then
+  set -a
+  . /var/lib/hermes/.env
+  set +a
+fi
+
+if [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
+  echo "plow-init: PLOW_AGENT_TOKEN is unset — no credential in /var/lib/hermes/.env" >&2
+  echo "plow-init: nor in the container environment. Refusing to start a gateway nobody can reach." >&2
+  exit 1
+fi

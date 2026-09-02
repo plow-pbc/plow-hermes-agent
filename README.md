@@ -100,8 +100,11 @@ failure that builds clean and boots looking healthy:
 - the restart Plow's credential update performs hands back a NEW process that
   is listening — otherwise an update verifies the credential the old process is
   still holding.
-- a `first-boot.d` hook that exits non-zero leaves the gateway unstarted and
-  `/init` exiting non-zero.
+- a `first-boot.d` hook that exits non-zero, and a boot with no
+  `PLOW_AGENT_TOKEN`, both leave the gateway unstarted and `/init` exiting
+  non-zero. The second matters because the gateway comes up perfectly well
+  without a credential: it serves its API and runs cron with no adapter
+  attached, and no owner can reach it.
 
 Multi-platform bake needs a `docker-container` builder
 (`docker buildx create --driver docker-container`); the default driver builds

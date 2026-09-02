@@ -7,8 +7,9 @@ supervised by [s6-overlay](https://github.com/just-containers/s6-overlay),
 reachable only through Plow Chat. One image serves two paths: exe.dev unpacks it
 into a VM rootfs and boots its `Cmd`, and `docker run` boots the same `Cmd` in a
 container — `/init` either way, so what the developer runs is what the tenant
-gets. The image is credential-free and tenant-free — provisioning writes
-`/var/lib/hermes/.env` and flips one YAML boolean; it installs no code.
+gets. The image is credential-free and tenant-free — provisioning drops two
+lines at `/var/lib/plow/credentials` and the image does the rest; it installs no
+code.
 
 The bake builds `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac can
 run it natively; the tags published so far carry `amd64` alone.
@@ -133,10 +134,51 @@ and back.
 | `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into the home, so the agent's phone line does not live in a directory the agent can write |
 | `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway seeds them into a home that lacks them and updates the ones the agent has not customised. A skill the agent deleted stays deleted — the runtime records that and honours it |
 | `/usr/local/lib/plow/first-boot.sh` | the ownership and mode work, then the `first-boot.d/*.sh` drop-ins |
-| `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh` |
+| `/var/lib/plow/credentials` | not shipped — the host's drop-in, if there is one; see below |
+| `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh`, then reads the credential drop-in and renders the dotenv |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
 | `/usr/local/bin/plow-restart-gateway` | restarts the gateway through the supervisor and waits for the listener |
 | `/usr/local/bin/plow-activate` | mints this agent's Plow credential and prints its dotenv |
+
+## The credential drop-in
+
+Provisioning's whole involvement with a tenant's VM is one file, `root:root`
+`0600` (`0400` is accepted too; nothing looser is):
+
+```
+PLOW_API_BASE=https://api.plow.dev
+PLOW_AGENT_TOKEN=<the agent's own credential>
+```
+
+`plow-init` reads it as data — never sourced, and only those two names, so a
+provisioner that has drifted ahead of the image is refused rather than
+half-obeyed — and then asks Plow the rest with that credential:
+`GET $PLOW_API_BASE/v1/agents/cloud/me` answers with the home channel and the
+relay endpoint. From those, the image renders `/var/lib/hermes/.env` itself,
+deriving the inference key alias, generating an `API_SERVER_KEY` on first boot
+and defaulting `TZ` to UTC.
+
+The drop-in wins over the persisted dotenv, and the file is left in place: a
+rotation is a rewrite of those two lines and a restart, with no shell into the
+agent. The identity is re-asked on every boot, so a home channel or a relay
+that moved moves with it — and a relay that went away is switched off rather
+than reinstated from the copy the home kept.
+
+Plow being unreachable is not an outage the agent has to share. An agent that
+already ran comes up on the identity its home recorded, provided that identity
+was recorded against the very token the drop-in is holding; it says so in the
+log. A first boot, or a token rotated while Plow was down, has no such record
+and refuses to start rather than adopt one that belongs to somebody else —
+`plow-init` is a oneshot every service depends on, so nothing starts.
+
+That fallback is for *silence* only: no connection, no answer in time, a 429 or
+a 5xx. If Plow **answers** that the credential is not this agent's — a 401, 403
+or 404 — or answers with something that is not an identity, the recorded one is
+precisely what must not be reused, and the boot fails closed however well the
+token matches.
+
+Locally there is no such file, and the container environment carries the same
+values instead.
 
 ## Identity
 
@@ -225,6 +267,21 @@ failure that builds clean and boots looking healthy:
 - the restart Plow's credential update performs hands back a NEW process that
   is listening — otherwise an update verifies the credential the old process is
   still holding.
+- the cloud shape end to end, against a stubbed identity endpoint: a boot with
+  nothing but the credential drop-in renders the whole dotenv and comes up with
+  the relay on, a rewrite of that file plus a restart puts the new token in the
+  gateway's own environment, and a withdrawn relay switches off rather than
+  surviving in the home.
+- an unreachable Plow does not take a provisioned agent down: it boots on the
+  identity its home recorded for that same credential — and refuses when the
+  credential has been rotated since, rather than adopting an identity that was
+  recorded for a different one.
+- silence and refusal are told apart: a 503 or a dead socket falls back, while a
+  404 for the same unchanged token, or an answer carrying no `chat_uid`, starts
+  nothing.
+- a drop-in that cannot be used starts nothing: Plow unreachable on a first
+  boot, a name the contract does not allow, or a file that is not root:root at
+  0600 (or 0400) — 0644, 0620 and 0602 are each refused by name.
 - a `first-boot.d` hook that exits non-zero, and a boot with no
   `PLOW_AGENT_TOKEN`, both leave the gateway unstarted and `/init` exiting
   non-zero. The second matters because the gateway comes up perfectly well

@@ -28,6 +28,13 @@
 # provider, and a dotenv naming anything else is refused rather than filtered:
 # a file carrying a variable this image does not set is a file whose author
 # expected something that is not going to happen.
+#
+# The allowlist is a parameter because there are two files and they are not
+# equally trusted. The home's dotenv is this image's own record and may carry
+# everything below; the host's credential drop-in is written by a provisioner
+# that is meant to know nothing about this image, so it is held to the shorter
+# list -- anything else it names is a provisioner reaching into a home that is
+# not its own, and is refused rather than quietly ignored.
 
 PLOW_DOTENV_ALLOWED='
 PLOW_API_BASE
@@ -39,6 +46,17 @@ API_SERVER_KEY
 TZ
 HERMES_PROVIDER
 HERMES_MODEL
+'
+
+# What a host may put in /var/lib/plow/credentials. Where to reach Plow and
+# what to present when it gets there -- and nothing else. Everything the agent
+# additionally needs to run is either asked of Plow with that credential (the
+# home channel, the relay endpoint) or derived here (the inference key alias,
+# the server key, the timezone), so a host that sets any of them is deciding
+# something it was told not to and is refused rather than obeyed.
+PLOW_CREDENTIALS_ALLOWED='
+PLOW_API_BASE
+PLOW_AGENT_TOKEN
 '
 
 # Strip one layer of matching outer quotes, the shape `shlex.quote` produces.
@@ -57,8 +75,10 @@ plow_dotenv_unquote() {
   esac
 }
 
+# plow_load_dotenv <file> [allowlist]
 plow_load_dotenv() {
   plow_dotenv_file=$1
+  plow_dotenv_allowed=${2:-$PLOW_DOTENV_ALLOWED}
   [ -f "$plow_dotenv_file" ] || return 0
   plow_dotenv_line=0
   while IFS= read -r plow_dotenv_raw || [ -n "$plow_dotenv_raw" ]; do
@@ -80,7 +100,7 @@ plow_load_dotenv() {
         ;;
     esac
     case "
-$PLOW_DOTENV_ALLOWED" in
+$plow_dotenv_allowed" in
       *"
 $plow_dotenv_key
 "*) ;;
@@ -94,6 +114,7 @@ $plow_dotenv_key
     fi
     export "$plow_dotenv_key=$(plow_dotenv_unquote "$plow_dotenv_val")"
   done < "$plow_dotenv_file"
-  unset plow_dotenv_file plow_dotenv_line plow_dotenv_raw plow_dotenv_key plow_dotenv_val
+  unset plow_dotenv_file plow_dotenv_allowed plow_dotenv_line plow_dotenv_raw \
+        plow_dotenv_key plow_dotenv_val
   return 0
 }

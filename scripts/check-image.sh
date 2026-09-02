@@ -98,7 +98,12 @@ printf '%s\n' "$out"
 # will not open its loopback API server without one, and generating it is init's
 # job on this path, so leaving it out is what puts that under test.
 name="check-image-$$"
-cleanup() { docker rm -f "$name" >/dev/null 2>&1 || true; rm -rf "${hookdir:-}"; }
+cleanup() {
+  docker rm -f "$name" ${stub:+"$stub"} >/dev/null 2>&1 || true
+  [[ -n "${net:-}" ]] && docker network rm "$net" >/dev/null 2>&1
+  rm -rf ${hookdir:+"$hookdir"} ${cloud_dir:+"$cloud_dir"}
+  return 0
+}
 trap cleanup EXIT
 
 docker run -d --name "$name" --platform "$platform" \
@@ -428,6 +433,286 @@ add_other_server true
 echo "relay off: another operator's MCP server kept its own enabled: true"
 
 docker rm -f "$name" >/dev/null
+
+# --- 5c. the cloud shape: a credential drop-in and nothing else ------------
+#
+# What a VM host actually leaves behind: two lines at /var/lib/plow/credentials,
+# root 0600, and no container environment at all. Everything else the agent
+# runs on -- its home channel, its relay endpoint, its inference key alias, its
+# server key, its timezone -- the image derives or asks Plow for, which is the
+# whole of the contract plow.git implements against.
+#
+# The identity endpoint is stubbed rather than mocked away: the retry, the
+# bearer header, the JSON shape and the rotation all live in the request, and a
+# test that skipped it would be testing the parts that were never in doubt.
+cloud_dir="$(mktemp -d)"
+mkdir -p "$cloud_dir/plow"
+
+net="check-image-net-$$"
+docker network create "$net" >/dev/null
+
+stub="check-image-stub-$$"
+docker run -d --name "$stub" --platform "$platform" --network "$net" \
+  --network-alias stub \
+  --volume "$PWD/scripts/stub-agents-cloud-me.py:/stub.py:ro" \
+  --entrypoint /opt/hermes/.venv/bin/python "$image" /stub.py >/dev/null
+
+# The drop-in, written the way a host writes it: root-owned 0600. Through a tar
+# stream because `docker cp` of a plain file carries the ownership of whoever
+# ran it -- a developer's uid, which init refuses on sight, and the refusal
+# would read as a bug in the image rather than in the fixture. Ownership is
+# then asserted anyway, because a fixture that lands differently makes every
+# check after it meaningless.
+cred_mode=0600   # what the host writes; a case below varies it deliberately
+write_credentials() {   # write_credentials <api base> <token> [extra line...]
+  local base="$1" token="$2"; shift 2
+  { printf 'PLOW_API_BASE=%s\n' "$base"
+    printf 'PLOW_AGENT_TOKEN=%s\n' "$token"
+    for line in "$@"; do printf '%s\n' "$line"; done
+  } > "$cloud_dir/plow/credentials"
+  chmod "$cred_mode" "$cloud_dir/plow/credentials"
+}
+
+# The directory too, every time: the image does not ship /var/lib/plow, the
+# host creates it, and untarring it again is how a rotation replaces the file.
+place_credentials() {
+  tar -cf - -C "$cloud_dir" --uid 0 --gid 0 --uname root --gname root plow \
+    | docker cp - "$name:/var/lib" >/dev/null
+}
+
+# A rotation: the same VM, the file replaced under it.
+drop_credentials() {   # drop_credentials <api base> <token> [extra line...]
+  write_credentials "$@"
+  place_credentials
+}
+
+# A provision: a container with no environment at all, and the drop-in placed
+# before it ever starts.
+cloud_container() {   # cloud_container <api base> <token> [extra line...]
+  write_credentials "$@"
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker create --name "$name" --platform "$platform" --network "$net" "$image" >/dev/null
+  place_credentials
+}
+
+cloud_container http://stub:8080 cloud-token-one
+docker start "$name" >/dev/null
+await_gateway
+
+owner="$(docker exec "$name" stat -c '%a %U:%G' /var/lib/plow/credentials)"
+printf 'credentials: %s\n' "$owner"
+[[ "$owner" == "600 root:root" ]] \
+  || { echo "the fixture did not land as the host writes it: $owner" >&2; exit 1; }
+
+# The rendered dotenv, in full: every name the contract says the image derives
+# for itself, and none it was handed.
+rendered="$(docker exec "$name" cat /var/lib/hermes/.env)"
+printf '%s\n' "$rendered"
+grep -qx 'PLOW_API_BASE=http://stub:8080'                                        <<<"$rendered" || { echo ".env lost the API base" >&2; exit 1; }
+grep -qx 'PLOW_AGENT_TOKEN=cloud-token-one'                                      <<<"$rendered" || { echo ".env lost the credential" >&2; exit 1; }
+grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one'                                       <<<"$rendered" || { echo "the home channel did not come from the identity endpoint" >&2; exit 1; }
+grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-one'                            <<<"$rendered" || { echo "the inference key alias was not derived from the credential" >&2; exit 1; }
+grep -qx 'PLOW_MCP_URL=http://stub:8080/v1/relay/devices/dev_cloud_check/mcp'    <<<"$rendered" || { echo "the relay URL did not come from the identity endpoint" >&2; exit 1; }
+grep -qx 'TZ=UTC'                                                                <<<"$rendered" || { echo "TZ did not default to UTC" >&2; exit 1; }
+grep -q  '^API_SERVER_KEY=..*'                                                   <<<"$rendered" || { echo "no API_SERVER_KEY was generated" >&2; exit 1; }
+
+mode="$(docker exec "$name" stat -c '%a %U:%G' /var/lib/hermes/.env)"
+printf '.env: %s\n' "$mode"
+[[ "$mode" == "640 root:hermes" ]] \
+  || { echo "the rendered .env is $mode, not 640 root:hermes" >&2; exit 1; }
+
+[[ "$(mcp_state plow)" == true ]] \
+  || { echo "a cloud-shaped boot did not enable the relay: $(mcp_state plow)" >&2; exit 1; }
+echo "cloud boot: gateway up, identity fetched, relay enabled, .env 0640 root:hermes"
+
+# --- 5d. rotation is a rewrite of that file and a restart ------------------
+#
+# The host never shells in. It replaces the two lines and restarts the VM, and
+# the agent must come back holding the new credential -- in the gateway's own
+# environment, not merely on disk -- with whatever else Plow now says about it.
+# The persisted dotenv is the thing that would silently win here, which is why
+# the *process* is asked rather than the file alone.
+key_before="$(docker exec "$name" sed -n 's/^API_SERVER_KEY=//p' /var/lib/hermes/.env)"
+
+drop_credentials http://stub:8080 cloud-token-two
+docker restart "$name" >/dev/null
+await_gateway
+
+seen="$(docker exec --user 10000:10000 "$name" sh -c '
+  pid=$(pgrep -f "hermes gateway run" | head -1)
+  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_AGENT_TOKEN=//p"')"
+[[ "$seen" == cloud-token-two ]] \
+  || { echo "the restarted gateway is still holding '$seen'" >&2; exit 1; }
+docker exec "$name" grep -qx 'PLOW_AGENT_TOKEN=cloud-token-two' /var/lib/hermes/.env \
+  || { echo "the persisted dotenv still names the replaced token" >&2; exit 1; }
+docker exec "$name" grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-two' /var/lib/hermes/.env \
+  || { echo "the inference key alias kept the replaced token" >&2; exit 1; }
+docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_two' /var/lib/hermes/.env \
+  || { echo "the home channel was not re-asked after the rotation" >&2; exit 1; }
+key_after="$(docker exec "$name" sed -n 's/^API_SERVER_KEY=//p' /var/lib/hermes/.env)"
+[[ -n "$key_after" && "$key_before" == "$key_after" ]] \
+  || { echo "the rotation changed the server key: $key_before -> $key_after" >&2; exit 1; }
+echo "rotation: new token in the gateway's environment and its dotenv, server key kept"
+
+# A tenant whose relay went away. The dotenv still carries the URL from when it
+# had one, and the file fills only what nothing else set -- so nothing but an
+# explicit removal keeps a dead relay from coming back enabled.
+drop_credentials http://stub:8080 cloud-token-norelay
+docker restart "$name" >/dev/null
+await_gateway
+docker exec "$name" grep -q '^PLOW_MCP_URL=' /var/lib/hermes/.env \
+  && { echo "a withdrawn relay survived in the dotenv" >&2; exit 1; }
+[[ "$(mcp_state plow)" == false ]] \
+  || { echo "a withdrawn relay is still enabled: $(mcp_state plow)" >&2; exit 1; }
+echo "withdrawn relay: gone from the dotenv and switched off in the config"
+
+# --- 5d2. an outage does not take a provisioned agent down -----------------
+#
+# Asking Plow on every boot is what keeps the home channel current, and it is
+# also a dependency every restart now has. An agent that has already been told
+# who it is must not lose its phone line because Plow was unreachable for the
+# ninety seconds its VM was rebooting -- but it must not adopt an identity that
+# was never recorded against the credential it is holding either, which is the
+# same volume-outlives-the-tenant problem the dotenv rules exist for.
+#
+# The stub is stopped rather than repointed: the drop-in still names the same
+# base, which is what a real outage looks like from inside the VM.
+logs_since() {   # logs_since <line count before the boot>
+  docker logs "$name" 2>&1 | tail -n +"$(( $1 + 1 ))"
+}
+log_lines() { docker logs "$name" 2>&1 | wc -l | tr -d ' '; }
+
+# The rule is about who said what, not about whether something went wrong.
+# Plow ANSWERING that this credential is not this agent's -- revoked, or an
+# agent that no longer exists -- is the case where a recorded identity is
+# exactly what must not be reused, and it must refuse even though the token in
+# the file is the one that identity was recorded under. The credential does not
+# change here; only the answer does.
+stub_control() { docker exec "$stub" sh -c "$1"; }
+
+pre="$(log_lines)"
+stub_control 'touch /revoked'
+docker restart "$name" >/dev/null
+docker wait "$name" >/dev/null
+out="$(logs_since "$pre")"
+grep -q 'not falling back to a persisted identity' <<<"$out" \
+  || { echo "a 404 from Plow fell back to the persisted identity" >&2; printf '%s\n' "$out" >&2; exit 1; }
+grep -q 'hermes-gateway: starting' <<<"$out" \
+  && { echo "the gateway started on a credential Plow refused" >&2; exit 1; }
+code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
+[[ "$code" != 0 ]] || { echo "a refused credential left PID 1 exiting 0" >&2; exit 1; }
+echo "Plow says 404 for this credential: gateway never started, PID 1 exited $code"
+
+# ...and an answer that is not an identity, which waiting cannot improve either.
+stub_control 'rm -f /revoked; touch /garbage'
+pre="$(log_lines)"
+docker restart "$name" >/dev/null
+docker wait "$name" >/dev/null
+out="$(logs_since "$pre")"
+grep -q 'not falling back to a persisted identity' <<<"$out" \
+  || { echo "a malformed answer fell back to the persisted identity" >&2; printf '%s\n' "$out" >&2; exit 1; }
+echo "Plow answers with no chat_uid: gateway never started"
+
+# A 5xx is the other half of the same distinction: Plow said nothing usable,
+# but it did not say no. Same silence as a dead socket, so the fallback applies.
+stub_control 'rm -f /garbage; touch /unavailable'
+pre="$(log_lines)"
+docker restart "$name" >/dev/null
+await_gateway
+out="$(logs_since "$pre")"
+grep -q 'booting on the identity this home already holds' <<<"$out" \
+  || { echo "a 503 did not fall back to the persisted identity" >&2; printf '%s\n' "$out" >&2; exit 1; }
+echo "Plow says 503: gateway up on the identity the home already held"
+stub_control 'rm -f /unavailable'
+
+docker stop "$stub" >/dev/null
+
+# No answer at all, which is the case the fallback was written for. Same token
+# as the boot before it -- `cloud-token-norelay`, whose identity this home
+# recorded a moment ago.
+pre="$(log_lines)"
+docker restart "$name" >/dev/null
+await_gateway
+out="$(logs_since "$pre")"
+grep -q 'booting on the identity this home already holds' <<<"$out" \
+  || { echo "an outage did not fall back to the persisted identity" >&2; printf '%s\n' "$out" >&2; exit 1; }
+docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_three' /var/lib/hermes/.env \
+  || { echo "the fallback boot did not keep the recorded home channel" >&2; exit 1; }
+echo "outage, same credential: gateway up on the identity the home already held"
+
+# ...and a token this home has never seen is the case that must still refuse.
+# A rotation the host performed while Plow was down: adopting the recorded home
+# channel here would put the new tenant in the previous one's chat. (A first
+# boot is the same shape with no dotenv at all -- that is the `unreachable
+# Plow` case below.)
+pre="$(log_lines)"
+drop_credentials http://stub:8080 cloud-token-two
+docker restart "$name" >/dev/null
+docker wait "$name" >/dev/null
+out="$(logs_since "$pre")"
+grep -q 'this home holds no identity for this credential' <<<"$out" \
+  || { echo "a rotated token adopted an identity recorded for another one" >&2; printf '%s\n' "$out" >&2; exit 1; }
+grep -q 'hermes-gateway: starting' <<<"$out" \
+  && { echo "the gateway started on an identity that was not its own" >&2; exit 1; }
+code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
+[[ "$code" != 0 ]] || { echo "a refused fallback left PID 1 exiting 0" >&2; exit 1; }
+echo "outage, rotated credential: gateway never started, PID 1 exited $code"
+
+docker start "$stub" >/dev/null
+docker rm -f "$name" >/dev/null
+
+# --- 5e. a credential drop-in that cannot be used starts nothing -----------
+#
+# Three ways it goes wrong, all of them ending the same way: no gateway, PID 1
+# dead. A half-configured agent passes every other probe in this file.
+refused() {   # refused <label> <expected log line> ; container already created
+  docker start "$name" >/dev/null 2>&1 || true
+  docker wait "$name" >/dev/null 2>&1 || true
+  local out; out="$(docker logs "$name" 2>&1)"
+  grep -q "$2" <<<"$out" || { echo "$1: expected '$2' in the log" >&2; printf '%s\n' "$out" >&2; exit 1; }
+  grep -q 'hermes-gateway: starting' <<<"$out" && { echo "$1: the gateway started anyway" >&2; exit 1; }
+  local code; code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
+  [[ "$code" != 0 ]] || { echo "$1: PID 1 exited 0" >&2; exit 1; }
+  echo "$1: gateway never started, PID 1 exited $code"
+}
+
+# Plow never answers. The retry is what makes this take a moment, and failing
+# closed is what makes it safe: a stale home channel is not a fallback.
+cloud_container http://stub:9 cloud-token-one
+refused "unreachable Plow" 'gave up asking Plow who this agent is'
+
+# A host deciding something the contract does not let it decide. The home
+# channel is Plow's answer, not the host's claim, and a file naming it is a
+# provisioner out of date with the image -- refused rather than half-obeyed.
+cloud_container http://stub:8080 cloud-token-one 'PLOW_HOME_CHANNEL=cht_host_says'
+refused "an out-of-contract key" 'sets PLOW_HOME_CHANNEL, which this image does not read'
+
+# A drop-in anyone but root can write is a drop-in anyone but root can point at
+# their own API base, and the agent's bearer token goes with it; one anyone can
+# READ is the credential itself handed over. Neither is a bit-mask question --
+# 0644 and 0620 both pass a rule that only forbids the write bits -- so the
+# accepted modes are enumerated, and every neighbour of them is checked.
+for bad_mode in 0666 0644 0620 0602; do
+  cred_mode="$bad_mode"
+  cloud_container http://stub:8080 cloud-token-one
+  refused "a drop-in at $bad_mode" 'expected a root:root file with mode 600 or 400'
+done
+cred_mode=0600
+
+# ...and the one mode besides 0600 that is not a loosening: the same file, with
+# root's own write taken away. A host that hardens further must not be refused.
+cred_mode=0400
+cloud_container http://stub:8080 cloud-token-one
+docker start "$name" >/dev/null
+await_gateway
+docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one' /var/lib/hermes/.env \
+  || { echo "a 0400 drop-in did not render the dotenv" >&2; exit 1; }
+echo "drop-in at 0400: accepted, gateway up"
+cred_mode=0600
+
+docker rm -f "$name" "$stub" >/dev/null
+docker network rm "$net" >/dev/null
+stub=; net=
 
 # --- 6. a failed init starts nothing ---------------------------------------
 #

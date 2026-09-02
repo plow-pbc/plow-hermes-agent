@@ -1,0 +1,43 @@
+# Running this agent on your own machine. The cloud path never reads this file:
+# there, exe.dev unpacks the same image into a VM and provisioning writes the
+# dotenv. Here, `env_file:` is what provisioning would have written.
+name: plow-hermes-agent
+
+services:
+  agent:
+    # This repository is where the image comes from, so the default is the
+    # checkout. Published images are
+    # public.ecr.aws/e1h7x4a2/plow-cloud-agents, one immutable `base-<sha>` tag
+    # per commit -- set PLOW_AGENT_IMAGE to one of those to run it instead.
+    image: ${PLOW_AGENT_IMAGE:-plow-hermes-agent:local}
+    build: .
+    # Written by `plow-activate`, which needs this file not to exist yet.
+    env_file:
+      - path: .env
+        required: false
+    # The agent's home: its sessions, memories, credentials and the config.yaml
+    # it rewrites. Deleting this volume deletes the agent, not just its
+    # container.
+    volumes:
+      - hermes-home:/var/lib/hermes
+    restart: unless-stopped
+    # Hermes checkpoints the session and releases its compression lease on
+    # SIGTERM, and s6 allows that 30s. Docker's own deadline has to sit outside
+    # s6's or the checkpoint is cut off and the next boot cannot append to that
+    # transcript until the orphaned lease expires.
+    stop_grace_period: 35s
+    # No ports. The gateway's only path to Plow is the socket it opens
+    # outbound; its local API server is loopback-only and holds credentials.
+
+    # End-to-end against a Plow stack running on this machine: uncomment both
+    # `networks:` blocks and set PLOW_API_BASE=http://api:8000 in .env, which
+    # reaches the API by container name and so is independent of host ports.
+    networks: [default, plow]
+
+volumes:
+  hermes-home:
+
+networks:
+  plow:
+    name: plow_default
+    external: true

@@ -13,6 +13,79 @@ gets. The image is credential-free and tenant-free — provisioning writes
 Built for `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac runs it
 natively rather than under emulation.
 
+## Run locally
+
+Docker, and a phone that can text. The agent runs against production Plow.
+
+```sh
+docker compose run --rm agent plow-activate > .env   # prints a code; text it
+docker compose up -d                                 # boots the agent
+```
+
+`plow-activate` starts a Plow activation, prints the code and the number to
+text it to, waits for that text, and writes the five variables the agent needs
+to stdout -- which is why the redirect is the whole of "configure it". It then
+narrows its own credential to that agent's line before printing anything, so
+what lands in `.env` reaches this agent's chats and Plow's inference and
+nothing else on the account. Prompts and progress go to stderr, so they stay
+out of the file.
+
+Then text the number the agent answers on, and it replies. `docker compose
+logs -f agent` is what it is doing.
+
+`.env.example` documents the five variables. `.env` holds live credentials and
+is gitignored; `docker compose down -v` deletes the agent's home volume along
+with them, and there is no second copy.
+
+### Against a Plow stack on this machine
+
+Uncomment the two `networks:` blocks in `compose.yml`, then point the agent at
+the API by container name rather than by host port:
+
+```sh
+docker compose run --rm agent plow-activate --api-base http://api:8000 > .env
+docker compose up -d
+```
+
+The activation code arrives at the local stack's iMessage twin instead of a
+phone; deliver it there the way that stack documents.
+
+## Change inference provider
+
+Inference goes through Plow by default, on the same credential as chat. Any
+provider Hermes supports works instead. Two lines and a login:
+
+```sh
+printf 'HERMES_PROVIDER=openai-codex\nHERMES_MODEL=gpt-5.5\n' >> .env
+docker compose run --rm agent hermes auth add openai-codex   # device-code login
+docker compose up -d
+```
+
+`HERMES_MODEL` is not optional when switching: the seeded default model id
+belongs to the Plow provider and means nothing to another one.
+
+A provider that takes an API key needs no login, just the variable it reads:
+
+```sh
+printf 'HERMES_PROVIDER=anthropic\nHERMES_MODEL=claude-sonnet-4-5\nANTHROPIC_API_KEY=sk-ant-...\n' >> .env
+docker compose up -d
+```
+
+Switching back needs both lines, because a model id belongs to the provider it
+was written for:
+
+```sh
+printf 'HERMES_PROVIDER=plow\nHERMES_MODEL=anthropic/claude-sonnet-5\n' >> .env
+docker compose up -d
+```
+
+Boot writes `model.default` only when `HERMES_MODEL` is set, so dropping the
+line leaves the previous provider's model id behind rather than restoring the
+one the image shipped. Nothing else has to be restored: the Plow provider's own
+block stays in `config.yaml` untouched the whole time, and the login
+`hermes auth add` writes lives in the home volume and survives a switch away
+and back.
+
 ## What is in the image
 
 | path | what it is |
@@ -40,7 +113,7 @@ A variant is a persona plus skills — a separate repository whose Dockerfile
 starts from this image and adds nothing else:
 
 ```dockerfile
-FROM public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<sha>
+FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 
 # Identity — replace it outright:
 COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
@@ -126,6 +199,30 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 ## Publishing
 
 Not automated yet. Built and gated locally, pushed by hand to
-`public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<full commit sha>` — one
+`public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
 immutable tag per commit. Plow's own deploy tooling moves the blessed
 `hermes-prod` tag; publishing a `base-<sha>` tag blesses nothing.
+
+One repository holds this image and every variant image built from it, so a tag
+has to say which commit it came from: `base-` plus the **full 40-character SHA
+of the commit in the repository that built it** — this one for the base image,
+the variant's own for a variant. The tag does not name the variant, and there is
+no `latest`.
+
+Which SHA a given agent runs is not recorded here. Plow pins it per provider in
+`api/cloud-agents/agents.json` in `plow-pbc/plow`, and composes the image
+reference from it; publishing a tag makes it available, that file is what makes
+it live.
+
+The tags that exist are readable from the registry itself. On the web:
+<https://gallery.ecr.aws/e1h7x4a2/plow-cloud-agents>. From a shell with no AWS
+credential at all — the repository is public, so an anonymous pull token is
+enough:
+
+```sh
+token=$(curl -fsSL \
+  'https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:e1h7x4a2/plow-cloud-agents:pull' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -fsSL -H "Authorization: Bearer $token" \
+  https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
+```

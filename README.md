@@ -13,7 +13,9 @@ boolean; it installs no code.
 
 | path | what it is |
 |---|---|
-| `/var/lib/hermes/` | the agent's home (`HERMES_HOME`), uid 10000, mode 0700 — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, mode 0600), `skills/`, `plugins/plow_chat/` |
+| `/var/lib/hermes/` | the agent's home (`HERMES_HOME`), uid 10000, mode 0700 — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, mode 0600), `skills/` |
+| `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into a home, so the Docker fleet — which bind-mounts an agent home over `HERMES_HOME` — reads the same copy this VM does |
+| `/opt/hermes/skills/` | the same seed skills again, as bundled skills, which the gateway reconciles into `$HERMES_HOME/skills` for a runtime whose home is not the baked one |
 | `/usr/local/lib/plow/first-boot.sh` | runs the `first-boot.d/*.sh` drop-ins |
 | `/etc/systemd/system/` | `agent-setup.service` (runs the host's `/exe.dev/setup` once) and `hermes-gateway.service`, which `Requires=` it |
 
@@ -46,6 +48,13 @@ COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
 #    && rm /tmp/persona.md
 
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
+# VM-only, and that is the whole contract: the Docker fleet does not consume
+# variant *images*. agent-mgr runs this base image and bind-mounts a variant
+# repository's skills into the agent home through its own compose override, so
+# a variant layer under /var/lib/hermes/skills/ is never the delivery path
+# there. A variant that ever IS built for the fleet needs the bundled placement
+# too -- `COPY skills/ /opt/hermes/skills/` -- because the mounted home hides
+# this layer.
 
 # First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
 COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh

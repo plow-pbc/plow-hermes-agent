@@ -37,7 +37,7 @@ out="$(docker run --rm --interactive --platform linux/amd64 --user 10000:10000 \
 import importlib.util
 
 spec = importlib.util.spec_from_file_location(
-    "plow_chat", "/var/lib/hermes/plugins/plow_chat/__init__.py"
+    "plow_chat", "/opt/hermes/plugins/plow_chat/__init__.py"
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -60,4 +60,15 @@ out="$(docker run --rm --interactive --platform linux/amd64 --user 10000:10000 \
 printf '%s\n' "$out"
 [[ "$out" == *WRITE_SAFE_ROOT_OK* ]] \
   || { echo "the write-safe-root probe did not run" >&2; exit 1; }
+# The fleet reads its skills from the bundled tree, not from the baked one its
+# bind-mounted home hides, and the gateway reconciles that tree as uid 10000 --
+# so a skill it cannot READ is a skill the fleet silently never gets. Checked as
+# that uid because root can read a tree nobody else can, which is the failure
+# this would otherwise miss.
+docker run --rm --platform linux/amd64 --user 10000:10000 \
+  --entrypoint /usr/bin/test "$image" \
+  -r /opt/hermes/skills/productivity/plow-connectors/SKILL.md \
+  || { echo "the bundled skills tree is missing or unreadable by uid 10000" >&2; exit 1; }
+echo "ok: bundled skills are readable by the gateway user" >&2
+
 echo "ok: $image builds, plow_chat imports, and the agent may write its own home" >&2

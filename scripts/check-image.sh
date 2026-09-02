@@ -25,8 +25,15 @@
 #                                    the agent its own identity to unlink; and
 #                                    a second boot must be a no-op, because on
 #                                    the cloud path first boot runs twice.
-#   5. a failed init starts nothing — an agent whose credential injection died
+#   5. the restart path still works — plow.git's credential update shells in and
+#                                    restarts the gateway; it must come back as a
+#                                    NEW process that is listening.
+#   6. a failed init starts nothing — an agent whose credential injection died
 #                                    must not come up half-configured.
+#   7. a credential-free boot starts nothing — the gateway serves its API and
+#                                    runs cron with no adapter attached, so
+#                                    every other probe passes and no owner can
+#                                    reach the agent.
 #
 # linux/amd64 is the default because that is what the VM host unpacks; PLATFORM
 # overrides it so the architecture a developer's Mac runs natively is checked
@@ -148,14 +155,36 @@ grep -qx 'HERMES_WRITE_SAFE_ROOT=/var/lib/hermes' <<<"$env1" || { echo "the gate
 # `docker restart` is the second first boot: the same home, already bootstrapped,
 # init running again over it. Cloud provisioning does the same thing within one
 # boot, because the host's setup script calls first-boot.sh and so does init.
+# The dotenv the VM host writes, written the way it writes it: root, 0600,
+# owned by whoever ran the setup script. Init normalizes it, and it is in the
+# snapshot because it is what a rendered provider block would be written into —
+# an init that rewrote it on every boot would be invisible without this.
+docker exec "$name" sh -c 'umask 077; cat > /var/lib/hermes/.env <<EOF
+PLOW_API_BASE=https://api.invalid
+PLOW_HOME_CHANNEL=cht_boot_check
+PLOW_AGENT_TOKEN=boot-check-not-a-credential
+HERMES_CUSTOM_PLOW_API_KEY=boot-check-not-a-credential
+API_SERVER_KEY=0123456789abcdef0123456789abcdef
+EOF
+chown 10000:10000 /var/lib/hermes/.env'
+
+# Running state, not the compiled service list: s6-rc lists what the database
+# says should be up, which is identical whether a longrun is answering or
+# restart-looping. s6-svstat asks the supervisor.
 state() {
   docker exec "$name" sh -c '
     stat -c "%a %U:%G %n" /var/lib/hermes /var/lib/hermes/skills \
-                          /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml
-    sha256sum /var/lib/hermes/config.yaml
-    /command/s6-rc -a list | sort | tr "\n" " "; echo'
+                          /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
+                          /var/lib/hermes/.env
+    sha256sum /var/lib/hermes/config.yaml /var/lib/hermes/.env
+    for svc in /run/service/*/; do
+      case "$svc" in *s6*) continue;; esac
+      printf "%s up=%s\n" "${svc%/}" "$(/command/s6-svstat -o up "$svc")"
+    done'
 }
 
+docker restart "$name" >/dev/null
+await_gateway
 first="$(state)"
 printf '%s\n' "$first"
 
@@ -165,6 +194,8 @@ grep -q '^3770 root:hermes /var/lib/hermes$'        <<<"$first" || { echo "home 
 grep -q '^3770 root:hermes /var/lib/hermes/skills$' <<<"$first" || { echo "skills/ lost 3770 root:hermes" >&2; exit 1; }
 grep -q ' root:root /var/lib/hermes/SOUL.md$'       <<<"$first" || { echo "SOUL.md is not root-owned" >&2; exit 1; }
 grep -q ' hermes:hermes /var/lib/hermes/config.yaml$' <<<"$first" || { echo "config.yaml is not hermes-owned" >&2; exit 1; }
+grep -q '^640 root:hermes /var/lib/hermes/.env$'    <<<"$first" || { echo ".env is not 0640 root:hermes" >&2; exit 1; }
+grep -q '^/run/service/hermes-gateway up=true$'     <<<"$first" || { echo "the gateway is not up" >&2; exit 1; }
 
 docker restart "$name" >/dev/null
 await_gateway
@@ -174,9 +205,29 @@ diff <(printf '%s\n' "$first") <(printf '%s\n' "$second") \
   || { echo "init is not idempotent: the second boot changed the listing above" >&2; exit 1; }
 echo "second boot left config, ownership, modes and service state byte-identical"
 
+# --- 5. the restart path plow.git uses -----------------------------------
+#
+# Credential updates and their rollback shell in and restart the gateway. The
+# shim has to reach the supervisor and the supervisor has to hand back a new
+# process that is listening, or an update verifies the credential the OLD
+# process is still holding.
+before_pid="$(docker exec "$name" /command/s6-svstat -o pid /run/service/hermes-gateway)"
+docker exec "$name" systemctl restart --no-block hermes-gateway
+after_pid="$(docker exec "$name" /command/s6-svstat -o pid /run/service/hermes-gateway)"
+[[ "$before_pid" != "$after_pid" ]] \
+  || { echo "the restart left the same process running (pid $before_pid)" >&2; exit 1; }
+echo "restart: pid $before_pid -> $after_pid, listening again"
+
+# And it refuses everything else rather than returning 0 for work it did not do.
+if docker exec "$name" systemctl status hermes-gateway >/dev/null 2>&1; then
+  echo "the systemctl shim answered a command it does not implement" >&2
+  exit 1
+fi
+echo "shim: refuses anything but restart"
+
 docker rm -f "$name" >/dev/null
 
-# --- 5. a failed init starts nothing ---------------------------------------
+# --- 6. a failed init starts nothing ---------------------------------------
 #
 # A first-boot.d drop-in that exits non-zero is the cheapest stand-in for the
 # real failure: the VM host's credential injection dying halfway. Init is a
@@ -187,6 +238,7 @@ printf '#!/bin/sh\nexit 9\n' > "$hookdir/99-fail.sh"
 chmod 0755 "$hookdir/99-fail.sh"
 
 docker run --name "$name" --platform "$platform" \
+  --env PLOW_AGENT_TOKEN=boot-check-not-a-credential \
   --volume "$hookdir:/usr/local/lib/plow/first-boot.d:ro" \
   "$image" >/dev/null 2>&1 || true
 
@@ -196,5 +248,19 @@ grep -q 'hermes-gateway: starting' <<<"$out" && { echo "the gateway started desp
 code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
 [[ "$code" != 0 ]] || { echo "a failed init left PID 1 exiting 0" >&2; exit 1; }
 echo "failed init: gateway never started, PID 1 exited $code"
+
+docker rm -f "$name" >/dev/null
+
+# --- 7. a credential-free boot starts nothing ------------------------------
+#
+# The gateway comes up without a credential: it serves its loopback API and
+# runs the cron scheduler with no adapter attached. Every probe passes and no
+# owner can reach the agent, which is the failure this refuses to ship.
+docker run --name "$name" --platform "$platform" "$image" >/dev/null 2>&1 || true
+
+out="$(docker logs "$name" 2>&1)"
+grep -q 'PLOW_AGENT_TOKEN is unset' <<<"$out" || { echo "a credential-free boot was not refused" >&2; printf '%s\n' "$out" >&2; exit 1; }
+grep -q 'hermes-gateway: starting' <<<"$out" && { echo "the gateway started with no credential" >&2; exit 1; }
+echo "no credential: gateway never started, PID 1 exited $(docker inspect -f '{{.State.ExitCode}}' "$name")"
 
 echo "ok: $image ($platform) builds, imports, boots under s6, keeps its hardening, and fails closed" >&2

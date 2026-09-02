@@ -105,6 +105,25 @@ COPY --chmod=0755 image/bin/plow-restart-gateway image/bin/systemctl /usr/local/
 # entries survive alongside ours.
 COPY image/s6-overlay/ /etc/s6-overlay/
 
+# One gateway, and one supervisor that owns it.
+#
+# The upstream image supports several agent "profiles" in one container: a
+# cont-init hook registers a service per profile under /run/service/ and
+# auto-starts any whose last recorded state was running. On a first boot there
+# is no recorded state and nothing starts, so the collision is invisible — but
+# the second boot starts `gateway-default`, which runs `hermes gateway run
+# --replace` against the same home, and `--replace` is precisely what makes it
+# kill the supervised gateway this image ships. Measured: after one
+# `docker restart`, hermes-gateway is down and a profile service nobody
+# declared holds the port, with HOME and the working directory pointed at
+# /opt/data.
+#
+# This image runs exactly one agent, so the multi-profile machinery has nothing
+# to reconcile. Removing the hook is what keeps `hermes-gateway` the service
+# that is actually running — the thing that depends on plow-init, drops to uid
+# 10000, and binds the loopback port provisioning waits for.
+RUN rm -f /etc/cont-init.d/02-reconcile-profiles
+
 # A failed oneshot must be loud. Without this s6 logs the failure, brings up
 # what it can and leaves PID 1 running, so a VM whose credential injection
 # died looks alive from the outside. 2 makes /init exit instead.

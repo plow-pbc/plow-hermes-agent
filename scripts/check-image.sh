@@ -37,7 +37,7 @@ out="$(docker run --rm --interactive --platform linux/amd64 --user 10000:10000 \
 import importlib.util
 
 spec = importlib.util.spec_from_file_location(
-    "plow_chat", "/var/lib/hermes/plugins/plow_chat/__init__.py"
+    "plow_chat", "/opt/hermes/plugins/plow_chat/__init__.py"
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)

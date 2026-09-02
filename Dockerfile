@@ -30,6 +30,13 @@ FROM base
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Hermes checkpoints and releases its compression lease on SIGTERM; s6 otherwise
+# allows 3s, and the replacement gateway then cannot append to that transcript
+# until the orphaned lease expires. Inert here, where systemd runs the gateway
+# and its 90s default already covers it -- it is for the Docker fleet, which
+# boots this same image through the s6 entrypoint.
+ENV S6_SERVICES_GRACETIME=30000
+
 # The container base has no init; the host boots the image's Cmd as PID 1.
 RUN apt-get update -qq \
  && apt-get install -y -qq --no-install-recommends systemd systemd-sysv sudo tzdata \
@@ -39,6 +46,20 @@ RUN apt-get update -qq \
 # uid/gid 10000 (hermes) already exists in this base.
 COPY image/seed/ /var/lib/hermes/
 
+# The same skills again, as BUNDLED skills. The two runtimes reach them
+# differently and both copies are load-bearing.
+#
+# Here, the baked tree under the home is what the ownership block below can make
+# root-owned and sticky, so a turn cannot rename a skill out of the scan path.
+# A synced copy is hermes-owned by construction and gets none of that, which is
+# why this is not replaced by the bundled one.
+#
+# The Docker fleet bind-mounts an agent home over HERMES_HOME, so it never sees
+# the baked tree at all. It reads the bundled one, which the gateway reconciles
+# into $HERMES_HOME/skills on every boot -- updating a copy the agent has not
+# touched, leaving a customised one alone, never re-adding one it deleted.
+COPY image/seed/skills/ /opt/hermes/skills/
+
 ARG PLOW_REVISION
 LABEL org.opencontainers.image.revision="${PLOW_REVISION}"
 LABEL org.opencontainers.image.source="https://github.com/plow-pbc/plow-hermes-agent"
@@ -47,7 +68,12 @@ LABEL org.opencontainers.image.source="https://github.com/plow-pbc/plow-hermes-a
 # and the plugin named by the image cannot disagree.
 ARG PLOW_CHAT_PLUGIN_SHA
 LABEL co.plow.plow-chat-plugin.revision="${PLOW_CHAT_PLUGIN_SHA}"
-COPY --from=plugin /staged/plow_chat/ /var/lib/hermes/plugins/plow_chat/
+# Bundled, and deliberately in exactly one place -- a second copy under a home
+# would register the platform twice. /opt/hermes is image-owned on both runtimes,
+# where a home-seeded plugin is invisible to the Docker fleet's bind mount, and
+# bundled is the placement Platform._missing_() already accepts for
+# Platform("plow_chat") at import time.
+COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 
 # The agent owns its state; it does not own its identity.
 #

@@ -13,7 +13,9 @@ boolean; it installs no code.
 
 | path | what it is |
 |---|---|
-| `/var/lib/hermes/` | the agent's home (`HERMES_HOME`), uid 10000, mode 0700 — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, mode 0600), `skills/`, `plugins/plow_chat/` |
+| `/var/lib/hermes/` | the agent's home (`HERMES_HOME`), uid 10000, mode 0700 — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, mode 0600), `skills/` |
+| `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into a home, so the Docker fleet — which bind-mounts an agent home over `HERMES_HOME` — reads the same copy this VM does |
+| `/opt/hermes/skills/` | the same seed skills again, as bundled skills, which the gateway reconciles into `$HERMES_HOME/skills` for a runtime whose home is not the baked one |
 | `/usr/local/lib/plow/first-boot.sh` | runs the `first-boot.d/*.sh` drop-ins |
 | `/etc/systemd/system/` | `agent-setup.service` (runs the host's `/exe.dev/setup` once) and `hermes-gateway.service`, which `Requires=` it |
 

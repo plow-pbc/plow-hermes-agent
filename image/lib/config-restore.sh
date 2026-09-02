@@ -35,8 +35,13 @@ plow_config_is_ours() {
 # The staging copy is a sibling because a rename only works within a filesystem,
 # and the mode and owner are set on it before the rename rather than on the
 # target after: at no point does the real name refer to a file that is
-# half-written, or momentarily root-owned. `rm` first because a rename onto a
-# directory fails, and a directory is one of the shapes being replaced.
+# half-written, or momentarily root-owned.
+#
+# The target is removed first only when a rename cannot replace it -- a
+# directory, or anything else that is not a plain file. Over a regular file the
+# rename IS the replacement, atomically, and removing it first would open the
+# one gap this function exists to close: a moment with no config.yaml at all,
+# which is exactly what the guards downstream would then have to recover from.
 plow_publish_config() {
   plow_cfg=/var/lib/hermes/config.yaml
   plow_cfg_tmp="$plow_cfg.plow-staged"
@@ -44,7 +49,9 @@ plow_publish_config() {
   cp "$1" "$plow_cfg_tmp"
   chmod 0640 "$plow_cfg_tmp"
   chown hermes:hermes "$plow_cfg_tmp"
-  rm -rf -- "$plow_cfg"
+  if [ -L "$plow_cfg" ] || { [ -e "$plow_cfg" ] && [ ! -f "$plow_cfg" ]; }; then
+    rm -rf -- "$plow_cfg"
+  fi
   mv -f "$plow_cfg_tmp" "$plow_cfg"
   unset plow_cfg plow_cfg_tmp
 }

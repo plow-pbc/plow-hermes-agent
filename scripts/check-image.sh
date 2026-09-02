@@ -68,7 +68,7 @@ out="$(docker run --rm --interactive --platform "$platform" --user 10000:10000 \
 import importlib.util
 
 spec = importlib.util.spec_from_file_location(
-    "plow_chat", "/var/lib/hermes/plugins/plow_chat/__init__.py"
+    "plow_chat", "/opt/hermes/plugins/plow_chat/__init__.py"
 )
 module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
@@ -289,5 +289,18 @@ out="$(docker logs "$name" 2>&1)"
 grep -q 'PLOW_AGENT_TOKEN is unset' <<<"$out" || { echo "a credential-free boot was not refused" >&2; printf '%s\n' "$out" >&2; exit 1; }
 grep -q 'hermes-gateway: starting' <<<"$out" && { echo "the gateway started with no credential" >&2; exit 1; }
 echo "no credential: gateway never started, PID 1 exited $(docker inspect -f '{{.State.ExitCode}}' "$name")"
+
+# --- 8. the bundled skills are readable by the gateway user -----------------
+#
+# A home the image did not populate -- a volume or a bind mount over
+# HERMES_HOME -- hides the baked tree, and the gateway reconciles the bundled
+# one into it as uid 10000. A skill that uid cannot READ is a skill such a home
+# silently never gets. Checked as that uid, because root can read a tree nobody
+# else can, which is the failure this would otherwise miss.
+docker run --rm --platform "$platform" --user 10000:10000 \
+  --entrypoint /usr/bin/test "$image" \
+  -r /opt/hermes/skills/productivity/plow-connectors/SKILL.md \
+  || { echo "the bundled skills tree is missing or unreadable by uid 10000" >&2; exit 1; }
+echo "bundled skills: readable by the gateway user"
 
 echo "ok: $image ($platform) builds, imports, boots under s6, keeps its hardening, and fails closed" >&2

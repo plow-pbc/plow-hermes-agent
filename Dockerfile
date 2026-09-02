@@ -41,8 +41,30 @@ FROM base
 ENV HERMES_HOME=/var/lib/hermes \
     HERMES_WRITE_SAFE_ROOT=/var/lib/hermes
 
+# Hermes checkpoints its session and releases its compression lease on SIGTERM,
+# and s6 otherwise allows a service 3s before continuing shutdown -- the
+# replacement gateway then cannot append to that transcript until the orphaned
+# lease expires. s6 supervises the gateway on both paths this image serves, so
+# this is load-bearing on both.
+ENV S6_SERVICES_GRACETIME=30000
+
 # uid/gid 10000 (hermes) already exists in this base.
 COPY image/seed/ /var/lib/hermes/
+
+# The same skills again, as BUNDLED skills, and both copies are load-bearing.
+#
+# The baked tree is where this image's gateway looks, because HERMES_HOME *is*
+# /var/lib/hermes; the bundled copy does not replace it. What the bundled one
+# covers is a home the image did not populate -- a volume or bind mount over
+# HERMES_HOME hides the baked tree, and the gateway reconciles the bundled tree
+# into $HERMES_HOME/skills on every boot: updating a copy the agent has not
+# touched, leaving a customised one alone, never re-adding one it deleted.
+#
+# NB the ownership block below root-owns only the top-level skills/ directory;
+# `chown -R` leaves every category and skill under it owned by uid 10000, so a
+# turn can still rename one out of the scan path. Pre-existing, tracked
+# separately -- do not read the sticky bit as protecting the baked skills.
+COPY image/seed/skills/ /opt/hermes/skills/
 
 ARG PLOW_REVISION
 LABEL org.opencontainers.image.revision="${PLOW_REVISION}"
@@ -52,7 +74,12 @@ LABEL org.opencontainers.image.source="https://github.com/plow-pbc/plow-hermes-a
 # and the plugin named by the image cannot disagree.
 ARG PLOW_CHAT_PLUGIN_SHA
 LABEL co.plow.plow-chat-plugin.revision="${PLOW_CHAT_PLUGIN_SHA}"
-COPY --from=plugin /staged/plow_chat/ /var/lib/hermes/plugins/plow_chat/
+# Bundled, and deliberately in exactly one place -- a second copy under a home
+# would register the platform twice. /opt/hermes is image-owned and survives a
+# mount over the home, where a home-seeded plugin would not, and bundled is the
+# placement Platform._missing_() already accepts for Platform("plow_chat") at
+# import time.
+COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 
 # The agent owns its state; it does not own its identity.
 #

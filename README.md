@@ -10,8 +10,8 @@ container — `/init` either way, so what the developer runs is what the tenant
 gets. The image is credential-free and tenant-free — provisioning writes
 `/var/lib/hermes/.env` and flips one YAML boolean; it installs no code.
 
-Built for `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac runs it
-natively rather than under emulation.
+The bake builds `linux/amd64` and `linux/arm64`, so an Apple Silicon Mac can
+run it natively; the tags published so far carry `amd64` alone.
 
 ## Run locally
 
@@ -32,6 +32,11 @@ out of the file.
 
 Then text the number the agent answers on, and it replies. `docker compose
 logs -f agent` is what it is doing.
+
+The compose file builds the image from this checkout, which on an Apple Silicon
+Mac means a native `arm64` one; the published `base-<sha>` tags are `amd64`
+only today, so `PLOW_AGENT_IMAGE` pointed at one of those runs under emulation
+until the publisher ships a multi-arch index.
 
 `.env.example` documents the five variables. `.env` holds live credentials and
 is gitignored; `docker compose down -v` deletes the agent's home volume along
@@ -90,11 +95,14 @@ and back.
 
 | path | what it is |
 |---|---|
-| `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned), `skills/`, `plugins/plow_chat/` |
+| `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned), `skills/` |
+| `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into a home, so it survives a volume or bind mount over `HERMES_HOME` |
+| `/opt/hermes/skills/` | the same seed skills again, as bundled skills, which the gateway reconciles into `$HERMES_HOME/skills` for a runtime whose home is not the baked one |
 | `/usr/local/lib/plow/first-boot.sh` | the ownership and mode work, then the `first-boot.d/*.sh` drop-ins |
 | `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh` |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
 | `/usr/local/bin/plow-restart-gateway` | restarts the gateway through the supervisor and waits for the listener |
+| `/usr/local/bin/plow-activate` | mints this agent's Plow credential and prints its dotenv |
 
 ## Identity
 
@@ -125,6 +133,8 @@ COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
 #    && rm /tmp/persona.md
 
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
+# A variant whose agents run on a mounted home needs the bundled placement too
+# -- `COPY skills/ /opt/hermes/skills/` -- because the mount hides this layer.
 
 # First-boot work, if any. A drop-in, NOT a replacement for first-boot.sh.
 COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50-variant.sh

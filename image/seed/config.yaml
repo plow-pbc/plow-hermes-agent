@@ -71,6 +71,14 @@ providers:
 # notes without suppressing the message they were written beside.
 display:
   memory_notifications: "off"
+  # When a write_file or patch fails and nothing later writes that path,
+  # Hermes appends a "⚠️ File-mutation verifier" footer to the reply —
+  # container paths and a traceback, addressed to a developer reading a
+  # terminal. Delivered to an owner over iMessage it is unreadable noise in
+  # the middle of an answer; seen live during onboarding. The model still
+  # gets the tool's failure in its own turn, so the guard against a silent
+  # over-claim survives; only the footer to the owner stops.
+  file_mutation_verifier: false
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

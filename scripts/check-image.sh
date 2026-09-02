@@ -386,23 +386,28 @@ await_gateway
   || { echo "the restored config lost the relay: enabled=$(mcp_state plow)" >&2; exit 1; }
 echo "relay: enabled through a seed restore, not left behind by the one-shot provisioner"
 
-# An operator's own MCP server, added to the same block. Init writes one flag
-# and one server's flag: anything else in mcp_servers is theirs, on or off, and
-# stays as they left it. Asserted with the relay ON here and OFF below, because
-# the failure would look different in each direction.
-add_other_server() {
+# An operator's own MCP server, added to the same block. Init writes one flag,
+# for one server: anything else in mcp_servers is theirs, on or off, and stays
+# as they left it.
+#
+# The other server always starts on the OPPOSITE value to the one the relay
+# flag is about to be written with. That is the whole point of the case: give
+# it the same value and an edit that wrote every server in the block would
+# leave it looking correct, and the check would pass under the bug it exists
+# to catch.
+add_other_server() {   # add_other_server <enabled>
   docker exec "$name" sed -i \
-    '/^mcp_servers:$/a\  other:\n    url: https://example.invalid\n    enabled: true' \
+    "/^mcp_servers:\$/a\\  other:\\n    url: https://example.invalid\\n    enabled: $1" \
     /var/lib/hermes/config.yaml
   docker restart "$name" >/dev/null
   await_gateway
 }
-add_other_server
-[[ "$(mcp_state other)" == true ]] \
-  || { echo "init switched off an MCP server it does not own: other=$(mcp_state other)" >&2; exit 1; }
+add_other_server false
+[[ "$(mcp_state other)" == false ]] \
+  || { echo "init switched ON an MCP server it does not own: other=$(mcp_state other)" >&2; exit 1; }
 [[ "$(mcp_state plow)" == true ]] \
   || { echo "the relay flag stopped being written once another server was present" >&2; exit 1; }
-echo "relay on: another operator's MCP server kept its own enabled: true"
+echo "relay on: another operator's MCP server kept its own enabled: false"
 
 docker rm -f "$name" >/dev/null
 
@@ -415,12 +420,12 @@ docker run -d --name "$name" --platform "$platform" \
   --env HERMES_CUSTOM_PLOW_API_KEY=boot-check-not-a-credential \
   "$image" >/dev/null
 await_gateway
-add_other_server
+add_other_server true
 [[ "$(mcp_state other)" == true ]] \
-  || { echo "init switched off an MCP server it does not own: other=$(mcp_state other)" >&2; exit 1; }
+  || { echo "init switched OFF an MCP server it does not own: other=$(mcp_state other)" >&2; exit 1; }
 [[ "$(mcp_state plow)" == false ]] \
   || { echo "the relay came up enabled with no PLOW_MCP_URL: plow=$(mcp_state plow)" >&2; exit 1; }
-echo "relay off: the flag went to plow alone, the other server untouched"
+echo "relay off: another operator's MCP server kept its own enabled: true"
 
 docker rm -f "$name" >/dev/null
 

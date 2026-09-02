@@ -108,7 +108,8 @@ name="check-image-$$"
 cleanup() {
   docker rm -f "$name" ${stub:+"$stub"} >/dev/null 2>&1 || true
   [[ -n "${net:-}" ]] && docker network rm "$net" >/dev/null 2>&1
-  rm -rf ${hookdir:+"$hookdir"} ${cloud_dir:+"$cloud_dir"} ${host_dir:+"$host_dir"}
+  rm -rf ${hookdir:+"$hookdir"} ${cloud_dir:+"$cloud_dir"} ${host_dir:+"$host_dir"} \
+         ${legacy_dir:+"$legacy_dir"}
   return 0
 }
 trap cleanup EXIT
@@ -134,6 +135,10 @@ docker run -d --name "$stub" --platform "$platform" --network "$net" \
 cred_mode=0600   # what the host writes; a case below varies it deliberately
 write_credentials() {   # write_credentials <api base> <token> [extra line...]
   local base="$1" token="$2"; shift 2
+  # Removed before it is written: one case below leaves this fixture at 0400,
+  # and truncating a read-only file fails even for its owner -- which would
+  # hand the next case the PREVIOUS credential and let it assert against it.
+  rm -f "$cloud_dir/plow/credentials"
   { printf 'PLOW_API_BASE=%s\n' "$base"
     printf 'PLOW_AGENT_TOKEN=%s\n' "$token"
     for line in "$@"; do printf '%s\n' "$line"; done
@@ -416,32 +421,30 @@ for block in '^platforms:$' '^  plow_chat:$' '^providers:$' '^  plow:$' '^model:
     || { echo "the restored config.yaml is missing $block -- upstream's default won the slot" >&2; exit 1; }
 done
 
-# Nothing outside the model block differs from the seed, comparing settings
-# rather than bytes. The runtime rewrites this file through its own YAML writer
-# on the way up -- comments go, quoting changes -- so a byte comparison would
-# fail on a config that is semantically the seed. Comments are not the
-# contract; the keys are. plow-config rewrites `model.provider` and
-# `model.default` by design, and anything else changing means the file that
-# came back is not the one the image ships.
-# Temp files, not process substitution: `docker exec sh -c` is dash in this
-# image, which has no `<(...)`, so that spelling was a syntax error -- and the
-# `|| true` on the end swallowed it, leaving an assertion that passed on a
-# probe which never ran. The sentinel is the other half: an empty diff and a
-# probe that died both look like "no drift" without it.
-probe="$(docker exec "$name" sh -c '
-  set -e
-  strip() { grep -vE "^[[:space:]]*(#|$)" "$1" > "$2" || true; }
-  strip /opt/hermes/plow-seed/config.yaml /tmp/seed.stripped
-  strip /var/lib/hermes/config.yaml /tmp/live.stripped
-  diff /tmp/seed.stripped /tmp/live.stripped || true
-  rm -f /tmp/seed.stripped /tmp/live.stripped
-  echo DRIFT_PROBE_OK')"
+# ...and nothing else about it differs from the seed. Compared by setting
+# rather than by bytes: the runtime rewrites this file through its own YAML
+# writer on the way up -- comments go, quoting changes, the version marker is
+# migrated -- so a text comparison fails on a config that is semantically the
+# seed, and fails every boot. Comments are not the contract; the keys and their
+# values are, and anything changing among them means the file that came back is
+# not the one the image ships. What is written on purpose -- the provider, the
+# model and the relay flag -- is excluded here and asserted on its own above.
+#
+# Through the YAML parser, in a file rather than a heredoc: bash 3.2 -- what
+# macOS still ships -- mis-parses a heredoc inside a command substitution, and
+# `docker exec sh -c` is dash in this image, which has no process substitution.
+# The previous spelling used both, so it was a syntax error whose exit status
+# the trailing `|| true` swallowed: `drift` came back empty and the assertion
+# passed on a probe that had never run. The sentinel is the other half of the
+# fix -- an empty diff and a dead probe stop looking alike.
+probe="$(docker exec --interactive "$name" /opt/hermes/.venv/bin/python - \
+  < scripts/probe-config-drift.py)"
 grep -qx DRIFT_PROBE_OK <<<"$probe" \
   || { echo "the config-drift probe did not run to completion:" >&2
        printf '%s\n' "$probe" >&2; exit 1; }
-drift="$(grep -E '^[<>]' <<<"$probe" | grep -vE '^[<>]   *(provider|default):' || true)"
+drift="$(grep '^DRIFT ' <<<"$probe" || true)"
 [[ -z "$drift" ]] \
-  || { echo "the restored config.yaml differs from the seed outside the model block:" >&2
+  || { echo "the restored config.yaml differs from the seed outside what is written on purpose:" >&2
        printf '%s\n' "$drift" >&2; exit 1; }
 echo "restored config.yaml is the image's: plow_chat platform, plow provider, no drift from the seed"
 
@@ -767,6 +770,54 @@ echo "bind-mount rotation: new token promoted, identity re-asked"
 docker rm -f "$name" "$stub" >/dev/null
 docker network rm "$net" >/dev/null
 stub=; net=
+
+# --- 5g. the path the provisioner in plow.git still uses -------------------
+#
+# Today's provisioner writes /var/lib/hermes/.env itself and leaves no
+# credential drop-in at all: the tenant's identity is in that file rather than
+# in an answer from Plow. Taking away the container-environment branch must not
+# have taken this one with it -- the drop-in is read WHEN THERE IS ONE, and
+# this is the boot where there is not.
+#
+# Nothing may be asked of Plow here, which is what the unresolvable API base is
+# for: an image that called the identity endpoint on this path would spend its
+# retries and then refuse to boot, and `await_gateway` would say so.
+legacy_dir="$(mktemp -d)"
+{ printf 'PLOW_AGENT_TOKEN=legacy-token\n'
+  printf 'HERMES_CUSTOM_PLOW_API_KEY=legacy-token\n'
+  printf 'PLOW_HOME_CHANNEL=cht_legacy\n'
+  printf 'PLOW_API_BASE=https://api.invalid\n'
+  printf 'API_SERVER_KEY=%s\n' "$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf 'TZ=UTC\n'
+  printf 'PLOW_MCP_URL=https://api.invalid/v1/relay/devices/dev_legacy/mcp\n'
+} > "$legacy_dir/.env"
+chmod 600 "$legacy_dir/.env"
+
+docker rm -f "$name" >/dev/null 2>&1 || true
+docker create --name "$name" --platform "$platform" "$image" >/dev/null
+# uid 10000, mode 600: the ownership and mode the provisioner leaves behind.
+tar -cf - -C "$legacy_dir" --uid 10000 --gid 10000 --uname hermes --gname hermes .env \
+  | docker cp - "$name:/var/lib/hermes" >/dev/null
+docker start "$name" >/dev/null
+await_gateway
+
+[[ "$(mcp_state plow)" == true ]] \
+  || { echo "a legacy .env did not enable the relay: $(mcp_state plow)" >&2; exit 1; }
+seen="$(docker exec --user 10000:10000 "$name" sh -c '
+  pid=$(pgrep -f "hermes gateway run" | head -1)
+  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_HOME_CHANNEL=//p"')"
+[[ "$seen" == cht_legacy ]] \
+  || { echo "the gateway did not come up on the provisioner's home channel: '$seen'" >&2; exit 1; }
+
+# ...and the file is left exactly as it was written. Rewriting it here would be
+# the image deciding it knows better than the provisioner that wrote it, on a
+# path where it has asked Plow nothing.
+docker exec "$name" cat /var/lib/hermes/.env > "$legacy_dir/after"
+diff "$legacy_dir/.env" "$legacy_dir/after" \
+  || { echo "the provisioner's dotenv was rewritten" >&2; exit 1; }
+echo "legacy .env, no drop-in: gateway up on it, relay enabled, file untouched"
+
+docker rm -f "$name" >/dev/null
 
 # --- 6. a failed init starts nothing ---------------------------------------
 #

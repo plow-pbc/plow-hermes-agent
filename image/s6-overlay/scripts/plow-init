@@ -90,8 +90,8 @@ import sys
 import urllib.error
 import urllib.request
 
-TEMPORARY = 75   # EX_TEMPFAIL: retry, and fall back to a recorded identity
-DEFINITIVE = 78  # EX_CONFIG: Plow answered; do not fall back on this
+TEMPORARY = 75   # EX_TEMPFAIL: nobody answered; worth asking again
+DEFINITIVE = 78  # EX_CONFIG: Plow answered, and asking again cannot change it
 
 
 def fail(status, message):

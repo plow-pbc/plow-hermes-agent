@@ -1,8 +1,8 @@
 #!/bin/sh
-# Point the agent at its inference provider, from the environment it booted
-# with. The last step of the `plow-init` oneshot, which has already loaded and
-# exported both sources of that environment -- the container's, which is where
-# a developer's `env_file:` arrives, and the dotenv a VM host wrote.
+# Point the agent at its inference provider. The last step of the `plow-init`
+# oneshot, which has already exported the tenant's values -- from the
+# credential and from Plow -- and left HERMES_PROVIDER and HERMES_MODEL as the
+# container environment set them.
 #
 # Only `model.provider` and `model.default` are written. Everything else the
 # Plow provider needs -- its base_url, its key_env, its model list -- is baked

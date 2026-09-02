@@ -1,9 +1,10 @@
 #!/command/with-contenv sh
 # The Hermes gateway, supervised, as uid 10000.
 #
-# `with-contenv` is what makes one image serve both paths: it hands this script
-# the container environment, which on a developer's machine is where the tenant
-# values arrive (`env_file:`), and which on a VM is simply the image's own.
+# `with-contenv` hands this script the container environment. Nothing about
+# this tenant arrives that way -- the dotenv below is the authority, and the
+# names it owns are dropped from the environment first -- but the image's own
+# ENV does, and so do HERMES_PROVIDER and HERMES_MODEL.
 set -eu
 
 . /usr/local/lib/plow/root-path.sh

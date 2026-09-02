@@ -79,8 +79,7 @@ name="check-image-$$"
 cleanup() {
   docker rm -f "$name" ${stub:+"$stub"} >/dev/null 2>&1 || true
   [[ -n "${net:-}" ]] && docker network rm "$net" >/dev/null 2>&1
-  rm -rf ${hookdir:+"$hookdir"} ${cloud_dir:+"$cloud_dir"} ${host_dir:+"$host_dir"} \
-         ${legacy_dir:+"$legacy_dir"}
+  rm -rf ${hookdir:+"$hookdir"} ${cloud_dir:+"$cloud_dir"} ${host_dir:+"$host_dir"}
   [[ -n "${vol:-}" ]] && docker volume rm "$vol" >/dev/null 2>&1
   return 0
 }
@@ -780,6 +779,31 @@ provider_boot() {   # provider_boot [--env ...]
   cloud_extra=()
   await_gateway
 }
+# One config section, parsed and flattened, for comparing across a boot. Text
+# would not do: the runtime rewrites this file through its own writer, so the
+# bytes differ where the settings do not.
+config_section() {   # config_section <top-level key>...
+  local out
+  out="$(docker exec --interactive "$name" /opt/hermes/.venv/bin/python - "$@" \
+    < scripts/probe-config-section.py)"
+  grep -qx SECTION_PROBE_OK <<<"$out" \
+    || { echo "the config-section probe did not run to completion:" >&2
+         printf '%s\n' "$out" >&2; exit 1; }
+  grep -v '^SECTION_PROBE_OK$' <<<"$out"
+}
+
+# What the agent KEEPS, by path, owner and mode -- a provider login above all.
+# `config.yaml` and `.env` are excluded because a provider switch is defined as
+# rewriting them, and `state/` because it holds the gateway's transient runtime
+# sockets, named after a pid that changes every boot.
+home_inventory() {
+  docker exec "$name" sh -c '
+    find /var/lib/hermes -maxdepth 3 \
+      -path /var/lib/hermes/state -prune -o \
+      ! -name .env ! -name config.yaml \
+      -exec stat -c "%n %U:%G %a" {} + | sort'
+}
+
 model_key() {   # model_key <provider|default>
   docker exec "$name" awk -v want="  $1: " '
     /^[^ ]/ { in_model = ($0 == "model:") }
@@ -796,6 +820,9 @@ docker exec "$name" grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-one' /var/l
   || { echo "the plow inference key was not derived from the credential" >&2; exit 1; }
 # Stands in for a provider login: something the agent owns, in its own home.
 docker exec --user 10000:10000 "$name" sh -c 'printf "a login\n" > /var/lib/hermes/.provider-login'
+# Captured AFTER that write, so the login is part of what must survive.
+providers_before="$(config_section providers)"
+home_before="$(home_inventory)"
 echo "provider default: plow, model $seeded_model, inference key derived from the credential"
 
 provider_boot --env HERMES_PROVIDER=anthropic --env HERMES_MODEL=claude-sonnet-4-5
@@ -803,15 +830,26 @@ provider_boot --env HERMES_PROVIDER=anthropic --env HERMES_MODEL=claude-sonnet-4
   || { echo "the provider switch did not take: $(model_key provider)" >&2; exit 1; }
 [[ "$(model_key default)" == claude-sonnet-4-5 ]] \
   || { echo "the model switch did not take: $(model_key default)" >&2; exit 1; }
-# The Plow provider's own block is left alone, which is what makes switching
-# back one line rather than a restore. Same for the relay flag and the login.
-docker exec "$name" grep -q '^  plow:$' /var/lib/hermes/config.yaml \
-  || { echo "the plow provider block was dropped by the switch" >&2; exit 1; }
+# The provider blocks are left ENTIRELY alone -- not merely still present --
+# which is what makes switching back one line rather than a restore. Compared
+# setting by setting, because "the plow key still exists" would pass on a block
+# whose base_url or key_env had been rewritten underneath it.
+printf '%s\n' "$providers_before" > "$cloud_dir/providers.before"
+config_section providers > "$cloud_dir/providers.after"
+diff "$cloud_dir/providers.before" "$cloud_dir/providers.after" \
+  || { echo "the provider blocks changed across the switch" >&2; exit 1; }
+# ...and nothing the agent had is gone. Not equality: a running gateway writes
+# caches of its own, and a check that failed on those would be reporting normal
+# operation. What must not happen is a LOSS -- a provider login that did not
+# survive the switch is how switching back stops being cheap.
+printf '%s\n' "$home_before" > "$cloud_dir/home.before"
+home_inventory > "$cloud_dir/home.after"
+lost="$(comm -23 "$cloud_dir/home.before" "$cloud_dir/home.after")"
+[[ -z "$lost" ]] \
+  || { echo "the switch lost files the agent owned:" >&2; printf '%s\n' "$lost" >&2; exit 1; }
 [[ "$(mcp_state plow)" == true ]] \
   || { echo "the relay was switched off by a provider change: $(mcp_state plow)" >&2; exit 1; }
-docker exec "$name" grep -qx 'a login' /var/lib/hermes/.provider-login \
-  || { echo "the switch did not preserve what the agent had in its home" >&2; exit 1; }
-echo "provider switch: anthropic/claude-sonnet-4-5, plow block, relay and home login all kept"
+echo "provider switch: anthropic/claude-sonnet-4-5; providers.* and the agent's home byte-identical, relay kept"
 
 provider_boot --env HERMES_PROVIDER=plow --env "HERMES_MODEL=$seeded_model"
 [[ "$(model_key provider)" == plow && "$(model_key default)" == "$seeded_model" ]] \

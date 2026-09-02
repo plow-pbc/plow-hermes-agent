@@ -38,8 +38,8 @@ plow_restore_config 00-plow-sanitize
 #
 # An empty file is enough to stop the copy -- `seed_one` only writes when the
 # destination is absent -- and enough for the parser, which has nothing to
-# refuse. What belongs in it arrives later: the VM host's setup script writes
-# it whole, or `plow-init` fills it from the container environment.
+# refuse. What belongs in it arrives later: `plow-init` renders it from the
+# credential and from Plow's answer about the tenant holding it.
 if [ ! -e /var/lib/hermes/.env ]; then
   umask 077
   : > /var/lib/hermes/.env

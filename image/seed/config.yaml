@@ -20,6 +20,21 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${PLOW_AGENT_TOKEN}"
     enabled: false
+# `clarify` is the tool behind the ❓ rows: it renders a blocking menu and stops
+# the turn until the owner answers it. Over iMessage there is nobody who can --
+# the menu has no rendering in the transport the owner is actually holding, so
+# the turn simply stops. And it has never been reached deliberately: it is what
+# a turn grabs when it cannot find the mechanism it wants, and it fired three
+# times during onboarding as "❓ placeholder".
+#
+# So the tool is taken away rather than forbidden in prose, which held right up
+# until a turn was confused -- exactly when it does not. `clarify` is the only
+# tool in its toolset (tools/clarify_tool.py), so disabling the toolset removes
+# that one and nothing else; the key is read by gateway/run.py.
+agent:
+  disabled_toolsets:
+    - clarify
+
 model:
   default: anthropic/claude-sonnet-5
   provider: plow
@@ -53,6 +68,14 @@ providers:
 # notes without suppressing the message they were written beside.
 display:
   memory_notifications: "off"
+  # When a write_file or patch fails and nothing later writes that path,
+  # Hermes appends a "⚠️ File-mutation verifier" footer to the reply —
+  # container paths and a traceback, addressed to a developer reading a
+  # terminal. Delivered to an owner over iMessage it is unreadable noise in
+  # the middle of an answer; seen live during onboarding. The model still
+  # gets the tool's failure in its own turn, so the guard against a silent
+  # over-claim survives; only the footer to the owner stops.
+  file_mutation_verifier: false
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

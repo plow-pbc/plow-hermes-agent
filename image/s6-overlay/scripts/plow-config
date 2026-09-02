@@ -93,9 +93,16 @@ staged="$(mktemp)"
 cat "$CONFIG" > "$staged"
 set_key "$staged" provider "$provider"
 if [ -n "$model" ]; then set_key "$staged" default "$model"; fi
-# Scoped to the mcp_servers block, and to the one key: the same edit
-# provisioning makes, so a restored config and a provisioned one agree.
-sed -i "/^mcp_servers:\$/,/^[^ ]/ s/^    enabled: .*/    enabled: ${plow_mcp_enabled}/" "$staged"
+# Scoped to mcp_servers.plow and to the one key. Not a sed range: `  plow:` is
+# also a key under `providers:`, and a range over the whole mcp_servers block
+# would set `enabled:` on every server in it -- including one an operator added
+# for something else entirely.
+awk -v flag="$plow_mcp_enabled" '
+  /^[^ ]/          { in_mcp = ($0 == "mcp_servers:") }
+  in_mcp && /^  [^ ]/ { in_plow = ($0 == "  plow:") }
+  in_mcp && in_plow && /^    enabled: / { print "    enabled: " flag; next }
+                   { print }
+' "$staged" > "$staged.mcp" && mv -f "$staged.mcp" "$staged"
 if ! cmp -s "$staged" "$CONFIG"; then
   cat "$staged" > "$CONFIG"
   echo "plow-config: model.provider=${provider}${model:+ model.default=${model}} mcp_servers.plow.enabled=${plow_mcp_enabled}" >&2

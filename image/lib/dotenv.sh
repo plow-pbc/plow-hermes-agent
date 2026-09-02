@@ -7,6 +7,13 @@
 # every line of it a root shell. `PLOW_AGENT_TOKEN=$(id > /tmp/x)` is a command
 # substitution, not a token.
 #
+# The environment wins. A name already set when this runs keeps its value and
+# the file's copy is skipped: locally the container environment is where a
+# rotated credential arrives, and a dotenv persisted in a volume would
+# otherwise reinstate the token it replaced. On a VM nothing sets these before
+# the file is read, so the file remains authoritative there by having no
+# competition rather than by a second rule.
+#
 # `export "$key=$value"` performs one assignment and re-parses nothing, so a
 # value that looks like shell is a value that looks like shell. Everything that
 # is not `NAME=` followed by a value is refused out loud rather than skipped
@@ -82,6 +89,9 @@ $plow_dotenv_key
         return 1
         ;;
     esac
+    if printenv "$plow_dotenv_key" >/dev/null 2>&1; then
+      continue
+    fi
     export "$plow_dotenv_key=$(plow_dotenv_unquote "$plow_dotenv_val")"
   done < "$plow_dotenv_file"
   unset plow_dotenv_file plow_dotenv_line plow_dotenv_raw plow_dotenv_key plow_dotenv_val

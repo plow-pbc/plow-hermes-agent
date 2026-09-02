@@ -346,4 +346,42 @@ echo "dotenv: PATH/LD_PRELOAD refused, gateway never started, PID 1 exited $code
 
 docker rm -f "$name" >/dev/null
 
+# --- 10. a rotated credential takes ----------------------------------------
+#
+# Re-running the activation writes a new token into the compose dotenv, and the
+# agent's home is a volume that outlives the container. If the persisted copy
+# won, a recreated agent would keep presenting the token that was just replaced
+# -- revoked, and failing in a way that looks like the new one is wrong. The
+# environment is the source of truth whenever it carries a credential, and the
+# file is rewritten to match.
+docker rm -f "$name" >/dev/null 2>&1 || true
+vol="check-image-vol-$$"
+docker volume create "$vol" >/dev/null
+rotate_boot() {
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" --platform "$platform" \
+    --volume "$vol:/var/lib/hermes" \
+    --env PLOW_API_BASE=https://api.invalid \
+    --env PLOW_HOME_CHANNEL=cht_boot_check \
+    --env PLOW_AGENT_TOKEN="$1" \
+    --env HERMES_CUSTOM_PLOW_API_KEY="$1" \
+    "$image" >/dev/null
+  await_gateway
+}
+
+rotate_boot token-before
+rotate_boot token-after
+
+seen="$(docker exec --user 10000:10000 "$name" sh -c '
+  pid=$(pgrep -f "hermes gateway run" | head -1)
+  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_AGENT_TOKEN=//p"')"
+[[ "$seen" == token-after ]] \
+  || { echo "the recreated gateway is still holding '$seen'" >&2; exit 1; }
+docker exec "$name" grep -qx 'PLOW_AGENT_TOKEN=token-after' /var/lib/hermes/.env \
+  || { echo "the persisted dotenv still names the replaced token" >&2; exit 1; }
+echo "rotation: the recreated gateway and its dotenv both carry the new token"
+
+docker rm -f "$name" >/dev/null
+docker volume rm "$vol" >/dev/null
+
 echo "ok: $image ($platform) builds, imports, boots under s6, keeps its hardening, and fails closed" >&2

@@ -19,9 +19,14 @@ Docker, and a phone that can text. The agent runs against production Plow.
 
 ```sh
 export PLOW_AGENT_IMAGE=public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
+umask 077                                            # .env is a live credential
 docker compose run --rm agent plow-activate > .env   # prints a code; text it
 docker compose up -d                                 # boots the agent
 ```
+
+The `umask` is not decoration: the shell creates that file, and under the usual
+`022` it would be world-readable — a bearer token every account on the machine
+can read.
 
 The compose default names a tag that does not exist, so an unset variable fails
 on the pull rather than booting some other commit's image. List the real ones —
@@ -53,7 +58,9 @@ Every published tag is `amd64` only today, so a Mac runs one under emulation;
 the local build below is native `arm64` there.
 
 `.env.example` documents the five variables. `.env` holds live credentials and
-is gitignored. `docker compose down -v` deletes the agent's home volume — its
+is gitignored. It is also the source of truth: re-running the activation and
+recreating the agent replaces the token the agent uses, because the copy inside
+the home volume is rewritten to match rather than outliving it. `docker compose down -v` deletes the agent's home volume — its
 sessions, memories and provider logins, with no second copy — but **not** the
 `.env` beside this file: delete that yourself when you are done with the agent,
 or the next `up` brings the same one back.
@@ -65,6 +72,7 @@ stack's own network so the API is reached by container name — no host port to
 guess, and no `PLOW_AGENT_IMAGE` to set:
 
 ```sh
+umask 077
 docker compose -f compose.yml -f compose.e2e.yml run --rm agent \
   plow-activate --api-base http://api:8000 > .env
 docker compose -f compose.yml -f compose.e2e.yml up -d

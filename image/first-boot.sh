@@ -73,9 +73,10 @@ fi
 . /usr/local/lib/plow/config-restore.sh
 plow_restore_config first-boot
 
-if [ -f /var/lib/hermes/config.yaml ]; then
-  chown hermes:hermes /var/lib/hermes/config.yaml
-fi
+# Unconditional: the call above either leaves a regular file there or exits,
+# so there is no second case to test for. The chown is still needed -- the
+# image ships this file root-owned, and so does a VM host that wrote one.
+chown hermes:hermes /var/lib/hermes/config.yaml
 
 if [ -d /usr/local/lib/plow/first-boot.d ]; then
   for hook in /usr/local/lib/plow/first-boot.d/*.sh; do

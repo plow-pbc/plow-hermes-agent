@@ -49,15 +49,18 @@ COPY image/seed/ /var/lib/hermes/
 # The same skills again, as BUNDLED skills. The two runtimes reach them
 # differently and both copies are load-bearing.
 #
-# Here, the baked tree under the home is what the ownership block below can make
-# root-owned and sticky, so a turn cannot rename a skill out of the scan path.
-# A synced copy is hermes-owned by construction and gets none of that, which is
-# why this is not replaced by the bundled one.
+# Here, HERMES_HOME *is* /var/lib/hermes, so the baked tree is simply where this
+# VM's gateway looks; it is not replaced by the bundled copy.
 #
 # The Docker fleet bind-mounts an agent home over HERMES_HOME, so it never sees
 # the baked tree at all. It reads the bundled one, which the gateway reconciles
 # into $HERMES_HOME/skills on every boot -- updating a copy the agent has not
 # touched, leaving a customised one alone, never re-adding one it deleted.
+#
+# NB the ownership block below root-owns only the top-level skills/ directory;
+# `chown -R` leaves every category and skill under it owned by uid 10000, so a
+# turn can still rename one out of the scan path. Pre-existing, tracked
+# separately -- do not read the sticky bit as protecting the baked skills.
 COPY image/seed/skills/ /opt/hermes/skills/
 
 ARG PLOW_REVISION

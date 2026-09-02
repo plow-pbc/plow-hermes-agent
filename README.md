@@ -36,7 +36,7 @@ A variant is a persona plus skills — a separate repository whose Dockerfile
 starts from this image and adds nothing else:
 
 ```dockerfile
-FROM public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<sha>
+FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 
 # Identity — replace it outright:
 COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
@@ -95,6 +95,6 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 ## Publishing
 
 Not automated yet. Built and gated locally, pushed by hand to
-`public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<full commit sha>` — one
+`public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
 immutable tag per commit. Plow's own deploy tooling moves the blessed
 `hermes-prod` tag; publishing a `base-<sha>` tag blesses nothing.

@@ -7,8 +7,18 @@
 # every tenant. The image owns each invariant config shape; first boot writes
 # the referenced values to Hermes' dotenv without copying a credential into
 # this file.
+# Named `plow`, not `latch`: this is the Plow relay, and the name is enforced
+# rather than cosmetic. plow's own provisioning greps the installed config for
+# this exact key (api/plow/cloud_agent/exe_setup.sh) and refuses the image as an
+# "incompatible blessed image" without it, and the portal's paste-ready snippet
+# emits the same name (api/plow/relay/router.py:_mcp_config, and `plow-<device>`
+# for the per-device form) so a provisioned agent and a hand-registered one read
+# alike. It is also the prefix the relay's tools carry in the model's tool list.
+#
+# The Docker fleet's own configs call the same server `latch` -- nothing
+# validates the name there, and those files never meet this one.
 mcp_servers:
-  latch:
+  plow:
     url: "${PLOW_MCP_URL}"
     headers:
       Authorization: "Bearer ${PLOW_AGENT_TOKEN}"

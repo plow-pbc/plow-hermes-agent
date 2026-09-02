@@ -28,17 +28,32 @@ plow_config_is_ours() {
   sed -n '/^platforms:$/,/^[^ ]/p' "$1" 2>/dev/null | grep -q '^  plow_chat:$'
 }
 
+# Publish <file> as config.yaml. The one way this file is ever replaced, by
+# restoration and by the boot-time edit alike -- two publication seams for one
+# file is how they drift, and the second one truncated the live inode.
+#
+# The staging copy is a sibling because a rename only works within a filesystem,
+# and the mode and owner are set on it before the rename rather than on the
+# target after: at no point does the real name refer to a file that is
+# half-written, or momentarily root-owned. `rm` first because a rename onto a
+# directory fails, and a directory is one of the shapes being replaced.
+plow_publish_config() {
+  plow_cfg=/var/lib/hermes/config.yaml
+  plow_cfg_tmp="$plow_cfg.plow-staged"
+  rm -rf -- "$plow_cfg_tmp"
+  cp "$1" "$plow_cfg_tmp"
+  chmod 0640 "$plow_cfg_tmp"
+  chown hermes:hermes "$plow_cfg_tmp"
+  rm -rf -- "$plow_cfg"
+  mv -f "$plow_cfg_tmp" "$plow_cfg"
+  unset plow_cfg plow_cfg_tmp
+}
+
 plow_restore_config() {
   plow_cfg=/var/lib/hermes/config.yaml
   if [ -L "$plow_cfg" ] || [ ! -f "$plow_cfg" ] || ! plow_config_is_ours "$plow_cfg"; then
     echo "${1:-plow}: $plow_cfg is not this image's config -- restoring it" >&2
-    plow_cfg_tmp="$plow_cfg.plow-restore"
-    rm -rf -- "$plow_cfg_tmp"
-    cp /opt/hermes/plow-seed/config.yaml "$plow_cfg_tmp"
-    chmod 0640 "$plow_cfg_tmp"
-    rm -rf -- "$plow_cfg"
-    mv -f "$plow_cfg_tmp" "$plow_cfg"
-    chown hermes:hermes "$plow_cfg"
+    plow_publish_config /opt/hermes/plow-seed/config.yaml
   fi
-  unset plow_cfg plow_cfg_tmp
+  unset plow_cfg
 }

@@ -15,6 +15,9 @@ set -eu
 
 CONFIG=/var/lib/hermes/config.yaml
 
+# The publication seam, shared with the restore that runs before this.
+. /usr/local/lib/plow/config-restore.sh
+
 provider="${HERMES_PROVIDER:-plow}"
 model="${HERMES_MODEL:-}"
 
@@ -83,12 +86,14 @@ set_key() {   # set_key <file> <key> <value>
   fi
 }
 
-# Rewritten through the existing file rather than over it: `sed -i` renames a
-# new file into place, which would leave config.yaml owned by root, and a
-# root-owned config.yaml is the one the plow_chat plugin cannot persist its
-# home channel through. Writing the bytes back keeps the inode, its owner and
-# its mode. Skipped entirely when nothing changed, so a reboot leaves the file
-# byte-identical, mtime included.
+# Published the same way a restore is: staged beside the target, given its mode
+# and owner there, then renamed on. Writing the bytes back through the live file
+# kept its ownership -- which is what config.yaml needs, since a root-owned one
+# is the one the plow_chat plugin cannot persist its home channel through -- but
+# it truncated the inode first, so an interruption left a partial config that
+# every boot guard accepts. Setting the ownership on the staged copy gets the
+# same outcome without the window. Skipped entirely when nothing changed, so a
+# reboot leaves the file byte-identical, mtime included.
 staged="$(mktemp)"
 cat "$CONFIG" > "$staged"
 set_key "$staged" provider "$provider"
@@ -104,7 +109,7 @@ awk -v flag="$plow_mcp_enabled" '
                    { print }
 ' "$staged" > "$staged.mcp" && mv -f "$staged.mcp" "$staged"
 if ! cmp -s "$staged" "$CONFIG"; then
-  cat "$staged" > "$CONFIG"
+  plow_publish_config "$staged"
   echo "plow-config: model.provider=${provider}${model:+ model.default=${model}} mcp_servers.plow.enabled=${plow_mcp_enabled}" >&2
 fi
 rm -f "$staged"

@@ -53,3 +53,8 @@ if [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
   echo "plow-init: nor in the container environment. Refusing to start a gateway nobody can reach." >&2
   exit 1
 fi
+
+# Last, because it rewrites config.yaml and wants the ownership first-boot.sh
+# has just settled. Reads the container environment, which first-boot.sh does
+# not need and this does.
+/etc/s6-overlay/scripts/plow-config

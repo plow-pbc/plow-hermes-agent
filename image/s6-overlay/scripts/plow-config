@@ -1,0 +1,73 @@
+#!/bin/sh
+# Point the agent at its inference provider, from the environment it booted
+# with. The last step of the `plow-init` oneshot, which has already loaded and
+# exported both sources of that environment -- the container's, which is where
+# a developer's `env_file:` arrives, and the dotenv a VM host wrote.
+#
+# Only `model.provider` and `model.default` are written. Everything else the
+# Plow provider needs -- its base_url, its key_env, its model list -- is baked
+# into the image's config.yaml, tenant values left as `${...}` references that
+# Hermes resolves from the environment. Switching provider is therefore one
+# line in a dotenv, and switching back changes nothing else.
+set -eu
+
+CONFIG=/var/lib/hermes/config.yaml
+
+provider="${HERMES_PROVIDER:-plow}"
+model="${HERMES_MODEL:-}"
+
+# Both values are interpolated into a sed replacement below, so refuse anything
+# that is not a plain provider or model id rather than letting it become part
+# of the expression.
+for value in "$provider" ${model:+"$model"}; do
+  case "$value" in
+    *[!A-Za-z0-9._:/-]*|"")
+      echo "plow-config: refusing '$value' -- not a provider or model id" >&2
+      exit 1
+      ;;
+  esac
+done
+
+# The image's own inference key names an env var rather than holding a value,
+# and the two are the same credential. A dotenv that sets only the agent token
+# would otherwise leave the key empty, which is not an error anywhere -- the
+# gateway boots, answers nothing, and says why nowhere.
+if [ "$provider" = plow ] && [ -z "${HERMES_CUSTOM_PLOW_API_KEY:-}" ] && [ -n "${PLOW_AGENT_TOKEN:-}" ]; then
+  mkdir -p /run/s6/container_environment
+  printf '%s' "$PLOW_AGENT_TOKEN" > /run/s6/container_environment/HERMES_CUSTOM_PLOW_API_KEY
+fi
+
+[ -f "$CONFIG" ] || exit 0
+
+# Scoped to the `model:` block: `provider` and `default` are common key names
+# and an unscoped substitution would reach the ones under `providers:`. A key
+# the block does not carry is inserted rather than skipped -- a home volume
+# carries the config.yaml Hermes last wrote, not the one the image seeded, and
+# Hermes drops keys it considers defaults.
+model_block() { sed -n '/^model:$/,/^[^ ]/p' "$1"; }
+
+set_key() {   # set_key <file> <key> <value>
+  if ! grep -q '^model:$' "$1"; then
+    printf 'model:\n  %s: %s\n' "$2" "$3" >> "$1"
+  elif model_block "$1" | grep -q "^  $2: "; then
+    sed -i "/^model:\$/,/^[^ ]/ s|^  $2: .*|  $2: $3|" "$1"
+  else
+    sed -i "/^model:\$/a\\  $2: $3" "$1"
+  fi
+}
+
+# Rewritten through the existing file rather than over it: `sed -i` renames a
+# new file into place, which would leave config.yaml owned by root, and a
+# root-owned config.yaml is the one the plow_chat plugin cannot persist its
+# home channel through. Writing the bytes back keeps the inode, its owner and
+# its mode. Skipped entirely when nothing changed, so a reboot leaves the file
+# byte-identical, mtime included.
+staged="$(mktemp)"
+cat "$CONFIG" > "$staged"
+set_key "$staged" provider "$provider"
+if [ -n "$model" ]; then set_key "$staged" default "$model"; fi
+if ! cmp -s "$staged" "$CONFIG"; then
+  cat "$staged" > "$CONFIG"
+  echo "plow-config: model.provider=${provider}${model:+ model.default=${model}}" >&2
+fi
+rm -f "$staged"

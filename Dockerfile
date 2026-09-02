@@ -105,9 +105,11 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 # unlinking an entry it does not own, and inside skills/ it owns them all -- so
 # a baked skill can still be renamed out of the scan path. What sticky protects
 # is the root-owned files sitting directly in the home: SOUL.md and
-# config.yaml. Do not read it as protecting the skills themselves; the bundled
-# copy at /opt/hermes/skills, which no turn can write, is what makes a lost one
-# recoverable on the next boot.
+# config.yaml. Do not read it as protecting the skills themselves: a skill the
+# agent removes is gone, and the bundled copy at /opt/hermes/skills does not
+# bring it back -- the runtime records the deletion and honours it. What that
+# copy covers is a home that never had them and updates to ones the agent has
+# not touched.
 #
 # setgid keeps new entries in the hermes group, so the gateway's own files stay
 # group-readable to it however they are created.

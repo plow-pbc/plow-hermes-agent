@@ -11,11 +11,13 @@ set -eu
 PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/command:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 export PATH
 
-# The dotenv the VM host wrote, if there is one. It wins over the container
-# environment: on a VM it is the only source of tenant values, and a stale
-# variable inherited from the image must not shadow the one provisioning just
-# wrote. Nothing writes this file on the local path, where the container
-# environment is the only source.
+# The tenant values, from whichever side holds them. The container environment
+# wins and the file fills only what it did not set: locally that environment is
+# the compose dotenv, which is where a re-run activation puts a new token, and
+# a copy persisted in the home volume must not reinstate the one it replaced.
+# On a VM nothing sets these before this runs, so the file supplies all of them
+# by having no competition rather than by a rule of its own.
+#
 # Read, never run. This script is root until the `s6-setuidgid` below, and a
 # dotenv is data: `.` would give every line of it a root shell.
 . /usr/local/lib/plow/dotenv.sh

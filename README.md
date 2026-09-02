@@ -34,7 +34,7 @@ A variant is a persona plus skills — a separate repository whose Dockerfile
 starts from this image and adds nothing else:
 
 ```dockerfile
-FROM public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<sha>
+FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 
 # Identity — replace it outright:
 COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
@@ -86,6 +86,40 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 ## Publishing
 
 Not automated yet. Built and gated locally, pushed by hand to
-`public.ecr.aws/e1h7x4a2/plow-hermes-agent:base-<full commit sha>` — one
+`public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
 immutable tag per commit. Plow's own deploy tooling moves the blessed
 `hermes-prod` tag; publishing a `base-<sha>` tag blesses nothing.
+
+One repository holds this image and every variant image built from it, so a tag
+has to say which commit it came from: `base-` plus the **full 40-character SHA
+of the commit in the repository that built it** — this one for the base image,
+the variant's own for a variant. The tag does not name the variant, and there is
+no `latest`.
+
+Which SHA a given agent runs is not recorded here. Plow pins it per provider in
+`api/cloud-agents/agents.json` in `plow-pbc/plow`, and composes the image
+reference from it; publishing a tag makes it available, that file is what makes
+it live.
+
+The tags that exist are readable from the registry itself. On the web:
+<https://gallery.ecr.aws/e1h7x4a2/plow-cloud-agents>. From a shell with no AWS
+credential at all — the repository is public, so an anonymous pull token is
+enough:
+
+```sh
+token=$(curl -fsSL \
+  'https://public.ecr.aws/token/?service=public.ecr.aws&scope=repository:e1h7x4a2/plow-cloud-agents:pull' \
+  | python3 -c 'import json,sys; print(json.load(sys.stdin)["token"])')
+curl -fsSL -H "Authorization: Bearer $token" \
+  https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
+```
+
+Plow operators can use the AWS CLI instead, from the account that owns the
+registry — ECR Public's API lives only in `us-east-1`, whatever region you
+otherwise use:
+
+```sh
+aws ecr-public describe-images --region us-east-1 \
+  --repository-name plow-cloud-agents \
+  --query 'imageDetails[].imageTags[]' --output text | tr '\t' '\n' | sort
+```

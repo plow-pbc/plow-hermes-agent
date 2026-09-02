@@ -23,6 +23,21 @@ mcp_servers:
     headers:
       Authorization: "Bearer ${PLOW_AGENT_TOKEN}"
     enabled: false
+# `clarify` is the tool behind the ❓ rows: it renders a blocking menu and stops
+# the turn until the owner answers it. Over iMessage there is nobody who can --
+# the menu has no rendering in the transport the owner is actually holding, so
+# the turn simply stops. And it has never been reached deliberately: it is what
+# a turn grabs when it cannot find the mechanism it wants, and it fired three
+# times during onboarding as "❓ placeholder".
+#
+# So the tool is taken away rather than forbidden in prose, which held right up
+# until a turn was confused -- exactly when it does not. `clarify` is the only
+# tool in its toolset (tools/clarify_tool.py), so disabling the toolset removes
+# that one and nothing else; the key is read by gateway/run.py.
+agent:
+  disabled_toolsets:
+    - clarify
+
 model:
   default: anthropic/claude-sonnet-5
   provider: plow

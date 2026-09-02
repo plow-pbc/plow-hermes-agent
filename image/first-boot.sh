@@ -76,19 +76,30 @@ fi
 # Defensive restore of the sticky+setgid pair, last thing before any service
 # starts, and the reason this runs on every boot rather than only the first.
 #
+# Two different things reach for this directory, and both leave it at 0700.
+#
 # The Hermes runtime bootstraps the home it is pointed at: finding one it does
-# not own, it takes it and its seeded subdirectories, leaving both at 0700
+# not own, it takes it and its seeded subdirectories, leaving both 0700
 # hermes:hermes. That is right for a plain data volume and wrong for this one,
 # where root ownership plus the sticky bit is the whole of the plow#1564
 # hardening -- at 0700 hermes:hermes the agent owns the directory, and owning
 # the directory is what lets it unlink a root-owned SOUL.md whatever the file's
-# mode says.
+# mode says. This runs after that bootstrap, which is what makes it a repair.
 #
-# The same clobber was seen once in prod from an unknown source (agent
-# plow-agent-704c410c, 2026-09-01, home at 0700 root:root), which is why the
-# log line goes first and unconditionally: if a mode arrives that neither the
-# image nor the runtime explains, the value it recorded is the evidence that
-# survives, and a silent repair would erase the only trace.
+# The second is `secure_parent_dir` (hermes_constants.py): every write of the
+# auth store chmods its parent -- this directory -- to 0700, and swallows the
+# failure. As uid 10000 it fails and nothing happens. As ROOT it succeeds, and
+# the home lands at 0700 root:hermes: the group bit gone, so the agent cannot
+# traverse its own home and every turn EPERMs. That is the state seen in prod
+# on plow-agent-704c410c (2026-09-01) and the one a root probe produced in
+# `exe.py`'s own history. Nothing in this image runs the runtime as root --
+# every service drops first, and upstream's /opt/hermes/bin/hermes shim drops a
+# root `docker exec` -- so the reachable door is a root process invoking the
+# venv binary or hermes_cli directly, past the shim.
+#
+# Hence the log line first and unconditionally: if a mode arrives that neither
+# of those explains, the value it recorded is the evidence that survives, and a
+# silent repair would erase the only trace.
 #
 # Idempotent by construction -- chown and chmod to the values the image already
 # uses are a no-op on a boot where nothing touched them.

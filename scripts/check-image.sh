@@ -25,6 +25,9 @@
 #                                    the agent its own identity to unlink; and
 #                                    a second boot must be a no-op, because on
 #                                    the cloud path first boot runs twice.
+#   4b. an operator's root shell cannot lock the agent out — the runtime chmods
+#                                    its home to 0700 on every auth write, which
+#                                    succeeds when the writer is root.
 #   5. the restart path still works — plow.git's credential update shells in and
 #                                    restarts the gateway; it must come back as a
 #                                    NEW process that is listening.
@@ -204,6 +207,30 @@ second="$(state)"
 diff <(printf '%s\n' "$first") <(printf '%s\n' "$second") \
   || { echo "init is not idempotent: the second boot changed the listing above" >&2; exit 1; }
 echo "second boot left config, ownership, modes and service state byte-identical"
+
+# --- 4b. an operator's root shell cannot lock the agent out --------------
+#
+# The runtime chmods its own home to 0700 every time it writes the auth store
+# (secure_parent_dir), and swallows the failure. As uid 10000 that fails and
+# nothing happens; as ROOT it succeeds and takes the group bit with it, so the
+# agent can no longer traverse its own home and every turn EPERMs.
+#
+# `docker exec <c> hermes ...` is root by default, which is exactly how an
+# operator reaches the CLI. What saves it is that /opt/hermes/bin/hermes is a
+# privilege-drop shim and is first on PATH — a property of the base image that
+# nothing here controls, which is why it is asserted rather than assumed.
+resolved="$(docker exec "$name" sh -c 'command -v hermes')"
+printf 'hermes on PATH: %s\n' "$resolved"
+[[ "$resolved" == /opt/hermes/bin/hermes ]] \
+  || { echo "the root docker-exec drop shim is not first on PATH" >&2; exit 1; }
+
+docker exec "$name" sh -c 'hermes skills list >/dev/null 2>&1; true'
+after="$(docker exec "$name" stat -c '%a %U:%G' /var/lib/hermes)"
+printf 'home after a root `hermes` exec: %s\n' "$after"
+[[ "$after" == "3770 root:hermes" ]] \
+  || { echo "a root exec of the CLI left the home at $after" >&2; exit 1; }
+docker exec --user 10000:10000 "$name" sh -c 'ls /var/lib/hermes >/dev/null' \
+  || { echo "uid 10000 can no longer traverse its own home" >&2; exit 1; }
 
 # --- 5. the restart path plow.git uses -----------------------------------
 #

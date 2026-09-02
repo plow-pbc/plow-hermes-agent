@@ -1,0 +1,298 @@
+#!/usr/bin/env python3
+"""Mint this agent's Plow credential and print its dotenv.
+
+The flow is Plow's public activation handshake, the same one
+`hermes-plow-chat/ref/scripts/create_plow_chat_curl.sh` performs:
+
+    POST /v1/auth/activate  {"provision_chat": true}   -> a code and a line
+    the owner texts "Plow Activate: <code>" to that line
+    POST /v1/auth/activate/redeem                      -> a token and a chat
+
+Activation hands back an account-wide credential, so this then narrows it in
+place to the agent's own reach with `PUT /v1/api-keys/current`. Narrowing is
+one-way and drops `keys:manage`, so it happens once, here, immediately after
+the mint -- there is no second chance to run it.
+
+**stdout is the dotenv and nothing else.** Every prompt, progress line and
+error goes to stderr, so the container needs no mount and the host captures
+the file with a redirect:
+
+    docker compose run --rm agent plow-activate > .env
+
+An account-wide token is never printed at all. If the narrowing does not
+complete and verify, the credential is stripped of every grant it has and the
+run fails, leaving nothing to leak and nothing to clean up by hand. Activation
+is cheap; an unscoped account credential in a developer's dotenv is not.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+import urllib.error
+import urllib.request
+
+DEFAULT_API_BASE = "https://api.plow.co"
+# What a Plow agent needs and nothing more: talk in its chats, and reach the
+# LLM gateway its config.yaml points at. Mirrors the cloud provisioner's grant.
+AGENT_SCOPES = ["chats:use", "llm:chat"]
+# The activation code's server-side TTL. A shorter client window gave up while
+# the code was still good.
+DEFAULT_TIMEOUT_S = 1800
+DEFAULT_POLL_S = 5
+# A 410 this soon after starting is the server handing back an already-stale
+# activation rather than a code the owner failed to text in time.
+STALE_EXPIRY_S = 90
+
+EXIT_ACTIVATION_FAILED = 75
+
+
+class Unreachable(Exception):
+    """The API could not be reached at all, as opposed to answering badly."""
+
+
+class NarrowingFailed(Exception):
+    """The credential is minted and is not the one that was asked for.
+
+    `applied` says whether the server accepted a narrowing anyway: a readback
+    that disagrees still changed the credential, so it is scoped to something
+    unexpected rather than left account-wide. The two need different advice.
+    """
+
+    def __init__(self, message: str, applied: bool = False) -> None:
+        super().__init__(message)
+        self.applied = applied
+
+
+def log(message: str = "") -> None:
+    print(message, file=sys.stderr, flush=True)
+
+
+def request(method: str, url: str, *, body: dict | None = None, token: str | None = None) -> tuple[int, object]:
+    """One JSON call. Returns (status, parsed body); never raises on HTTP status."""
+    data = json.dumps(body).encode() if body is not None else None
+    headers = {"Accept": "application/json"}
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    if token is not None:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as response:
+            raw = response.read()
+            status = response.status
+    except urllib.error.HTTPError as error:
+        raw, status = error.read(), error.code
+    except OSError as error:
+        # Raised, not exited: a caller mid-way through minting has a credential
+        # to dispose of before it can fail.
+        raise Unreachable(f"cannot reach {url}: {error}") from error
+    try:
+        return status, json.loads(raw)
+    except ValueError:
+        return status, None
+
+
+def field(payload: object, name: str) -> str:
+    return payload.get(name) or "" if isinstance(payload, dict) else ""
+
+
+def activate(api_base: str, name: str) -> tuple[str, str, str]:
+    status, payload = request("POST", f"{api_base}/v1/auth/activate", body={"name": name, "provision_chat": True})
+    if status // 100 != 2:
+        raise SystemExit(f"plow-activate: could not start activation (HTTP {status})")
+    code = field(payload, "display_code")
+    secret = field(payload, "activation_secret")
+    send_to = field(payload, "send_to")
+    if not (code and secret and send_to):
+        raise SystemExit("plow-activate: activation response was missing a code, a secret or a number")
+    return code, secret, send_to
+
+
+def redeem(api_base: str, secret: str, timeout_s: int, poll_s: int) -> tuple[str, object]:
+    """Poll until the owner's text lands. Returns (token, the provisioned chat)."""
+    started = time.monotonic()
+    deadline = started + timeout_s
+    reported = ""
+    while time.monotonic() < deadline:
+        status, payload = request("POST", f"{api_base}/v1/auth/activate/redeem", body={"activation_secret": secret})
+        if status == 410:
+            if time.monotonic() - started < STALE_EXPIRY_S:
+                log("The code expired immediately, which means Plow handed back a stale activation.")
+                log("Running again now returns the same one. Wait a few minutes, then retry.")
+            else:
+                log("The code expired. It is single-use and time-limited; run again for a fresh one.")
+            raise SystemExit(EXIT_ACTIVATION_FAILED)
+        if status // 100 != 2:
+            log(f"Activation redeem failed (HTTP {status}). Run again for a fresh code.")
+            raise SystemExit(EXIT_ACTIVATION_FAILED)
+        state = field(payload, "status")
+        if state != reported:
+            log(f"  status: {state or 'unknown'}")
+            reported = state
+        if state == "verified":
+            token = field(payload, "token")
+            chat = payload.get("chat") if isinstance(payload, dict) else None
+            if not (token and field(chat, "uid")):
+                raise SystemExit("plow-activate: activation verified but returned no token and chat")
+            # A real bearer token has none of these. One that did would break
+            # out of its own line in the dotenv this prints.
+            if any(character in token for character in '\r\n"\\'):
+                raise SystemExit("plow-activate: refusing a token containing quote or newline characters")
+            return token, chat
+        time.sleep(poll_s)
+    log(f"Timed out after {timeout_s}s waiting for the text. Run again for a fresh code.")
+    raise SystemExit(EXIT_ACTIVATION_FAILED)
+
+
+def chat_line(chat: object) -> str:
+    """The line the provisioned chat actually landed on.
+
+    Not the line the activation was assigned: an owner who already holds a chat
+    on that line is provisioned onto a free one instead, and one inbound still
+    completes the activation (api/plow/chat/creation.py). Scoping to the
+    assigned line would grant the agent a line it has no chat on and withhold
+    the chat it was just given.
+    """
+    participants = chat.get("participants") if isinstance(chat, dict) else None
+    if not isinstance(participants, list):
+        raise NarrowingFailed("the provisioned chat carried no participant roster")
+    agents = [p for p in participants if isinstance(p, dict) and p.get("type") == "agent"]
+    mine = [p for p in agents if p.get("relationship") == "self"] or agents
+    line = mine[0].get("line") if len(mine) == 1 else None
+    uid = line.get("uid") if isinstance(line, dict) else None
+    if not isinstance(uid, str) or not uid:
+        raise NarrowingFailed("the provisioned chat did not name exactly one agent line")
+    return uid
+
+
+def narrow(api_base: str, token: str, line_uid: str, name: str) -> None:
+    """Trade the account-wide activation credential for the agent's own reach.
+
+    Verified against the response rather than assumed from a 2xx: this is the
+    only thing standing between a developer's dotenv and an account credential.
+    """
+    # `line:<uid>` covers every chat on that line, present and future, so the
+    # agent keeps working when its owner starts a new thread.
+    grant = [f"line:{line_uid}"]
+    status, payload = request(
+        "PUT",
+        f"{api_base}/v1/api-keys/current",
+        body={"name": name, "scopes": AGENT_SCOPES, "chat_uids": grant},
+        token=token,
+    )
+    if status // 100 != 2:
+        raise NarrowingFailed(f"HTTP {status}")
+    scopes = payload.get("scopes") if isinstance(payload, dict) else None
+    chats = payload.get("chat_uids") if isinstance(payload, dict) else None
+    if not isinstance(scopes, list) or sorted(scopes) != sorted(AGENT_SCOPES):
+        raise NarrowingFailed(f"the credential holds scopes {scopes}", applied=True)
+    if chats != grant:
+        raise NarrowingFailed(f"the credential holds chats {chats}, not {grant}", applied=True)
+
+
+def disarm(api_base: str, token: str) -> bool:
+    """Leave a credential that cannot be used, when narrowing did not verify.
+
+    `DELETE /v1/api-keys/<id>` refuses a credential deleting itself -- 409
+    `Cannot revoke your current session` (api/plow/keys/router.py). Narrowing
+    is the only authority a credential holds over itself, so the disposal is
+    the same call with nothing left in it: one scope because the schema
+    demands at least one, and an empty chat grant, which is a legitimate value
+    meaning no chat at all. The result reaches no chat and no inference.
+    """
+    try:
+        status, payload = request(
+            "PUT",
+            f"{api_base}/v1/api-keys/current",
+            body={"name": "revoked by plow-activate", "scopes": ["chats:use"], "chat_uids": []},
+            token=token,
+        )
+    except Unreachable:
+        return False
+    return status // 100 == 2 and isinstance(payload, dict) and payload.get("chat_uids") == []
+
+
+def dotenv(api_base: str, chat_uid: str, token: str) -> str:
+    return "\n".join(
+        (
+            "# The API root, without /v1 -- the plow_chat plugin appends its own.",
+            f"PLOW_API_BASE={api_base}",
+            f"PLOW_HOME_CHANNEL={chat_uid}",
+            f"PLOW_AGENT_TOKEN={token}",
+            "# The same token again: config.yaml names the inference key by env",
+            "# var, and a missing one is a silent LLM outage.",
+            f"HERMES_CUSTOM_PLOW_API_KEY={token}",
+            "HERMES_PROVIDER=plow",
+        )
+    )
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        prog="plow-activate",
+        description="Mint this agent's Plow credential and print its dotenv on stdout.",
+        epilog="usage: docker compose run --rm agent plow-activate > .env",
+    )
+    parser.add_argument("--api-base", default=DEFAULT_API_BASE, help=f"Plow API root (default {DEFAULT_API_BASE})")
+    parser.add_argument("--name", default="plow-activate", help="name recorded on the credential")
+    parser.add_argument("--timeout", type=int, default=DEFAULT_TIMEOUT_S, help="seconds to wait for the text")
+    parser.add_argument("--poll-interval", type=int, default=DEFAULT_POLL_S, help="seconds between redeem polls")
+    args = parser.parse_args()
+
+    # `${PLOW_API_BASE}/v1` is what config.yaml builds, so a /v1 here would
+    # yield /v1/v1 and 404 every inference call.
+    api_base = args.api_base.rstrip("/")
+    api_base = api_base[: -len("/v1")] if api_base.endswith("/v1") else api_base
+
+    log(f"Starting Plow activation against {api_base} ...")
+    # Nothing exists to dispose of before the redeem returns a token, so a
+    # transport failure up to here is just a failure.
+    try:
+        code, secret, send_to = activate(api_base, args.name)
+        log("")
+        log(f"  Text  Plow Activate: {code}  to  {send_to}")
+        log("")
+        log("Waiting for that text ...")
+        token, chat = redeem(api_base, secret, args.timeout, args.poll_interval)
+    except Unreachable as error:
+        log(f"plow-activate: {error}")
+        return EXIT_ACTIVATION_FAILED
+    chat_uid = field(chat, "uid")
+    log("Verified. Narrowing the credential to this agent's line ...")
+
+    try:
+        line_uid = chat_line(chat)
+        narrow(api_base, token, line_uid, args.name)
+    except (NarrowingFailed, Unreachable) as error:
+        log("")
+        log(f"NARROWING FAILED: {error}")
+        if disarm(api_base, token):
+            log("The credential it minted has been left with no chats and no")
+            log("inference, so nothing usable exists. Run plow-activate again.")
+        elif isinstance(error, NarrowingFailed) and error.applied:
+            # The server took a narrowing and answered with something else, so
+            # this is a scoped credential of unknown shape -- saying
+            # "account-wide" here would send the reader looking for the wrong
+            # thing, and a second narrowing is refused once `keys:manage` is
+            # gone.
+            log("The credential it minted is narrowed, but to a grant this tool")
+            log("did not ask for and could not narrow further. Revoke it in the")
+            log("Plow dashboard, then run plow-activate again.")
+        else:
+            log("The credential it minted could NOT be reached to be disposed of,")
+            log("and is still account-wide. Revoke it in the Plow dashboard, then")
+            log("run plow-activate again.")
+        return EXIT_ACTIVATION_FAILED
+
+    log(f"  scopes: {' '.join(AGENT_SCOPES)}")
+    log(f"  chats:  line:{line_uid}")
+    log("")
+    print(dotenv(api_base, chat_uid, token))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

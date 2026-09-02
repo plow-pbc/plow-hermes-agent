@@ -8,7 +8,7 @@
 # the referenced values to Hermes' dotenv without copying a credential into
 # this file.
 mcp_servers:
-  plow:
+  latch:
     url: "${PLOW_MCP_URL}"
     headers:
       Authorization: "Bearer ${PLOW_AGENT_TOKEN}"

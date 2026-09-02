@@ -8,7 +8,9 @@ reachable only through Plow Chat. One image serves two paths: exe.dev unpacks it
 into a VM rootfs and boots its `Cmd`, and `docker run` boots the same `Cmd` in a
 container — `/init` either way, so what the developer runs is what the tenant
 gets. The image is credential-free and tenant-free — two lines land at
-`/var/lib/plow/credentials` and the image does the rest; it installs no code.
+`/var/lib/plow/credentials` and the image does the rest. It adds one package
+to the runtime's environment (`pydantic-settings`, pinned, `--no-deps`) and no
+code of its own beyond the init below.
 There is no local mode: a developer's machine writes that same file and gets
 the same boot, which is what makes the one path worth checking.
 
@@ -57,6 +59,33 @@ service inherits — deriving the inference key alias from the credential and
 generating a fresh `API_SERVER_KEY` on every boot. Nothing is persisted: the
 key is read from the environment, never from a file.
 
+```json
+{
+  "line": {"uid": "ln_…", "display_name": null, "provider_key": "+1…"},
+  "chats": [
+    {"uid": "cht_…", "status": "active", "participants": [
+      {"type": "agent",  "relationship": "self", "line": {"uid": "ln_…"}},
+      {"type": "member", "uid": "…", "role": "owner"}
+    ]}
+  ],
+  "mcp_url": null
+}
+```
+
+Every key is always present and a nullable one is null rather than omitted,
+which is not how Plow's general chat and line endpoints serialize — so the
+image requires all three and treats a body missing any of them as not an
+identity. `line` is this agent's own line; the image does not read it, and
+carries it only because it is part of that answer. `mcp_url` is the relay
+endpoint, or null when the tenant has none.
+
+Getting a token in the first place is `plow-agents`: `login` once, then `mint`
+against the line you want the agent to answer on.
+
+`plow-init` waits up to 60 seconds for that file to appear before giving up,
+so a host may write it into a container that is already running; a file present
+at boot costs nothing, because the first look finds it.
+
 The file is the only source: a settings model would otherwise read the process
 environment first, letting `docker run -e PLOW_AGENT_TOKEN=…` outrank the
 credential the image was given, so every source but that file is switched off.
@@ -87,11 +116,20 @@ ownership and mode into the container, which on a Linux host is never
 too, so the mount lands beside the drop-in instead, at
 `/var/lib/plow/credentials.host`, and `00-plow-sanitize` copies it as root into
 `/var/lib/plow/credentials` at `0600` before anything reads either. The mount
-itself is never written; a rotation is a rewrite of it and a restart, and only
-a mount newer than the copy is promoted again.
+itself is never written; a rotation is a rewrite of it and a restart, which
+the next boot copies into place.
 
 `plow-pbc/plow-agents` is the compose file that does this, and the tool that
 writes the two lines.
+
+### The host's own hook
+
+If `/exe.dev/setup` exists and is executable, `plow-init` runs it as root
+before it reads the credential, then deletes it so a reboot cannot replay it.
+It is how a VM host does whatever it must do to a fresh machine — it is placed
+by whoever built that machine, not by this image, and nothing puts one there on
+a developer's own. An image that finds one runs it, so a host that can write
+that path already owns the container.
 
 ## The two environment knobs
 
@@ -229,3 +267,7 @@ are checked without booting anything:
 ```sh
 uv run --with pydantic --with pydantic-settings --with pyyaml --with pytest pytest
 ```
+
+Run it from the repository root; there is no packaging to install. `plow-init`
+is a hyphenated path rather than an importable module, so the test file loads
+it by path with `importlib` and exercises the real functions.

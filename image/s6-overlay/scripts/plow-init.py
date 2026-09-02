@@ -297,11 +297,22 @@ def own_home_dotenv(api_server_key: str) -> None:
     into any home it finds without a dotenv. And this one name only: the
     tenant's credential is published to the environment and has no business in
     a file the agent can read.
+
+    O_NOFOLLOW is the whole of the safety. This is root writing into a
+    directory the agent can create entries in, and the runtime hands this file
+    to the agent on every boot -- so the agent can unlink it and leave a
+    symlink to /etc/shadow in its place. Opening that link as root would
+    truncate whatever it points at. `os.open` refuses instead, and the boot
+    stops.
     """
-    with open(HOME_DOTENV, "w") as handle:
+    try:
+        descriptor = os.open(HOME_DOTENV, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640)
+    except OSError as error:
+        die(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
+    with os.fdopen(descriptor, "w") as handle:
+        os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)
+        os.fchmod(handle.fileno(), 0o640)
         handle.write(f"API_SERVER_KEY={api_server_key}\n")
-    os.chown(HOME_DOTENV, 0, pwd.getpwnam("hermes").pw_gid)
-    os.chmod(HOME_DOTENV, 0o640)
 
 
 def harden_home() -> None:
@@ -316,10 +327,13 @@ def harden_home() -> None:
     is what lets it unlink a root-owned SOUL.md whatever the file's mode says.
     """
     hermes = pwd.getpwnam("hermes")
+    # `follow_symlinks=False` throughout: root is operating inside a directory
+    # the agent can write, so every path here is one the agent could have
+    # replaced with a link to somewhere else.
     for path in (HOME_DIR, os.path.join(HOME_DIR, "skills")):
-        os.chown(path, 0, hermes.pw_gid)
+        os.chown(path, 0, hermes.pw_gid, follow_symlinks=False)
         os.chmod(path, 0o3770)
-    os.chown(os.path.join(HOME_DIR, "SOUL.md"), 0, 0)
+    os.chown(os.path.join(HOME_DIR, "SOUL.md"), 0, 0, follow_symlinks=False)
 
 
 def main() -> None:

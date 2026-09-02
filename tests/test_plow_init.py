@@ -11,6 +11,7 @@ import importlib.util
 import os
 import pathlib
 import sys
+import types
 
 import pytest
 import yaml
@@ -125,6 +126,32 @@ def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats):
 @pytest.mark.parametrize("mcp_url", [None, "https://relay.invalid/mcp"])
 def test_a_relay_is_optional_however_it_is_spelled(mcp_url):
     assert identity(mcp_url=mcp_url).mcp_url == mcp_url
+
+
+def test_a_symlinked_dotenv_is_refused_not_followed(tmp_path):
+    """Root writes this file into a directory the agent can create entries in,
+    and the runtime hands the file to the agent on every boot. A symlink left
+    in its place must not be opened."""
+    victim = tmp_path / "victim"
+    victim.write_text("root-owned target\n")
+    dotenv = tmp_path / ".env"
+    dotenv.symlink_to(victim)
+    plow_init.HOME_DOTENV = str(dotenv)
+    with pytest.raises(SystemExit, match="not a regular file this image can write"):
+        plow_init.own_home_dotenv("a-key")
+    assert victim.read_text() == "root-owned target\n"
+
+
+def test_the_dotenv_carries_the_key_and_nothing_else(tmp_path, monkeypatch):
+    """The tenant's credential is published to the environment; the one name
+    that has to agree with a file is the only one written to it."""
+    dotenv = tmp_path / ".env"
+    plow_init.HOME_DOTENV = str(dotenv)
+    # No `hermes` user here, and this test is not root.
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+    plow_init.own_home_dotenv("a-key")
+    assert dotenv.read_text() == "API_SERVER_KEY=a-key\n"
 
 
 SEED = {

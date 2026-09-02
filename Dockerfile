@@ -106,8 +106,10 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 # the two directories named below are re-owned. The sticky bit stops a turn
 # unlinking an entry it does not own, and inside skills/ it owns them all -- so
 # a baked skill can still be renamed out of the scan path. What sticky protects
-# is the root-owned files sitting directly in the home: SOUL.md and
-# config.yaml. Do not read it as protecting the skills themselves: a skill the
+# is the root-owned file sitting directly in the home: SOUL.md. config.yaml is
+# the agent's own, at hermes:hermes 0640, because the chat plugin rewrites it
+# and `plow-init` edits it as the agent -- it is not protected here and is not
+# meant to be. Do not read sticky as protecting the skills themselves: a skill the
 # agent removes is gone, and the bundled copy at /opt/hermes/skills does not
 # bring it back -- the runtime records the deletion and honours it. What that
 # copy covers is a home that never had them and updates to ones the agent has
@@ -118,8 +120,10 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 RUN chown -R 10000:10000 /var/lib/hermes \
  && chown root:hermes /var/lib/hermes /var/lib/hermes/skills \
  && chmod 3770 /var/lib/hermes /var/lib/hermes/skills \
- && chown root:root /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
- && chmod 0644 /var/lib/hermes/SOUL.md /var/lib/hermes/config.yaml \
+ && chown root:root /var/lib/hermes/SOUL.md \
+ && chmod 0644 /var/lib/hermes/SOUL.md \
+ && chown 10000:10000 /var/lib/hermes/config.yaml \
+ && chmod 0640 /var/lib/hermes/config.yaml \
  && install -d -m 0755 /usr/local/lib/plow
 
 # `plow-init` declares its credential file and Plow's answer as models rather

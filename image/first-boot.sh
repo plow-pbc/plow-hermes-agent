@@ -8,7 +8,6 @@
 # rather than by replacing this file.
 set -eu
 
-. /usr/local/lib/plow/root-path.sh
 
 LC_ALL=C
 export LC_ALL
@@ -67,15 +66,12 @@ fi
 # symlink to a root-owned file came back hermes-owned with a `model:` block
 # appended to it.
 #
-# So the file is restored rather than repaired. `rm` on a symlink removes the
-# link, never its target, and the copy comes from outside the home, where no
-# turn can reach it.
-. /usr/local/lib/plow/config-restore.sh
-plow_restore_config first-boot
-
-# Unconditional: the call above either leaves a regular file there or exits,
-# so there is no second case to test for. The chown is still needed -- the
-# image ships this file root-owned, and so does a VM host that wrote one.
+# So the file is restored rather than repaired, and that restore happens in
+# `00-plow-sanitize`, which runs at cont-init -- before the runtime opens the
+# file at all, and before this script on every path. By here it is a regular
+# file this image put there.
+#
+# The chown is still needed: the image ships this file root-owned.
 chown hermes:hermes /var/lib/hermes/config.yaml
 
 if [ -d /usr/local/lib/plow/first-boot.d ]; then

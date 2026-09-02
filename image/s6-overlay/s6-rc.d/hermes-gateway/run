@@ -1,41 +1,21 @@
 #!/command/with-contenv sh
 # The Hermes gateway, supervised, as uid 10000.
 #
-# `with-contenv` hands this script the container environment. Nothing about
-# this tenant arrives that way -- the dotenv below is the authority, and the
-# names it owns are dropped from the environment first -- but the image's own
-# ENV does, and so do HERMES_PROVIDER and HERMES_MODEL.
+# `plow-init` published the tenant's environment under
+# /run/s6/container_environment, and with-contenv hands it to this script, so
+# there is nothing here to read or parse.
 set -eu
 
-. /usr/local/lib/plow/root-path.sh
-
-# The tenant values, from the dotenv `plow-init` rendered. That file is the
-# authority for every one of them, so the container environment is emptied of
-# those names before it is read -- with-contenv hands this script whatever
-# `docker run -e` set, and an inherited PLOW_AGENT_TOKEN would otherwise
-# outrank the credential the image was actually given. HERMES_PROVIDER and
-# HERMES_MODEL are not on that list and still arrive this way.
-#
-# Read, never run. This script is root until the `s6-setuidgid` below, and a
-# dotenv is data: `.` would give every line of it a root shell.
-. /usr/local/lib/plow/dotenv.sh
-plow_drop_inherited
-plow_load_dotenv /var/lib/hermes/.env || exit 1
-
-# The only two values that differ from the image's own ENV. The gateway's API
-# server is loopback-only: the agent's sole path to Plow is the outbound socket
-# the plow_chat plugin opens, so there is nothing to expose. HERMES_HOME and
-# the write guard are image ENV, not service ENV — the whole image agrees on
-# one home.
+# The only two values that differ from the image's own ENV. The API server is
+# loopback-only: the agent's sole path to Plow is the outbound socket the chat
+# plugin opens, so there is nothing to expose.
 export API_SERVER_HOST=127.0.0.1
 export API_SERVER_PORT=8642
 
 # with-contenv repopulates HOME from /init, which ran as root, so without this
-# the gateway drops to uid 10000 still pointed at /root — a directory it cannot
-# write. Anything HOME-anchored (a tool's cache, a library's config) then fails
-# or silently lands somewhere the agent's own home does not include.
+# the gateway drops to uid 10000 still pointed at /root -- a directory it
+# cannot write, where anything HOME-anchored silently lands.
 export HOME=/var/lib/hermes
 
 cd /opt/hermes
-exec /command/s6-setuidgid hermes \
-  /opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise
+exec /command/s6-setuidgid hermes /opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise

@@ -166,6 +166,14 @@ await_gateway() {
   return 1
 }
 
+# What s6 hands every service: one file per name under container_environment.
+# Read as `NAME=value` lines so the assertions below stay one grep each.
+published() {
+  docker exec "$name" sh -c '
+    cd /run/s6/container_environment 2>/dev/null || exit 0
+    for f in *; do [ -e "$f" ] && printf "%s=%s\n" "$f" "$(cat "$f")"; done' | sort
+}
+
 # --- 3. the drop-in is the whole of what the agent was told -----------------
 await_gateway
 
@@ -183,22 +191,27 @@ printf 'credentials: %s\n' "$owner"
 [[ "$owner" == "600 root:root" ]] \
   || { echo "the fixture did not land as the host writes it: $owner" >&2; exit 1; }
 
-# The rendered dotenv, in full: every name the contract says the image derives
-# for itself, and none it was handed.
-rendered="$(docker exec "$name" cat /var/lib/hermes/.env)"
+# The published environment, in full: every name the contract says the image
+# derives for itself, and none it was handed. Nothing is written to a file the
+# next boot could read back, so this is the whole of what a service inherits.
+rendered="$(published)"
 printf '%s\n' "$rendered"
-grep -qx 'PLOW_API_BASE=http://stub:8080'                                        <<<"$rendered" || { echo ".env lost the API base" >&2; exit 1; }
-grep -qx 'PLOW_AGENT_TOKEN=cloud-token-one'                                      <<<"$rendered" || { echo ".env lost the credential" >&2; exit 1; }
+grep -qx 'PLOW_API_BASE=http://stub:8080'                                        <<<"$rendered" || { echo "the API base was not published" >&2; exit 1; }
+grep -qx 'PLOW_AGENT_TOKEN=cloud-token-one'                                      <<<"$rendered" || { echo "the credential was not published" >&2; exit 1; }
 grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one'                                       <<<"$rendered" || { echo "the home channel did not come from the identity endpoint" >&2; exit 1; }
 grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-one'                            <<<"$rendered" || { echo "the inference key alias was not derived from the credential" >&2; exit 1; }
 grep -qx 'PLOW_MCP_URL=http://stub:8080/v1/relay/devices/dev_cloud_check/mcp'    <<<"$rendered" || { echo "the relay URL did not come from the identity endpoint" >&2; exit 1; }
-grep -qx 'TZ=UTC'                                                                <<<"$rendered" || { echo "TZ did not default to UTC" >&2; exit 1; }
 grep -q  '^API_SERVER_KEY=..*'                                                   <<<"$rendered" || { echo "no API_SERVER_KEY was generated" >&2; exit 1; }
+grep -q  '^TZ='                                                                  <<<"$rendered" && { echo "the image published a TZ, which belongs to a variant" >&2; exit 1; }
 
-mode="$(docker exec "$name" stat -c '%a %U:%G' /var/lib/hermes/.env)"
-printf '.env: %s\n' "$mode"
-[[ "$mode" == "640 root:hermes" ]] \
-  || { echo "the rendered .env is $mode, not 640 root:hermes" >&2; exit 1; }
+# The credential never lands in the agent's home. The runtime writes a loopback
+# key of its own into that dotenv, which nothing here reads -- the gateway takes
+# API_SERVER_KEY from its environment -- but a tenant's identity must not be
+# there at all: it is a file uid 10000 can read, and it outlives the boot.
+for secret in PLOW_AGENT_TOKEN PLOW_API_BASE PLOW_HOME_CHANNEL HERMES_CUSTOM_PLOW_API_KEY; do
+  docker exec "$name" grep -q "^$secret=" /var/lib/hermes/.env 2>/dev/null \
+    && { echo "$secret was written into the agent's own home" >&2; exit 1; }
+done
 
 [[ "$(mcp_state plow)" == true ]] \
   || { echo "a cloud-shaped boot did not enable the relay: $(mcp_state plow)" >&2; exit 1; }
@@ -238,10 +251,12 @@ grep -qx 'HERMES_WRITE_SAFE_ROOT=/var/lib/hermes' <<<"$env1" || { echo "the gate
 # owned by whoever ran the setup script. Init normalizes it, and it is in the
 # snapshot because it is what a rendered provider block would be written into —
 # an init that rewrote it on every boot would be invisible without this.
-# init wrote this file on the first boot; assert it, because a generated
-# API_SERVER_KEY that did not persist would give every boot a different one.
-docker exec "$name" grep -q '^API_SERVER_KEY=..*' /var/lib/hermes/.env \
-  || { echo "init did not persist a generated API_SERVER_KEY" >&2; exit 1; }
+# The loopback key is generated per boot and published, never persisted. A key
+# that survived a restart would be a long-lived secret at rest for no reason,
+# and the contract downstream is "read it from the environment": asserting it
+# CHANGES is what keeps anything from quietly starting to cache it.
+key_first="$(published | sed -n 's/^API_SERVER_KEY=//p')"
+[[ -n "$key_first" ]] || { echo "no API_SERVER_KEY was published" >&2; exit 1; }
 
 # Running state, not the compiled service list: s6-rc lists what the database
 # says should be up, which is identical whether a longrun is answering or
@@ -269,7 +284,9 @@ grep -q '^3770 root:hermes /var/lib/hermes$'        <<<"$first" || { echo "home 
 grep -q '^3770 root:hermes /var/lib/hermes/skills$' <<<"$first" || { echo "skills/ lost 3770 root:hermes" >&2; exit 1; }
 grep -q ' root:root /var/lib/hermes/SOUL.md$'       <<<"$first" || { echo "SOUL.md is not root-owned" >&2; exit 1; }
 grep -q ' hermes:hermes /var/lib/hermes/config.yaml$' <<<"$first" || { echo "config.yaml is not hermes-owned" >&2; exit 1; }
-grep -q '^640 root:hermes /var/lib/hermes/.env$'    <<<"$first" || { echo ".env is not 0640 root:hermes" >&2; exit 1; }
+key_second="$(published | sed -n 's/^API_SERVER_KEY=//p')"
+[[ -n "$key_second" && "$key_second" != "$key_first" ]] \
+  || { echo "the API_SERVER_KEY did not change across a restart: $key_first" >&2; exit 1; }
 grep -q '^/run/service/hermes-gateway up=true$'     <<<"$first" || { echo "the gateway is not up" >&2; exit 1; }
 
 docker restart "$name" >/dev/null
@@ -304,29 +321,34 @@ printf 'home after a root `hermes` exec: %s\n' "$after"
 docker exec --user 10000:10000 "$name" sh -c 'ls /var/lib/hermes >/dev/null' \
   || { echo "uid 10000 can no longer traverse its own home" >&2; exit 1; }
 
-# --- 7. the dotenv is data, not a script ------------------------------------
+# --- 7. the credential is data, not a script --------------------------------
 #
-# Init and the gateway service both read /var/lib/hermes/.env as root, before
-# any privilege drop. `.` on that file would give every line of it a root
-# shell, and the file is written by whoever provisioned the box. A value that
-# looks like a command substitution has to arrive as those characters.
-# Carried on TZ because the value has to reach the gateway to be checked, and
-# only an allowlisted name gets that far — check 9 covers the names. Replaced
-# rather than appended: the file already carries a TZ, and the parser takes the
-# first value it sees for a name, so an appended line would never be read.
-docker exec "$name" sh -c 'sed -i "s|^TZ=.*|TZ=\$(touch /pwned)|" /var/lib/hermes/.env'
-docker exec "$name" grep -qx 'TZ=$(touch /pwned)' /var/lib/hermes/.env \
-  || { echo "the hostile value did not land in the dotenv" >&2; exit 1; }
+# `plow-init` reads this file as root, before anything drops privilege. A value
+# that looks like a command substitution has to arrive as those characters --
+# it is written by whoever provisions the box, and the whole file is two lines
+# of somebody else's text.
+drop_credentials http://stub:8080 'cloud-token-one$(touch /pwned)'
+docker restart "$name" >/dev/null
+docker wait "$name" >/dev/null
+docker exec "$name" test -e /pwned 2>/dev/null \
+  && { echo "a value in the credential was executed as a command" >&2; exit 1; }
+# The token is not one the stub knows, so the boot ends in a refusal -- which
+# is the correct outcome and not what is under test here. What is under test is
+# that the characters reached the request rather than a shell.
+# `docker wait` returns when the container stops, which is not the same moment
+# its last stderr line is readable, so the log is polled rather than read once.
+for _ in $(seq 1 60); do
+  docker logs "$name" 2>&1 | grep -q 'Plow refused this credential' && break
+  sleep 1
+done
+docker logs "$name" 2>&1 | grep -q 'Plow refused this credential' \
+  || { echo "the hostile credential did not reach the identity request intact" >&2
+       docker logs "$name" 2>&1 | tail -20 >&2; exit 1; }
+echo "credential: a command substitution arrived as characters, not a command"
+
+drop_credentials http://stub:8080 cloud-token-one
 docker restart "$name" >/dev/null
 await_gateway
-docker exec "$name" test -e /pwned \
-  && { echo "a value in the dotenv was executed as a command" >&2; exit 1; }
-probe="$(docker exec --user 10000:10000 "$name" sh -c '
-  pid=$(pgrep -f "hermes gateway run" | head -1)
-  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^TZ=//p" | tail -1')"
-[[ "$probe" == '$(touch /pwned)' ]] \
-  || { echo "the dotenv value did not reach the gateway verbatim: $probe" >&2; exit 1; }
-echo "dotenv: a command substitution arrived as characters, not a command"
 
 # --- 8. a symlinked config.yaml is hostile ----------------------------------
 #
@@ -495,7 +517,7 @@ cloud_container http://stub:8080 cloud-token-one
 docker start "$name" >/dev/null
 await_gateway
 
-key_before="$(docker exec "$name" sed -n 's/^API_SERVER_KEY=//p' /var/lib/hermes/.env)"
+key_before="$(published | sed -n 's/^API_SERVER_KEY=//p')"
 
 drop_credentials http://stub:8080 cloud-token-two
 docker restart "$name" >/dev/null
@@ -506,16 +528,14 @@ seen="$(docker exec --user 10000:10000 "$name" sh -c '
   tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_AGENT_TOKEN=//p"')"
 [[ "$seen" == cloud-token-two ]] \
   || { echo "the restarted gateway is still holding '$seen'" >&2; exit 1; }
-docker exec "$name" grep -qx 'PLOW_AGENT_TOKEN=cloud-token-two' /var/lib/hermes/.env \
-  || { echo "the persisted dotenv still names the replaced token" >&2; exit 1; }
-docker exec "$name" grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-two' /var/lib/hermes/.env \
-  || { echo "the inference key alias kept the replaced token" >&2; exit 1; }
-docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_two' /var/lib/hermes/.env \
-  || { echo "the home channel was not re-asked after the rotation" >&2; exit 1; }
-key_after="$(docker exec "$name" sed -n 's/^API_SERVER_KEY=//p' /var/lib/hermes/.env)"
-[[ -n "$key_after" && "$key_before" == "$key_after" ]] \
-  || { echo "the rotation changed the server key: $key_before -> $key_after" >&2; exit 1; }
-echo "rotation: new token in the gateway's environment and its dotenv, server key kept"
+rotated="$(published)"
+grep -qx 'PLOW_AGENT_TOKEN=cloud-token-two'           <<<"$rotated" || { echo "the published environment still names the replaced token" >&2; exit 1; }
+grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-two' <<<"$rotated" || { echo "the inference key alias kept the replaced token" >&2; exit 1; }
+grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_two'            <<<"$rotated" || { echo "the home channel was not re-asked after the rotation" >&2; exit 1; }
+key_after="$(published | sed -n 's/^API_SERVER_KEY=//p')"
+[[ -n "$key_after" && "$key_before" != "$key_after" ]] \
+  || { echo "the restart reused the previous server key" >&2; exit 1; }
+echo "rotation: new token in the gateway's environment and published, server key regenerated"
 
 # A tenant whose relay went away. The dotenv still carries the URL from when it
 # had one, and the file fills only what nothing else set -- so nothing but an
@@ -523,8 +543,8 @@ echo "rotation: new token in the gateway's environment and its dotenv, server ke
 drop_credentials http://stub:8080 cloud-token-norelay
 docker restart "$name" >/dev/null
 await_gateway
-docker exec "$name" grep -q '^PLOW_MCP_URL=' /var/lib/hermes/.env \
-  && { echo "a withdrawn relay survived in the dotenv" >&2; exit 1; }
+published | grep -q '^PLOW_MCP_URL=' \
+  && { echo "a withdrawn relay was published anyway" >&2; exit 1; }
 [[ "$(mcp_state plow)" == false ]] \
   || { echo "a withdrawn relay is still enabled: $(mcp_state plow)" >&2; exit 1; }
 echo "withdrawn relay: gone from the dotenv and switched off in the config"
@@ -619,8 +639,13 @@ refused "unreachable Plow" 'gave up asking Plow who this agent is'
 # A host deciding something the contract does not let it decide. The home
 # channel is Plow's answer, not the host's claim, and a file naming it is a
 # provisioner out of date with the image -- refused rather than half-obeyed.
-cloud_container http://stub:8080 cloud-token-one 'PLOW_HOME_CHANNEL=cht_host_says'
-refused "an out-of-contract key" 'sets PLOW_HOME_CHANNEL, which this image does not read'
+# The names it could reach for are not merely unread: PATH would send every
+# later command in a root process somewhere of the file's choosing, and
+# LD_PRELOAD would load a library into the gateway.
+for extra_key in PLOW_HOME_CHANNEL PATH LD_PRELOAD; do
+  cloud_container http://stub:8080 cloud-token-one "$extra_key=whatever"
+  refused "a credential naming $extra_key" 'is not the two lines this image reads'
+done
 
 # A drop-in anyone but root can write is a drop-in anyone but root can point at
 # their own API base, and the agent's bearer token goes with it; one anyone can
@@ -640,8 +665,8 @@ cred_mode=0400
 cloud_container http://stub:8080 cloud-token-one
 docker start "$name" >/dev/null
 await_gateway
-docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one' /var/lib/hermes/.env \
-  || { echo "a 0400 drop-in did not render the dotenv" >&2; exit 1; }
+published | grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one' \
+  || { echo "a 0400 drop-in did not publish the identity" >&2; exit 1; }
 echo "drop-in at 0400: accepted, gateway up"
 cred_mode=0600
 
@@ -676,8 +701,8 @@ printf 'promoted credentials: %s\n' "$promoted"
 mounted="$(docker exec "$name" stat -c '%a %u:%g' /var/lib/plow/credentials.host)"
 [[ "$mounted" == "644 10000:10000" ]] \
   || { echo "the mount itself was changed: $mounted" >&2; exit 1; }
-docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one' /var/lib/hermes/.env \
-  || { echo "a promoted drop-in did not render the dotenv" >&2; exit 1; }
+published | grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_one' \
+  || { echo "a promoted drop-in did not publish the identity" >&2; exit 1; }
 echo "bind-mounted drop-in: promoted to 600 root:root, mount untouched, gateway up"
 
 # And a rotation through the mount: the same two lines rewritten out here, and
@@ -686,39 +711,13 @@ echo "bind-mounted drop-in: promoted to 600 root:root, mount untouched, gateway 
 host_credentials http://stub:8080 cloud-token-two
 docker restart "$name" >/dev/null
 await_gateway
-docker exec "$name" grep -qx 'PLOW_AGENT_TOKEN=cloud-token-two' /var/lib/hermes/.env \
+published | grep -qx 'PLOW_AGENT_TOKEN=cloud-token-two' \
   || { echo "a rewritten mount did not replace the promoted credential" >&2; exit 1; }
-docker exec "$name" grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_two' /var/lib/hermes/.env \
+published | grep -qx 'PLOW_HOME_CHANNEL=cht_cloud_two' \
   || { echo "the identity was not re-asked after a mount rotation" >&2; exit 1; }
 echo "bind-mount rotation: new token promoted, identity re-asked"
 
-# --- 15. a dotenv cannot name what it is not allowed to ---------------------
-#
-# Refusing to *run* the file is half of it. A NAME can be as dangerous as a
-# value while the reader is still root: PATH sends every later command
-# somewhere of the file's choosing, LD_PRELOAD loads a library into the
-# gateway. The names are an allowlist, so a dotenv carrying either is refused
-# and nothing starts -- placed into the home before first boot, which is where
-# a hostile one would come from. A valid credential is present, so the boot
-# reaches the home's dotenv at all rather than stopping short of it.
-cloud_container http://stub:8080 cloud-token-one
-printf 'PATH=/var/lib/hermes/bin\nLD_PRELOAD=x\n' > "$cloud_dir/bad.env"
-docker cp "$cloud_dir/bad.env" "$name:/var/lib/hermes/.env" >/dev/null
-docker start "$name" >/dev/null 2>&1 || true
-docker wait "$name" >/dev/null 2>&1 || true
-
-out="$(docker logs "$name" 2>&1)"
-grep -q 'sets PATH, which this image does not read' <<<"$out" \
-  || { echo "a dotenv setting PATH was not refused" >&2; printf '%s\n' "$out" >&2; exit 1; }
-grep -q 'hermes-gateway: starting' <<<"$out" \
-  && { echo "the gateway started from a dotenv naming PATH" >&2; exit 1; }
-code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
-[[ "$code" != 0 ]] || { echo "a refused dotenv left PID 1 exiting 0" >&2; exit 1; }
-echo "dotenv: PATH/LD_PRELOAD refused, gateway never started, PID 1 exited $code"
-
-docker rm -f "$name" >/dev/null 2>&1 || true
-
-# --- 16. the container environment is not a credential source ---------------
+# --- 15. the container environment is not a credential source ---------------
 #
 # The image renders every one of these names for itself, from the drop-in and
 # from Plow's answer about the tenant holding it. `with-contenv` hands both
@@ -741,12 +740,12 @@ docker start "$name" >/dev/null
 cloud_extra=()
 await_gateway
 
-rendered="$(docker exec "$name" cat /var/lib/hermes/.env)"
+rendered="$(published)"
 for want in 'PLOW_API_BASE=http://stub:8080' 'PLOW_AGENT_TOKEN=cloud-token-one' \
             'PLOW_HOME_CHANNEL=cht_cloud_one' 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-one' \
             'PLOW_MCP_URL=http://stub:8080/v1/relay/devices/dev_cloud_check/mcp'; do
   grep -qx "$want" <<<"$rendered" \
-    || { echo "an inherited environment reached the rendered dotenv: wanted $want" >&2
+    || { echo "an inherited environment reached the published values: wanted $want" >&2
          printf '%s\n' "$rendered" >&2; exit 1; }
 done
 # ...and the gateway is its own reader of that file, with its own inherited
@@ -756,13 +755,11 @@ seen="$(docker exec --user 10000:10000 "$name" sh -c '
   tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_AGENT_TOKEN=//p"')"
 [[ "$seen" == cloud-token-one ]] \
   || { echo "the gateway came up holding the inherited token: '$seen'" >&2; exit 1; }
-docker exec "$name" grep -q 'ignoring inherited PLOW_AGENT_TOKEN' /var/lib/hermes/.env 2>/dev/null \
-  && { echo "the refusal notice leaked into the dotenv" >&2; exit 1; }
 echo "inherited PLOW_* environment: ignored by init and by the gateway, drop-in won"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
 
-# --- 17. ...and provider and model are the two names it still owns ----------
+# --- 16. ...and provider and model are the two names it still owns ----------
 #
 # Where inference goes is a decision about a container, not a fact about the
 # agent, so these two keep environment precedence when everything else lost it.
@@ -816,13 +813,17 @@ provider_boot
   || { echo "the default provider is not plow: $(model_key provider)" >&2; exit 1; }
 seeded_model="$(model_key default)"
 [[ -n "$seeded_model" ]] || { echo "no default model was written" >&2; exit 1; }
-docker exec "$name" grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-one' /var/lib/hermes/.env \
+published | grep -qx 'HERMES_CUSTOM_PLOW_API_KEY=cloud-token-one' \
   || { echo "the plow inference key was not derived from the credential" >&2; exit 1; }
 # Stands in for a provider login: something the agent owns, in its own home.
 docker exec --user 10000:10000 "$name" sh -c 'printf "a login\n" > /var/lib/hermes/.provider-login'
 # Captured AFTER that write, so the login is part of what must survive.
 providers_before="$(config_section providers)"
 home_before="$(home_inventory)"
+# Its contents, not just its presence: a login rewritten in place passes an
+# inventory that compares path, owner and mode. Compared after the switch BACK,
+# so it covers the whole round trip rather than one leg of it.
+login_before="$(docker exec "$name" sha256sum /var/lib/hermes/.provider-login)"
 echo "provider default: plow, model $seeded_model, inference key derived from the credential"
 
 provider_boot --env HERMES_PROVIDER=anthropic --env HERMES_MODEL=claude-sonnet-4-5
@@ -854,7 +855,9 @@ echo "provider switch: anthropic/claude-sonnet-4-5; providers.* and the agent's 
 provider_boot --env HERMES_PROVIDER=plow --env "HERMES_MODEL=$seeded_model"
 [[ "$(model_key provider)" == plow && "$(model_key default)" == "$seeded_model" ]] \
   || { echo "switching back left $(model_key provider)/$(model_key default)" >&2; exit 1; }
-echo "switch back: plow/$seeded_model, from the same two variables"
+[[ "$(docker exec "$name" sha256sum /var/lib/hermes/.provider-login)" == "$login_before" ]] \
+  || { echo "the round trip changed the provider login's contents" >&2; exit 1; }
+echo "switch back: plow/$seeded_model, provider login byte-identical"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
 docker volume rm "$vol" >/dev/null
@@ -864,7 +867,7 @@ docker rm -f "$name" "$stub" >/dev/null
 docker network rm "$net" >/dev/null
 stub=; net=
 
-# --- 18. a failed init starts nothing ---------------------------------------
+# --- 17. a failed init starts nothing ---------------------------------------
 #
 # A first-boot.d drop-in that exits non-zero is the cheapest stand-in for the
 # real failure: the VM host's credential injection dying halfway. Init is a
@@ -887,7 +890,7 @@ echo "failed init: gateway never started, PID 1 exited $code"
 
 docker rm -f "$name" >/dev/null 2>&1 || true
 
-# --- 19. a boot with no credential starts nothing ---------------------------
+# --- 18. a boot with no credential starts nothing ---------------------------
 #
 # The gateway comes up without one: it serves its loopback API and runs the
 # cron scheduler with no adapter attached. Every probe passes and no owner can
@@ -900,7 +903,7 @@ grep -q 'no credential at /var/lib/plow/credentials' <<<"$out" || { echo "a cred
 grep -q 'hermes-gateway: starting' <<<"$out" && { echo "the gateway started with no credential" >&2; exit 1; }
 echo "no credential: gateway never started, PID 1 exited $(docker inspect -f '{{.State.ExitCode}}' "$name")"
 
-# --- 20. the bundled skills are readable by the gateway user ----------------
+# --- 19. the bundled skills are readable by the gateway user ----------------
 #
 # The bundled tree is what a home without these skills gets them from, and
 # where later updates to them come from. The gateway reconciles it into

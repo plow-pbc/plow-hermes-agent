@@ -47,9 +47,11 @@ PLOW_AGENT_TOKEN=<the agent's own credential>
 provisioner that has drifted ahead of the image is refused rather than
 half-obeyed — and then asks Plow the rest with that credential:
 `GET $PLOW_API_BASE/v1/agents/cloud/me` answers with the home channel and the
-relay endpoint. From those, the image renders `/var/lib/hermes/.env` itself,
-deriving the inference key alias, generating an `API_SERVER_KEY` on first boot
-and defaulting `TZ` to UTC.
+relay endpoint. From those, the image publishes the tenant's environment
+itself — one file per name under `/run/s6/container_environment`, which every
+service inherits — deriving the inference key alias from the credential and
+generating a fresh `API_SERVER_KEY` on every boot. Nothing is persisted: the
+key is read from the environment, never from a file.
 
 The drop-in wins over the persisted dotenv, and the file is left in place: a
 rotation is a rewrite of those two lines and a restart, with no shell into the
@@ -145,6 +147,11 @@ COPY --chmod=0755 first-boot.d/50-variant.sh /usr/local/lib/plow/first-boot.d/50
 A variant that needs a background job adds its own s6 longrun under
 `/etc/s6-overlay/s6-rc.d/`, with `plow-init` in its `dependencies.d/` and its
 name in `user/contents.d/`.
+
+A variant that needs environment of its own — a timezone, say, which is a
+property of the tenant rather than of the credential — adds an s6 oneshot that
+writes `/run/s6/container_environment/<NAME>`, the same way `plow-init`
+publishes the values it owns.
 
 Don't fight the init: nothing starts the gateway by hand — the dependency
 already orders it after first boot — no credentials in `config.yaml`, no

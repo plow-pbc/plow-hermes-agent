@@ -123,9 +123,14 @@ RUN chown -R 10000:10000 /var/lib/hermes \
 # Provisioning runs this when it exists; it runs whatever a downstream image
 # dropped into first-boot.d.
 COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
-# The shared shell: the trusted PATH every privileged entry point runs with,
-# and the dotenv reader. Root-owned, outside any home.
-COPY --chmod=0644 image/lib/ /usr/local/lib/plow/
+# `plow-init` declares its credential file and Plow's answer as models rather
+# than parsing either by hand. pydantic, python-dotenv and PyYAML are already
+# in the runtime's environment at the versions its lock pins; this adds the one
+# package that is not, with --no-deps so the install cannot move any of them.
+RUN set -eu; \
+    /opt/hermes/.venv/bin/python -c 'import pydantic, dotenv, yaml'; \
+    uv pip install --python /opt/hermes/.venv/bin/python --no-deps pydantic-settings==2.14.2; \
+    /opt/hermes/.venv/bin/python -c 'import pydantic_settings'
 # A pristine config.yaml, out of the agent's reach. First boot hands the one
 # in the home to uid 10000, so this is the copy it is restored from when it
 # comes back as something other than a regular file.
@@ -145,6 +150,7 @@ COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 # COPY merges into the upstream tree, so the base image's own `user` bundle
 # entries survive alongside ours.
 COPY image/s6-overlay/ /etc/s6-overlay/
+RUN chmod 0755 /etc/s6-overlay/scripts/plow-init.py
 
 # One gateway, and one supervisor that owns it.
 #

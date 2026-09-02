@@ -89,7 +89,11 @@ docker compose up -d
 `HERMES_MODEL` is not optional when switching: the seeded default model id
 belongs to the Plow provider and means nothing to another one.
 
-A provider that takes an API key needs no login, just the variable it reads:
+A provider that takes an API key needs no login, just the variable it reads —
+in the `.env` beside this file, which compose passes as container environment.
+Not in the agent's own `/var/lib/hermes/.env`: that one is read by root at boot
+and accepts only the names this image sets, so an unknown one is a refused boot
+rather than a silent miss.
 
 ```sh
 printf 'HERMES_PROVIDER=anthropic\nHERMES_MODEL=claude-sonnet-4-5\nANTHROPIC_API_KEY=sk-ant-...\n' >> .env

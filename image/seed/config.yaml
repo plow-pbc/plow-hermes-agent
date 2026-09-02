@@ -27,6 +27,14 @@ providers:
     stale_timeout_seconds: 55
     models:
       anthropic/claude-sonnet-5: {}
+# Hermes delivers any prose the model emits before or between tool calls as its
+# own chat message, and announces every memory write. Both default on, and both
+# are noise to an owner who asked one question over iMessage: a new owner saw
+# "Good, assets exist. Let me send the opener now." arrive as a message of its
+# own. Final answers only.
+display:
+  interim_assistant_messages: false
+  memory_notifications: "off"
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

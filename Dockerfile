@@ -55,12 +55,13 @@ COPY image/seed/ /var/lib/hermes/
 #
 # The baked tree is where this image's gateway looks, because HERMES_HOME *is*
 # /var/lib/hermes; the bundled copy does not replace it. What the bundled one
-# covers is the home going missing from under it. Compose keeps the home on a
-# volume that outlives the container, and the agent owns most of what is in it,
-# so a skill can be deleted or a whole home can arrive empty -- and /opt/hermes
-# is the one place no turn can write. The gateway reconciles the bundled tree
-# into $HERMES_HOME/skills on every boot: updating a copy the agent has not
-# touched, leaving a customised one alone, never re-adding one it deleted.
+# covers is a home that arrives without them -- an empty volume on a first
+# `compose up` -- and updates afterwards. The gateway reconciles it into
+# $HERMES_HOME/skills on every boot: seeding what is not there, updating a copy
+# the agent has not touched, leaving a customised one alone, and never
+# re-adding one the agent deleted. That last one is a decision the runtime
+# records in its manifest and honours; the bundled tree is a source, not a
+# restore.
 #
 # NB the ownership block below root-owns only the top-level skills/ directory;
 # `chown -R` leaves every category and skill under it owned by uid 10000, so a

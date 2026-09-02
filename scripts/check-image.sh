@@ -390,10 +390,11 @@ echo "no credential: gateway never started, PID 1 exited $(docker inspect -f '{{
 
 # --- 8. the bundled skills are readable by the gateway user -----------------
 #
-# The bundled tree is what puts a deleted skill back: the gateway reconciles it
-# into $HERMES_HOME/skills on every boot, as uid 10000. A skill that uid cannot
-# READ is a skill that never comes back. Checked as that uid, because root can
-# read a tree nobody else can, which is the failure this would otherwise miss.
+# The bundled tree is what a home without these skills gets them from, and
+# where later updates to them come from. The gateway reconciles it into
+# $HERMES_HOME/skills as uid 10000, so a skill that uid cannot READ is a skill
+# such a home never receives. Checked as that uid, because root can read a tree
+# nobody else can, which is the failure this would otherwise miss.
 docker run --rm --platform "$platform" --user 10000:10000 \
   --entrypoint /usr/bin/test "$image" \
   -r /opt/hermes/skills/productivity/plow-connectors/SKILL.md \

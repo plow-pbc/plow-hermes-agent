@@ -128,7 +128,8 @@ def test_a_relay_is_optional_however_it_is_spelled(mcp_url):
 
 
 SEED = {
-    "model": {"provider": "plow", "default": "seeded/model", "base_url": "${PLOW_API_BASE}/v1"},
+    "model": {"provider": "plow", "default": "seeded/model",
+              "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
 }
@@ -141,7 +142,7 @@ def configure(tmp_path, mcp_url=None, env=None):
     os.environ.pop("HERMES_PROVIDER", None)
     os.environ.pop("HERMES_MODEL", None)
     os.environ.update(env or {})
-    plow_init.configure(identity(mcp_url=mcp_url))
+    plow_init.configure(identity(mcp_url=mcp_url), SEED["model"])
     return yaml.safe_load(config.read_text())
 
 
@@ -153,7 +154,6 @@ def test_it_writes_the_three_settings_it_owns_and_nothing_else(tmp_path):
     assert after["mcp_servers"]["plow"]["enabled"] is True
     # Somebody else's MCP server, and everything else, untouched.
     assert after["mcp_servers"]["theirs"] == SEED["mcp_servers"]["theirs"]
-    assert after["model"]["base_url"] == SEED["model"]["base_url"]
     assert after["platforms"] == SEED["platforms"]
 
 
@@ -161,9 +161,27 @@ def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):
     assert configure(tmp_path)["model"]["default"] == "seeded/model"
 
 
+def test_switching_away_from_plow_takes_plows_endpoint_with_it(tmp_path):
+    """`base_url` and `key_env` describe Plow. Left behind under another
+    provider they send every call back to Plow with Plow's credential."""
+    after = configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
+    assert "base_url" not in after["model"]
+    assert "key_env" not in after["model"]
+
+
+def test_switching_back_restores_it_from_the_seed(tmp_path):
+    configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "m"})
+    config = tmp_path / "config.yaml"
+    os.environ.update({"HERMES_PROVIDER": "plow", "HERMES_MODEL": "seeded/model"})
+    plow_init.configure(identity(), SEED["model"])
+    after = yaml.safe_load(config.read_text())
+    assert after["model"]["base_url"] == SEED["model"]["base_url"]
+    assert after["model"]["key_env"] == SEED["model"]["key_env"]
+
+
 def test_an_unchanged_config_is_not_rewritten(tmp_path):
     config = tmp_path / "config.yaml"
     configure(tmp_path)
     before = config.stat().st_mtime_ns
-    plow_init.configure(identity())
+    plow_init.configure(identity(), SEED["model"])
     assert config.stat().st_mtime_ns == before

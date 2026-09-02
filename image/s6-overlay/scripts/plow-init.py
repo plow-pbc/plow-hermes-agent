@@ -42,6 +42,8 @@ TIMEOUT_S = 10
 # whoever added it and is left exactly as it is.
 RELAY_SERVER = "plow"
 HOME_DIR = "/var/lib/hermes"
+HOME_DOTENV = "/var/lib/hermes/.env"
+SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 
 
 def die(message: str) -> typing.NoReturn:
@@ -238,7 +240,7 @@ def export(values: dict[str, str]) -> None:
             handle.write(value)
 
 
-def configure(identity: Identity) -> None:
+def configure(identity: Identity, seed_model: dict) -> None:
     """Point the agent at its inference provider and its relay.
 
     A structured edit: it writes the three settings it owns and touches nothing
@@ -249,24 +251,57 @@ def configure(identity: Identity) -> None:
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
 
+    provider = os.environ.get("HERMES_PROVIDER", "plow")
     wanted: dict[tuple[str, ...], object] = {
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
-        ("model", "provider"): os.environ.get("HERMES_PROVIDER", "plow"),
+        ("model", "provider"): provider,
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
+
+    # `base_url` and `key_env` describe Plow's endpoint and its credential.
+    # Left in place under another provider they point every call back at Plow,
+    # so they are removed when switching away and restored from the seed when
+    # switching back -- which is what keeps a switch two variables rather than
+    # an edit.
+    for key in ("base_url", "key_env"):
+        wanted[("model", key)] = seed_model.get(key) if provider == "plow" else None
 
     changed = False
     for path, value in wanted.items():
         section = config
         for key in path[:-1]:
             section = section.setdefault(key, {})
-        if section.get(path[-1]) != value:
+        # `None` means the setting should not be there at all, which is not the
+        # same as being present and null.
+        if value is None:
+            changed = section.pop(path[-1], None) is not None or changed
+        elif section.get(path[-1]) != value:
             section[path[-1]] = value
             changed = True
     if changed:
         with open(CONFIG, "w") as handle:
             yaml.safe_dump(config, handle, sort_keys=False)
+
+
+def own_home_dotenv(api_server_key: str) -> None:
+    """Make the home's dotenv agree with the environment, on the one name in it.
+
+    The runtime writes its own API_SERVER_KEY there during cont-init, and it
+    loads that file OVER its process environment -- so a key this image
+    published would lose to the one persisted in the home, and the per-boot key
+    would be decorative. Overwriting the file with ours settles it: both
+    sources say the same thing.
+
+    Written rather than emptied, because the runtime seeds a 535-name example
+    into any home it finds without a dotenv. And this one name only: the
+    tenant's credential is published to the environment and has no business in
+    a file the agent can read.
+    """
+    with open(HOME_DOTENV, "w") as handle:
+        handle.write(f"API_SERVER_KEY={api_server_key}\n")
+    os.chown(HOME_DOTENV, 0, pwd.getpwnam("hermes").pw_gid)
+    os.chmod(HOME_DOTENV, 0o640)
 
 
 def harden_home() -> None:
@@ -313,17 +348,23 @@ def main() -> None:
         values["PLOW_MCP_URL"] = identity.mcp_url
     export(values)
     os.environ.update(values)
+    own_home_dotenv(values["API_SERVER_KEY"])
 
     # The config belongs to the agent -- the chat plugin rewrites it on every
     # connect -- so it is edited as the agent, never as root. A symlink or any
     # other shape somebody left at that path then fails as an ordinary
     # permission error from an unprivileged process, loudly, instead of root
     # writing through it.
+    # Read while still root: the seed lives outside every home, where the
+    # agent cannot reach it -- which is the point of keeping it there.
+    with open(SEED_CONFIG) as handle:
+        seed_model = (yaml.safe_load(handle) or {}).get("model", {})
+
     hermes = pwd.getpwnam("hermes")
     os.setgroups([])
     os.setgid(hermes.pw_gid)
     os.setuid(hermes.pw_uid)
-    configure(identity)
+    configure(identity, seed_model)
     print(f"plow-init: configured from {CREDENTIALS} as {home.uid}", file=sys.stderr)
 
 

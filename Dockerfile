@@ -93,8 +93,10 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 #
 # The sticky bit is what separates the two. With `t` set, uid 10000 may create
 # and remove its OWN entries here but cannot unlink or rename anyone else's --
-# so root-owned SOUL.md and config.yaml sit in a writable directory and are
-# still unreplaceable. Without it, file modes alone are not enough: an agent
+# so a root-owned SOUL.md sits in a writable directory and is still
+# unreplaceable. config.yaml is the agent's own -- the chat plugin rewrites it,
+# and `plow-init` edits it as the agent rather than as root -- so it is not
+# protected by this and is not meant to be. Without it, file modes alone are not enough: an agent
 # that cannot WRITE SOUL.md can still delete it and write its own in its place,
 # because unlink permission comes from the directory, not the file. That is the
 # hole this closes.

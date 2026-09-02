@@ -10,7 +10,9 @@
 #
 # So this waits for two facts, in order: the supervisor reports a NEW pid, and
 # that pid has opened the loopback port. 0100007F:21C2 is 127.0.0.1:8642 in
-# /proc/net/tcp — the same listener Plow's provisioning waits for.
+# /proc/net/tcp, and state 0A is LISTEN — without the state a socket the OLD
+# process left in TIME_WAIT or CLOSE_WAIT reads as a ready gateway, which is
+# exactly the race this wait exists to close.
 set -eu
 
 SERVICE=/run/service/hermes-gateway
@@ -28,7 +30,7 @@ i=0
 while [ "$i" -lt "$TIMEOUT" ]; do
   now="$(/command/s6-svstat -o pid "$SERVICE" 2>/dev/null || echo none)"
   if [ "$now" != "$before" ] && [ "$(/command/s6-svstat -o up "$SERVICE")" = true ] \
-     && grep -q '0100007F:21C2 ' /proc/net/tcp; then
+     && grep -q '0100007F:21C2 [0-9A-F]\{8\}:[0-9A-F]\{4\} 0A ' /proc/net/tcp; then
     echo "plow-restart-gateway: gateway back on 127.0.0.1:8642 (pid $now) after ${i}s"
     exit 0
   fi

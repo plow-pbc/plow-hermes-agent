@@ -1,16 +1,20 @@
 # Running this agent on your own machine. The cloud path never reads this file:
 # there, exe.dev unpacks the same image into a VM and provisioning writes the
 # dotenv. Here, `env_file:` is what provisioning would have written.
+#
+# Standalone by itself -- a published image, no network but its own. To run the
+# checkout instead, against a Plow stack on this machine, add compose.e2e.yml:
+#
+#   docker compose -f compose.yml -f compose.e2e.yml up -d
 name: plow-hermes-agent
 
 services:
   agent:
-    # This repository is where the image comes from, so the default is the
-    # checkout. Published images are
-    # public.ecr.aws/e1h7x4a2/plow-cloud-agents, one immutable `base-<sha>` tag
-    # per commit -- set PLOW_AGENT_IMAGE to one of those to run it instead.
-    image: ${PLOW_AGENT_IMAGE:-plow-hermes-agent:local}
-    build: .
+    # One immutable `base-<sha>` tag per commit; the README says how to list
+    # them. The default names no real tag on purpose: the pull fails by name
+    # rather than booting some other commit's image, and an override file can
+    # still replace it without tripping a required-variable check.
+    image: ${PLOW_AGENT_IMAGE:-public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-set-me}
     # Written by `plow-activate`, which needs this file not to exist yet.
     env_file:
       - path: .env
@@ -29,15 +33,5 @@ services:
     # No ports. The gateway's only path to Plow is the socket it opens
     # outbound; its local API server is loopback-only and holds credentials.
 
-    # End-to-end against a Plow stack running on this machine: uncomment both
-    # `networks:` blocks and set PLOW_API_BASE=http://api:8000 in .env, which
-    # reaches the API by container name and so is independent of host ports.
-    networks: [default, plow]
-
 volumes:
   hermes-home:
-
-networks:
-  plow:
-    name: plow_default
-    external: true

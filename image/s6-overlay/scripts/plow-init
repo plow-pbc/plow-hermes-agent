@@ -42,16 +42,39 @@ fi
 # `plow-init` is a oneshot every service depends on, so exiting here starts
 # nothing, and S6_BEHAVIOUR_IF_STAGE2_FAILS=2 takes PID 1 down with it —
 # visibly dead rather than quietly deaf.
-if [ -f /var/lib/hermes/.env ]; then
-  set -a
-  . /var/lib/hermes/.env
-  set +a
-fi
+# Read, never run: a dotenv is data, and `.` would hand every line of it a root
+# shell. See /usr/local/lib/plow/dotenv.sh.
+. /usr/local/lib/plow/dotenv.sh
+plow_load_dotenv /var/lib/hermes/.env || exit 1
 
 if [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
   echo "plow-init: PLOW_AGENT_TOKEN is unset — no credential in /var/lib/hermes/.env" >&2
   echo "plow-init: nor in the container environment. Refusing to start a gateway nobody can reach." >&2
   exit 1
+fi
+
+# On the local path nothing has written the dotenv -- the values arrived as
+# container environment -- so write it here, as root, before the gateway user
+# exists in the picture. Two reasons it is not left absent: the file is the
+# gateway's own authority for these values on both paths, and a home the agent
+# can write is a home where uid 10000 could otherwise CREATE this file and
+# choose the API base its own bearer token is sent to.
+if [ ! -e /var/lib/hermes/.env ]; then
+  umask 077
+  : > /var/lib/hermes/.env
+  # Values verbatim, unquoted, one per line -- the exact shape the parser reads
+  # back. Quoting them would mean escaping, and escaping would mean the reader
+  # had to interpret, which is the thing being avoided.
+  for plow_key in PLOW_API_BASE PLOW_HOME_CHANNEL PLOW_AGENT_TOKEN \
+                  HERMES_CUSTOM_PLOW_API_KEY PLOW_MCP_URL API_SERVER_KEY TZ; do
+    plow_val=$(printenv "$plow_key" 2>/dev/null) || continue
+    [ -n "$plow_val" ] || continue
+    printf '%s=%s\n' "$plow_key" "$plow_val" >> /var/lib/hermes/.env
+  done
+  unset plow_key plow_val
+  chown root:hermes /var/lib/hermes/.env
+  chmod 0640 /var/lib/hermes/.env
+  echo "plow-init: wrote /var/lib/hermes/.env from the container environment" >&2
 fi
 
 # Last, because it rewrites config.yaml and wants the ownership first-boot.sh

@@ -114,6 +114,7 @@ RUN chown -R 10000:10000 /var/lib/hermes \
 # Provisioning runs this when it exists; it runs whatever a downstream image
 # dropped into first-boot.d.
 COPY --chmod=0755 image/first-boot.sh /usr/local/lib/plow/first-boot.sh
+COPY --chmod=0644 image/lib/dotenv.sh /usr/local/lib/plow/dotenv.sh
 
 # Restarting the gateway is now a supervisor signal, not a unit command, and
 # the caller lives in another repository: `systemctl` is a shim over

@@ -111,8 +111,13 @@ def activate(api_base: str, name: str) -> tuple[str, str, str]:
     return code, secret, send_to
 
 
-def redeem(api_base: str, secret: str, timeout_s: int, poll_s: int) -> tuple[str, object]:
-    """Poll until the owner's text lands. Returns (token, the provisioned chat)."""
+def redeem(api_base: str, secret: str, timeout_s: int, poll_s: int) -> object:
+    """Poll until the owner's text lands. Returns the verified redeem payload.
+
+    Deliberately does no checking beyond "is this verified": from the moment a
+    token exists, every way of giving up has to dispose of it, and that is the
+    caller's business, not the poller's.
+    """
     started = time.monotonic()
     deadline = started + timeout_s
     reported = ""
@@ -133,15 +138,7 @@ def redeem(api_base: str, secret: str, timeout_s: int, poll_s: int) -> tuple[str
             log(f"  status: {state or 'unknown'}")
             reported = state
         if state == "verified":
-            token = field(payload, "token")
-            chat = payload.get("chat") if isinstance(payload, dict) else None
-            if not (token and field(chat, "uid")):
-                raise SystemExit("plow-activate: activation verified but returned no token and chat")
-            # A real bearer token has none of these. One that did would break
-            # out of its own line in the dotenv this prints.
-            if any(character in token for character in '\r\n"\\'):
-                raise SystemExit("plow-activate: refusing a token containing quote or newline characters")
-            return token, chat
+            return payload
         time.sleep(poll_s)
     log(f"Timed out after {timeout_s}s waiting for the text. Run again for a fresh code.")
     raise SystemExit(EXIT_ACTIVATION_FAILED)
@@ -210,9 +207,17 @@ def disarm(api_base: str, token: str) -> bool:
             body={"name": "revoked by plow-activate", "scopes": ["chats:use"], "chat_uids": []},
             token=token,
         )
-    except Unreachable:
+    except (Unreachable, ValueError):
         return False
-    return status // 100 == 2 and isinstance(payload, dict) and payload.get("chat_uids") == []
+    # Both halves, from the server's own answer. A 2xx alone would let this
+    # claim a credential is harmless on the strength of a response that never
+    # said so.
+    return (
+        status // 100 == 2
+        and isinstance(payload, dict)
+        and payload.get("scopes") == ["chats:use"]
+        and payload.get("chat_uids") == []
+    )
 
 
 def dotenv(api_base: str, chat_uid: str, token: str) -> str:
@@ -256,14 +261,29 @@ def main() -> int:
         log(f"  Text  Plow Activate: {code}  to  {send_to}")
         log("")
         log("Waiting for that text ...")
-        token, chat = redeem(api_base, secret, args.timeout, args.poll_interval)
+        redeemed = redeem(api_base, secret, args.timeout, args.poll_interval)
     except Unreachable as error:
         log(f"plow-activate: {error}")
         return EXIT_ACTIVATION_FAILED
-    chat_uid = field(chat, "uid")
-    log("Verified. Narrowing the credential to this agent's line ...")
 
+    token = field(redeemed, "token")
+    if not token:
+        # Nothing was minted that this could dispose of, so there is nothing to
+        # clean up -- unlike every failure below it.
+        log("plow-activate: activation verified but returned no token")
+        return EXIT_ACTIVATION_FAILED
+
+    log("Verified. Narrowing the credential to this agent's line ...")
+    chat_uid = ""
     try:
+        # A real bearer token has none of these. One that did would break out of
+        # its own line in the dotenv this prints, and out of its own header.
+        if any(character in token for character in '\r\n"\\'):
+            raise NarrowingFailed("the token carries quote or newline characters")
+        chat = redeemed.get("chat") if isinstance(redeemed, dict) else None
+        chat_uid = field(chat, "uid")
+        if not chat_uid:
+            raise NarrowingFailed("activation returned no chat to scope the credential to")
         line_uid = chat_line(chat)
         narrow(api_base, token, line_uid, args.name)
     except (NarrowingFailed, Unreachable) as error:

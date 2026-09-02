@@ -18,9 +18,14 @@ run it natively; the tags published so far carry `amd64` alone.
 Docker, and a phone that can text. The agent runs against production Plow.
 
 ```sh
+export PLOW_AGENT_IMAGE=public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 docker compose run --rm agent plow-activate > .env   # prints a code; text it
 docker compose up -d                                 # boots the agent
 ```
+
+Pick the tag from the list under **Publishing** below; the compose default names
+one that does not exist, so an unset variable fails on the pull rather than
+booting some other commit's image.
 
 `plow-activate` starts a Plow activation, prints the code and the number to
 text it to, waits for that text, and writes the five variables the agent needs
@@ -33,27 +38,31 @@ out of the file.
 Then text the number the agent answers on, and it replies. `docker compose
 logs -f agent` is what it is doing.
 
-The compose file builds the image from this checkout, which on an Apple Silicon
-Mac means a native `arm64` one; the published `base-<sha>` tags are `amd64`
-only today, so `PLOW_AGENT_IMAGE` pointed at one of those runs under emulation
-until the publisher ships a multi-arch index.
+Every published tag is `amd64` only today, so a Mac runs one under emulation;
+the local build below is native `arm64` there.
 
 `.env.example` documents the five variables. `.env` holds live credentials and
-is gitignored; `docker compose down -v` deletes the agent's home volume along
-with them, and there is no second copy.
+is gitignored. `docker compose down -v` deletes the agent's home volume — its
+sessions, memories and provider logins, with no second copy — but **not** the
+`.env` beside this file: delete that yourself when you are done with the agent,
+or the next `up` brings the same one back.
 
 ### Against a Plow stack on this machine
 
-Uncomment the two `networks:` blocks in `compose.yml`, then point the agent at
-the API by container name rather than by host port:
+`compose.e2e.yml` builds this checkout instead of pulling, and joins the dev
+stack's own network so the API is reached by container name — no host port to
+guess, and no `PLOW_AGENT_IMAGE` to set:
 
 ```sh
-docker compose run --rm agent plow-activate --api-base http://api:8000 > .env
-docker compose up -d
+docker compose -f compose.yml -f compose.e2e.yml run --rm agent \
+  plow-activate --api-base http://api:8000 > .env
+docker compose -f compose.yml -f compose.e2e.yml up -d
 ```
 
 The activation code arrives at the local stack's iMessage twin instead of a
 phone; deliver it there the way that stack documents.
+`scripts/check-activate.sh` does the whole handshake and checks the credential
+it produced.
 
 ## Change inference provider
 

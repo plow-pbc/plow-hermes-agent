@@ -11,11 +11,10 @@ set -eu
 # variable inherited from the image must not shadow the one provisioning just
 # wrote. Nothing writes this file on the local path, where the container
 # environment is the only source.
-if [ -f /var/lib/hermes/.env ]; then
-  set -a
-  . /var/lib/hermes/.env
-  set +a
-fi
+# Read, never run. This script is root until the `s6-setuidgid` below, and a
+# dotenv is data: `.` would give every line of it a root shell.
+. /usr/local/lib/plow/dotenv.sh
+plow_load_dotenv /var/lib/hermes/.env || exit 1
 
 # The only two values that differ from the image's own ENV. The gateway's API
 # server is loopback-only: the agent's sole path to Plow is the outbound socket

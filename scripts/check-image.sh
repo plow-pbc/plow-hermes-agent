@@ -110,12 +110,13 @@ docker run -d --name "$name" --platform "$platform" \
   "$image" >/dev/null
 
 # The API's own readiness contract, verbatim: a loopback listener on 8642,
-# 0x21C2 in /proc/net/tcp. Emulating a foreign architecture is slow, so the
+# 0x21C2 in /proc/net/tcp, in state 0A — LISTEN, and not a leftover socket in
+# some other state that would answer this question wrongly. Emulating a foreign architecture is slow, so the
 # budget is generous rather than tuned.
 await_gateway() {
   local i
   for i in $(seq 1 150); do
-    if docker exec "$name" sh -c "grep -q '0100007F:21C2 ' /proc/net/tcp" 2>/dev/null; then
+    if docker exec "$name" sh -c "grep -q '0100007F:21C2 [0-9A-F]\{8\}:[0-9A-F]\{4\} 0A ' /proc/net/tcp" 2>/dev/null; then
       echo "gateway listening on 127.0.0.1:8642 after ${i}s"
       return 0
     fi
@@ -231,6 +232,24 @@ printf 'home after a root `hermes` exec: %s\n' "$after"
   || { echo "a root exec of the CLI left the home at $after" >&2; exit 1; }
 docker exec --user 10000:10000 "$name" sh -c 'ls /var/lib/hermes >/dev/null' \
   || { echo "uid 10000 can no longer traverse its own home" >&2; exit 1; }
+
+# --- 4c. the dotenv is data, not a script ----------------------------------
+#
+# Init and the gateway service both read /var/lib/hermes/.env as root, before
+# any privilege drop. `.` on that file would give every line of it a root
+# shell, and the file is written by whoever provisioned the box. A value that
+# looks like a command substitution has to arrive as those characters.
+docker exec "$name" sh -c "printf 'PLOW_PROBE=\$(touch /pwned)\n' >> /var/lib/hermes/.env"
+docker restart "$name" >/dev/null
+await_gateway
+docker exec "$name" test -e /pwned \
+  && { echo "a value in the dotenv was executed as a command" >&2; exit 1; }
+probe="$(docker exec --user 10000:10000 "$name" sh -c '
+  pid=$(pgrep -f "hermes gateway run" | head -1)
+  tr "\0" "\n" < "/proc/$pid/environ" | sed -n "s/^PLOW_PROBE=//p"')"
+[[ "$probe" == '$(touch /pwned)' ]] \
+  || { echo "the dotenv value did not reach the gateway verbatim: $probe" >&2; exit 1; }
+echo "dotenv: a command substitution arrived as characters, not a command"
 
 # --- 5. the restart path plow.git uses -----------------------------------
 #

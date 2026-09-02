@@ -60,7 +60,7 @@ fi
 # and the tenant's Latch tools silently gone, chat still working. The dotenv is
 # the durable record of whether this agent has a relay at all, so the flag is
 # derived from it on every boot: present means on, absent means off, which is
-# exactly what the provisioner decided (api/plow/cloud_agent/exe.py renders the
+# exactly what the provisioner decided (it renders the
 # same boolean from the same value). Idempotent, and a no-op on the local path,
 # where there is no relay and the seed already says false.
 if [ -n "${PLOW_MCP_URL:-}" ]; then

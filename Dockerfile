@@ -97,7 +97,7 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 # still unreplaceable. Without it, file modes alone are not enough: an agent
 # that cannot WRITE SOUL.md can still delete it and write its own in its place,
 # because unlink permission comes from the directory, not the file. That is the
-# hole this closes (plow-pbc/plow#1564).
+# hole this closes.
 #
 # skills/ gets the same mode, but NOT the same protection, and the difference
 # matters. `chown -R` above hands everything under skills/ to uid 10000; only
@@ -135,12 +135,6 @@ COPY --chmod=0644 image/seed/config.yaml /opt/hermes/plow-seed/config.yaml
 # directory.
 COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 
-# Restarting the gateway is now a supervisor signal, not a unit command, and
-# the caller lives in another repository: `systemctl` is a shim over
-# plow-restart-gateway for exactly the one command line plow.git sends, and it
-# goes away when that caller moves.
-COPY --chmod=0755 image/bin/plow-restart-gateway image/bin/systemctl /usr/local/bin/
-
 # The boot layer. s6-overlay is already in the upstream image — /init, the
 # supervision tree and the s6-rc database are all there — so this adds two
 # service definitions to it and installs no init of its own:
@@ -160,7 +154,7 @@ COPY image/s6-overlay/ /etc/s6-overlay/
 # is no recorded state and nothing starts, so the collision is invisible — but
 # the second boot starts `gateway-default`, which runs `hermes gateway run
 # --replace` against the same home, and `--replace` is precisely what makes it
-# kill the supervised gateway this image ships. Measured: after one
+# kill the supervised gateway this image ships: after one
 # `docker restart`, hermes-gateway is down and a profile service nobody
 # declared holds the port, with HOME and the working directory pointed at
 # /opt/data.

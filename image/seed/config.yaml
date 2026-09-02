@@ -8,11 +8,10 @@
 # the referenced values to Hermes' dotenv without copying a credential into
 # this file.
 # Named `plow`, and the name is enforced rather than cosmetic: provisioning
-# greps the installed config for this exact key
-# (api/plow/cloud_agent/exe_setup.sh) and refuses the image as an "incompatible
-# blessed image" without it. The portal's paste-ready snippet emits the same
-# name (api/plow/relay/router.py:_mcp_config, and `plow-<device>` for the
-# per-device form), so a provisioned agent and a hand-registered one read alike,
+# greps the installed config for this exact key and refuses the image without
+# it. Plow's own paste-ready snippet emits the same name (and `plow-<device>`
+# for the per-device form), so a provisioned agent and a hand-registered one
+# read alike,
 # and it is the prefix the relay's tools carry in the model's tool list.
 mcp_servers:
   plow:
@@ -55,10 +54,9 @@ providers:
 # NOT set here: display.interim_assistant_messages. Hermes also delivers any
 # prose the model emits before or between tool calls as its own chat message,
 # and turning that off looked like the structural fix for commentary reaching
-# the owner. It is the opposite. Measured live, twice: with interim delivery
-# off the entire introduction disappeared — the pitch, the privacy line, the
-# Latch link — and the whole of the owner's turn was "Already saved that. Now
-# I'll wait for her next reply."
+# the owner. It is the opposite: with interim delivery off, the introduction
+# disappears and the owner's turn becomes a bare acknowledgement of work they
+# never saw.
 #
 # The model writes the real message mid-turn, before its last tool call, and a
 # note to itself afterwards. Interim delivery is what carries the real message;

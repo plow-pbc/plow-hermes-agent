@@ -8,16 +8,17 @@ set -eu
 
 . /usr/local/lib/plow/root-path.sh
 
-# The tenant values, from whichever side holds them. The container environment
-# wins and the file fills only what it did not set: locally that environment is
-# the compose dotenv, which is where a re-run activation puts a new token, and
-# a copy persisted in the home volume must not reinstate the one it replaced.
-# On a VM nothing sets these before this runs, so the file supplies all of them
-# by having no competition rather than by a rule of its own.
+# The tenant values, from the dotenv `plow-init` rendered. That file is the
+# authority for every one of them, so the container environment is emptied of
+# those names before it is read -- with-contenv hands this script whatever
+# `docker run -e` set, and an inherited PLOW_AGENT_TOKEN would otherwise
+# outrank the credential the image was actually given. HERMES_PROVIDER and
+# HERMES_MODEL are not on that list and still arrive this way.
 #
 # Read, never run. This script is root until the `s6-setuidgid` below, and a
 # dotenv is data: `.` would give every line of it a root shell.
 . /usr/local/lib/plow/dotenv.sh
+plow_drop_inherited
 plow_load_dotenv /var/lib/hermes/.env || exit 1
 
 # The only two values that differ from the image's own ENV. The gateway's API

@@ -7,13 +7,19 @@
 # every line of it a root shell. `PLOW_AGENT_TOKEN=$(id > /tmp/x)` is a command
 # substitution, not a token.
 #
-# The environment wins. A name already set when this runs keeps its value and
-# the file's copy is skipped, and that one rule is what makes the host's
-# credential drop-in authoritative: it is read into the environment first, so a
-# dotenv persisted in a volume cannot reinstate the token, the home channel or
-# the relay the drop-in just replaced. The same rule carries HERMES_PROVIDER
-# and HERMES_MODEL in from the container environment, which is where an
-# operator switches inference provider.
+# A name already set when this runs keeps its value and the file's copy is
+# skipped. That rule is what orders the two files this image reads: the host's
+# credential drop-in is loaded into the environment first, so a dotenv
+# persisted in a volume cannot reinstate the token, the home channel or the
+# relay the drop-in just replaced.
+#
+# It is NOT a rule about the container environment, and every reader calls
+# `plow_drop_inherited` below before its first load so that it cannot become
+# one. Left in place, a `-e PLOW_AGENT_TOKEN=...` on `docker run` would take
+# precedence over the credential file the image was given -- which is the whole
+# of what a host is allowed to say about a tenant -- and over the dotenv the
+# image renders from it. HERMES_PROVIDER and HERMES_MODEL are the exception,
+# and are the only names the container environment may still supply.
 #
 # `export "$key=$value"` performs one assignment and re-parses nothing, so a
 # value that looks like shell is a value that looks like shell. Everything that
@@ -24,9 +30,8 @@
 # dangerous as a value: PATH sends every later command somewhere of the file's
 # choosing, LD_PRELOAD loads a library into the gateway, and both are read by
 # processes that are still root here. So the names are an allowlist, not a
-# pattern. It is exactly what the cloud setup script writes
-# (api/plow/cloud_agent/exe.py) plus the two that choose the inference
-# provider, and a dotenv naming anything else is refused rather than filtered:
+# pattern: exactly what this image renders, plus the two that choose the
+# inference provider. A dotenv naming anything else is refused, not filtered --
 # a file carrying a variable this image does not set is a file whose author
 # expected something that is not going to happen.
 #
@@ -59,6 +64,31 @@ PLOW_CREDENTIALS_ALLOWED='
 PLOW_API_BASE
 PLOW_AGENT_TOKEN
 '
+
+# The names this image renders for itself, from the credential drop-in and from
+# Plow's answer about the tenant holding it. An inherited container environment
+# must not supply any of them: it is not a source of truth for who this agent
+# is, and a stale one silently outranking the file a host just rewrote is a
+# rotation that did not take.
+#
+# HERMES_PROVIDER and HERMES_MODEL are deliberately absent. Where inference
+# goes is a decision about a container rather than a fact about the agent, so
+# the environment stays authoritative for exactly those two.
+PLOW_ENV_RENDERED='PLOW_API_BASE PLOW_HOME_CHANNEL PLOW_AGENT_TOKEN
+                   HERMES_CUSTOM_PLOW_API_KEY PLOW_MCP_URL API_SERVER_KEY TZ'
+
+# Called by every reader before its first `plow_load_dotenv`, so that the "a
+# name already set keeps its value" rule above only ever refers to a value this
+# image itself exported.
+plow_drop_inherited() {
+  for plow_inherited in $PLOW_ENV_RENDERED; do
+    if printenv "$plow_inherited" >/dev/null 2>&1; then
+      echo "plow: ignoring inherited $plow_inherited -- the image renders that name itself" >&2
+      unset "$plow_inherited"
+    fi
+  done
+  unset plow_inherited
+}
 
 # Strip one layer of matching outer quotes, the shape `shlex.quote` produces.
 # Left alone when the quote character appears again inside, because then the

@@ -1,11 +1,10 @@
 #!/bin/sh
 # First boot, once, as root, before the gateway starts.
 #
-# This is the `plow-init` oneshot's `up`. Everything downstream of it —
-# hermes-gateway here, a variant's own longruns — declares it as a dependency,
-# so a non-zero exit means no service starts at all. That is deliberate: an
-# agent whose setup half ran comes up looking healthy (the readiness probe only
-# exercises the local API server) and is wrong in a way nobody sees.
+# This is the `plow-init` oneshot's `up`. Every service declares it as a
+# dependency, so a non-zero exit starts nothing at all -- deliberate, because
+# an agent whose setup half ran comes up looking healthy (the readiness probe
+# only exercises the local API server) and is wrong in a way nobody sees.
 set -eu
 
 . /usr/local/lib/plow/root-path.sh
@@ -13,110 +12,77 @@ set -eu
 LC_ALL=C
 export LC_ALL
 
-# The VM host's credential drop-in. `/exe.dev/setup` is exe.dev's contract and
-# its path is that host's to choose, so it cannot be renamed; another provider
-# adds its own branch here rather than renaming this one. It writes the
-# tenant's dotenv and is removed once it has run, so a reboot cannot replay a
-# credential injection.
-#
-# There is no such host on a developer's machine, so this branch is skipped;
-# the credential arrives there as the same drop-in, bind-mounted in.
+# The whole of what a host tells this image: where Plow is, and what to present
+# to it. root:root 0600 (0400 accepted, nothing looser) because this file
+# decides where the agent's own bearer token is sent, and it is read while this
+# script is still root.
+PLOW_CREDENTIALS=/var/lib/plow/credentials
+
+# The VM host's own setup hook. Its path is that host's to choose, so it cannot
+# be renamed; another provider adds its own branch rather than renaming this
+# one. It is removed once it has run, so a reboot cannot replay it.
 if [ -x /exe.dev/setup ]; then
   /exe.dev/setup
   rm -f /exe.dev/setup
 fi
 
-# Unconditionally, and yes, a second time on the cloud path: exe.dev's setup
-# script ends by calling first-boot.sh itself, and locally nothing else would.
-# Every step in it is idempotent, and the last one — the home-mode restore — is
-# strictly better for running late, so the duplicate costs one extra log line
-# and buys a first boot that behaves the same with or without a host drop-in.
+# Unconditionally, and a second time on a host that already called it: every
+# step is idempotent, and the last -- the home-mode restore -- is strictly
+# better for running late.
 /usr/local/lib/plow/first-boot.sh
 
-# Fail closed on a credential-free boot.
-#
-# The gateway comes up either way: it serves its loopback API and runs the cron
-# scheduler with no adapter attached, which looks healthy to every probe and is
-# an agent nobody can reach. The credential has one source — the drop-in below
-# — and one persisted copy, the home's dotenv, so this reads both and asks the
-# same question of each.
-#
-# `plow-init` is a oneshot every service depends on, so exiting here starts
-# nothing, and S6_BEHAVIOUR_IF_STAGE2_FAILS=2 takes PID 1 down with it —
-# visibly dead rather than quietly deaf.
-
 # Read, never run: a dotenv is data, and `.` would hand every line of it a root
-# shell. It fills only names the environment did not already set. See
-# /usr/local/lib/plow/dotenv.sh.
+# shell. See /usr/local/lib/plow/dotenv.sh.
 . /usr/local/lib/plow/dotenv.sh
 
-# The host's credential drop-in, when there is one.
-#
-# It is the provisioner's whole involvement with this image: where Plow is and
-# what to present to it, dropped at a path of its choosing, with no knowledge
-# of where this home is or what shape its dotenv takes. Read here rather than
-# copied, and read BEFORE the home's own dotenv, which is what makes it
-# authoritative: a name the file supplies is a name the persisted copy no
-# longer gets to fill, so a rotated token cannot be undone by the volume that
-# outlived it.
-#
-# It is not deleted after reading. Rotation is a rewrite of this file and a
-# restart -- the host does not shell into the agent -- so a copy that survives
-# the boot is the point.
-PLOW_CREDENTIALS=/var/lib/plow/credentials
-plow_credentials=
-plow_mcp_url=
-plow_identity_fetched=
+# The names below are the image's to render, from the credential and from
+# Plow's answer about the tenant holding it. An inherited PLOW_AGENT_TOKEN that
+# outranked the file a host had just rewritten would be a rotation that
+# silently did not take. HERMES_PROVIDER and HERMES_MODEL survive this and are
+# the only names a container environment may contribute.
+plow_drop_inherited
 
-if [ -L "$PLOW_CREDENTIALS" ] || { [ -e "$PLOW_CREDENTIALS" ] && [ ! -f "$PLOW_CREDENTIALS" ]; }; then
-  echo "plow-init: $PLOW_CREDENTIALS is not a regular file -- refusing to read it" >&2
+if [ -L "$PLOW_CREDENTIALS" ] || [ ! -f "$PLOW_CREDENTIALS" ]; then
+  echo "plow-init: no credential at $PLOW_CREDENTIALS -- refusing to start a gateway nobody can reach" >&2
   exit 1
 fi
 
-if [ -f "$PLOW_CREDENTIALS" ]; then
-  # This file decides which API base the agent's own bearer token is sent to,
-  # and it is read while this script is still root. Anyone but root owning it,
-  # or anyone but root able to read or write it, means whoever that is chooses
-  # both -- so the answer is to refuse the boot, not to read it anyway.
-  #
-  # Two exact modes rather than a rule about bits: the host writes 0600, and a
-  # read-only 0400 is the same file with less reach. A pattern that merely
-  # excluded the write bits admitted 0644 and 0620 -- one hands the credential
-  # to every uid on the box, the other hands the API base to a group.
-  plow_cred_stat=$(stat -c '%u %g %a' "$PLOW_CREDENTIALS")
-  case "$plow_cred_stat" in
-    '0 0 600'|'0 0 400') ;;
-    *)
-      echo "plow-init: $PLOW_CREDENTIALS is uid/gid/mode '$plow_cred_stat' -- expected a root:root file with mode 600 or 400" >&2
-      exit 1
-      ;;
-  esac
-  unset plow_cred_stat
-
-  plow_load_dotenv "$PLOW_CREDENTIALS" "$PLOW_CREDENTIALS_ALLOWED" || exit 1
-  plow_credentials=1
-
-  if [ -z "${PLOW_API_BASE:-}" ] || [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
-    echo "plow-init: $PLOW_CREDENTIALS must give a value for both PLOW_API_BASE and PLOW_AGENT_TOKEN" >&2
+# Anyone but root owning it, or able to read or write it, means whoever that is
+# chooses both the API base and the token sent to it. Two exact modes rather
+# than a rule about bits: a pattern excluding only the write bits admits 0644
+# and 0620, one of which hands the credential to every uid on the box and the
+# other the API base to a group.
+plow_mode=$(stat -c '%u %g %a' "$PLOW_CREDENTIALS")
+case "$plow_mode" in
+  '0 0 600'|'0 0 400') ;;
+  *)
+    echo "plow-init: $PLOW_CREDENTIALS is uid/gid/mode '$plow_mode' -- expected root:root at 600 or 400" >&2
     exit 1
-  fi
+    ;;
+esac
+unset plow_mode
 
-  # The rest of the tenant's identity, asked of Plow with the tenant's own
-  # credential. The home channel and the relay endpoint are Plow's to know --
-  # the relay URL is scoped to a device uid that appears nowhere in this file,
-  # so it cannot be derived here, and the home channel can change without the
-  # token changing. Asking on every boot is what keeps both current; the host
-  # rewrites two lines and restarts, and never has to know what else moved.
-  #
-  # Answered into the environment BEFORE the home's dotenv is read, so the
-  # answer wins over a persisted copy of the previous one.
-  # Exit 0 with the answer, or one of two failures the caller treats very
-  # differently: TEMPORARY, meaning nobody said anything -- no connection, no
-  # answer in time, a 5xx or a 429 -- and DEFINITIVE, meaning Plow answered and
-  # the answer was that this credential is not usable, or was not an answer at
-  # all. Only the first is something waiting can fix.
-  plow_fetch_identity() {
-    /opt/hermes/.venv/bin/python - <<'PLOW_IDENTITY_PY'
+# Read here rather than copied, and BEFORE the home's own dotenv, which is what
+# makes it authoritative: a name this file supplies is a name the persisted copy
+# no longer gets to fill. The file is left in place afterwards -- rotation is a
+# rewrite of these two lines and a restart, with no shell into the agent.
+plow_load_dotenv "$PLOW_CREDENTIALS" "$PLOW_CREDENTIALS_ALLOWED" || exit 1
+if [ -z "${PLOW_API_BASE:-}" ] || [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
+  echo "plow-init: $PLOW_CREDENTIALS must give both PLOW_API_BASE and PLOW_AGENT_TOKEN" >&2
+  exit 1
+fi
+
+# The rest of the tenant's identity, asked of Plow with the tenant's own
+# credential. The home channel can change without the token changing, and the
+# relay URL is scoped to a device uid that appears nowhere in the file, so
+# neither is derivable here. Asking on every boot is what keeps both current.
+#
+# Exit 0 with the answer, or one of two failures: TEMPORARY, meaning nobody
+# said anything usable, and DEFINITIVE, meaning Plow answered that this
+# credential is not usable, or answered with something that is not an identity.
+# Only the first is worth retrying; neither is worth starting on.
+plow_fetch_identity() {
+  /opt/hermes/.venv/bin/python - <<'PLOW_IDENTITY_PY'
 import json
 import os
 import re
@@ -146,16 +112,11 @@ try:
     with urllib.request.urlopen(request, timeout=10) as response:
         raw = response.read()
 except urllib.error.HTTPError as exc:
-    # A 401, 403 or 404 is Plow telling us this credential is not this agent's
-    # any more -- revoked, or pointed at an agent that no longer exists. The
-    # identity a home recorded under it is exactly what must NOT be reused
-    # then. 429 and 5xx are the service saying "not now", which is the same
-    # kind of silence as a dead socket.
+    # 401, 403 and 404 are Plow saying this credential is not this agent's --
+    # revoked, or pointing at an agent that is gone. 429 and 5xx are "not now",
+    # which is the same kind of silence as a dead socket.
     temporary = exc.code == 429 or 500 <= exc.code < 600
-    fail(
-        TEMPORARY if temporary else DEFINITIVE,
-        "%s answered %s" % (url, exc.code),
-    )
+    fail(TEMPORARY if temporary else DEFINITIVE, "%s answered %s" % (url, exc.code))
 except Exception as exc:  # noqa: BLE001 -- no answer at all, whatever the cause
     fail(TEMPORARY, "%s unreachable: %s" % (url, exc))
 
@@ -166,11 +127,9 @@ try:
 except Exception as exc:  # noqa: BLE001
     fail(DEFINITIVE, "%s answered something that is not an identity: %s" % (url, exc))
 
-# Both values are written into a dotenv this same script reads back, and one of
-# them is a URL the agent will hand its bearer token to. A newline would add a
-# line to that file; anything outside these shapes is not an answer this image
-# knows how to use -- and a malformed answer is not a wait-and-retry, because
-# waiting does not make it well formed.
+# Both are written into a dotenv this script reads back, and one is a URL the
+# agent hands its bearer token to. A newline would add a line to that file, and
+# waiting does not make a malformed answer well formed.
 if not re.fullmatch(r"[A-Za-z0-9._:-]{1,128}", chat_uid):
     fail(DEFINITIVE, "%s answered with an unusable chat_uid: %r" % (url, chat_uid))
 if mcp_url and not re.fullmatch(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{1,512}", mcp_url):
@@ -179,152 +138,96 @@ if mcp_url and not re.fullmatch(r"https?://[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]{
 print("chat_uid=" + chat_uid)
 print("mcp_url=" + mcp_url)
 PLOW_IDENTITY_PY
-  }
+}
 
-  # A VM's network is not always up when its first service is, and a restart
-  # races the same way. Brief because the alternative to answering is not
-  # starting: `plow-init` is a oneshot every service depends on, so a Plow that
-  # never answers leaves an agent that visibly never came up rather than one
-  # holding a stale home channel and a relay that quietly went away.
-  plow_try=1
-  plow_identity=
-  while :; do
-    plow_status=0
-    plow_identity=$(plow_fetch_identity) || plow_status=$?
-    if [ "$plow_status" -eq 0 ]; then
-      plow_identity_fetched=1
-      break
-    fi
-    # Plow answered, and the answer was no. Retrying cannot change it and the
-    # identity this home recorded is precisely what must not be reused: the
-    # credential it was recorded under is the one just refused.
-    if [ "$plow_status" -ne 75 ]; then
-      echo "plow-init: Plow refused this credential -- not falling back to a persisted identity" >&2
-      exit 1
-    fi
-    if [ "$plow_try" -ge 10 ]; then
-      break
-    fi
-    echo "plow-init: attempt $plow_try to reach Plow failed, retrying" >&2
-    plow_try=$((plow_try + 1))
-    sleep 3
-  done
-  unset plow_try plow_status
-
-  if [ -n "$plow_identity_fetched" ]; then
-    PLOW_HOME_CHANNEL=$(printf '%s\n' "$plow_identity" | sed -n 's/^chat_uid=//p')
-    export PLOW_HOME_CHANNEL
-    plow_mcp_url=$(printf '%s\n' "$plow_identity" | sed -n 's/^mcp_url=//p')
-    # An agent with no relay is a supported shape, and it is the absence of this
-    # name that plow-config reads as one. So it is set or it is not set; never
-    # set to empty, which would be a third state neither reader has.
-    if [ -n "$plow_mcp_url" ]; then
-      PLOW_MCP_URL=$plow_mcp_url
-      export PLOW_MCP_URL
-    fi
-  else
-    # Plow is unreachable. An agent that has run before already knows who it is,
-    # and the identity is a property of the credential -- so if this home holds
-    # one recorded against the very token the host just handed us, the honest
-    # thing is to come up on it and say so. Nothing else is being trusted: the
-    # dotenv fills these two names below by being the only source left.
-    #
-    # The comparison is the whole safety of it. A token the host rotated has no
-    # identity here, and neither does a first boot; both would otherwise adopt
-    # whatever the volume happened to carry -- the previous tenant's home
-    # channel, in the case that matters. Those still refuse to start, because a
-    # wrong home channel is an agent talking to the wrong people.
-    plow_prior_token=
-    plow_prior_home=
-    if [ -f /var/lib/hermes/.env ]; then
-      plow_prior_token=$(plow_dotenv_unquote "$(sed -n 's/^PLOW_AGENT_TOKEN=//p' /var/lib/hermes/.env | tail -1)")
-      plow_prior_home=$(plow_dotenv_unquote "$(sed -n 's/^PLOW_HOME_CHANNEL=//p' /var/lib/hermes/.env | tail -1)")
-    fi
-    if [ -n "$plow_prior_home" ] && [ "$plow_prior_token" = "$PLOW_AGENT_TOKEN" ]; then
-      echo "plow-init: Plow is unreachable -- booting on the identity this home already holds for the same credential ($plow_prior_home)" >&2
-    else
-      echo "plow-init: gave up asking Plow who this agent is, and this home holds no identity for this credential" >&2
-      exit 1
-    fi
-    unset plow_prior_token plow_prior_home
+# A VM's network is not always up when its first service is, and a restart
+# races the same way, so silence is retried briefly. It is not survived: an
+# agent that cannot be told who it is does not start, rather than start as
+# whoever it was last time.
+plow_try=1
+while :; do
+  plow_status=0
+  plow_identity=$(plow_fetch_identity) || plow_status=$?
+  [ "$plow_status" -eq 0 ] && break
+  if [ "$plow_status" -ne 75 ]; then
+    echo "plow-init: Plow refused this credential -- refusing to start" >&2
+    exit 1
   fi
-  unset plow_identity
-
-  # The image's own inference key names an env var rather than holding a value,
-  # and the two are the same credential -- so this is derived here rather than
-  # asked of a host that has no business knowing the provider block's shape.
-  if [ -z "${HERMES_CUSTOM_PLOW_API_KEY:-}" ]; then
-    HERMES_CUSTOM_PLOW_API_KEY=$PLOW_AGENT_TOKEN
-    export HERMES_CUSTOM_PLOW_API_KEY
+  if [ "$plow_try" -ge 10 ]; then
+    echo "plow-init: gave up asking Plow who this agent is after $plow_try attempts -- refusing to start" >&2
+    exit 1
   fi
+  echo "plow-init: attempt $plow_try to reach Plow failed, retrying" >&2
+  plow_try=$((plow_try + 1))
+  sleep 3
+done
+unset plow_try plow_status
+
+PLOW_HOME_CHANNEL=$(printf '%s\n' "$plow_identity" | sed -n 's/^chat_uid=//p')
+export PLOW_HOME_CHANNEL
+# An agent with no relay is a supported shape, and it is the ABSENCE of this
+# name that plow-config reads as one -- never an empty value, which would be a
+# third state neither reader has.
+plow_mcp_url=$(printf '%s\n' "$plow_identity" | sed -n 's/^mcp_url=//p')
+if [ -n "$plow_mcp_url" ]; then
+  PLOW_MCP_URL=$plow_mcp_url
+  export PLOW_MCP_URL
 fi
+unset plow_identity
 
+# The image's inference key names an env var rather than holding a value, and
+# the two are the same credential -- derived here rather than asked of a host
+# that has no business knowing the provider block's shape.
+HERMES_CUSTOM_PLOW_API_KEY=$PLOW_AGENT_TOKEN
+export HERMES_CUSTOM_PLOW_API_KEY
+
+# Only for the API_SERVER_KEY a previous boot persisted. Everything else here
+# is already exported, so this fills nothing the file could overrule.
 plow_load_dotenv /var/lib/hermes/.env || exit 1
 
-# Plow is authoritative about the relay's absence too. A tenant whose relay
-# went away would otherwise have it reinstated by the copy this home persisted
-# while it still had one -- an agent offering Latch tools that answer nothing.
-# Only when Plow answered: an unreachable one has said nothing about the relay,
-# and reading silence as a withdrawal would switch off a working tenant's tools
-# every time the network hiccuped.
-if [ -n "$plow_identity_fetched" ] && [ -z "$plow_mcp_url" ]; then
+# Plow is authoritative about the relay's ABSENCE too: a tenant whose relay went
+# away would otherwise have it reinstated from the copy this home persisted.
+if [ -z "$plow_mcp_url" ]; then
   unset PLOW_MCP_URL
 fi
-unset plow_mcp_url plow_identity_fetched
+unset plow_mcp_url
 
-# A tenant's VM has whatever timezone its host booted with, and every schedule
-# the agent keeps is read in it. UTC is the one this image can promise. Last,
-# so a TZ the operator persisted keeps its value.
-if [ -n "$plow_credentials" ] && [ -z "${TZ:-}" ]; then
+# A VM has whatever timezone its host booted with, and every schedule the agent
+# keeps is read in it. Last, so a TZ the operator persisted keeps its value.
+if [ -z "${TZ:-}" ]; then
   TZ=UTC
   export TZ
 fi
 
-if [ -z "${PLOW_AGENT_TOKEN:-}" ]; then
-  echo "plow-init: PLOW_AGENT_TOKEN is unset — no credential drop-in at $PLOW_CREDENTIALS" >&2
-  echo "plow-init: and none in /var/lib/hermes/.env. Refusing to start a gateway nobody can reach." >&2
-  exit 1
-fi
-
-# Rewritten from the environment whenever a drop-in supplied one, and written
-# once when nothing else ever has. Rewriting rather than creating is what makes
-# a rotated credential take: the file is the gateway's own authority for these
-# values, and a stale copy of it in a persisted volume is a revoked token the
-# agent keeps trying. It is also why uid 10000 never gets to create this file --
-# a home the agent can write is a home where it could otherwise choose the API
-# base its own bearer token is sent to.
-# The gateway's loopback API server refuses to start without a strong key, and
+# The gateway's loopback API server will not start without a strong key, and
 # without that listener there is nothing for readiness to find and nowhere for
-# cron to deliver. Provisioning generates one per tenant; locally nobody does,
-# and an image whose local boot is missing a service the cloud boot has is an
-# image that tests something other than what tenants run. Generated once and
-# persisted below, so it survives a restart the way the tenant's does.
+# cron to deliver. Generated once and persisted below.
 if [ -z "${API_SERVER_KEY:-}" ]; then
   API_SERVER_KEY=$(od -An -tx1 -N32 /dev/urandom | tr -d ' \n')
   export API_SERVER_KEY
 fi
 
-if [ -n "$plow_credentials" ] || [ ! -e /var/lib/hermes/.env ]; then
-  umask 077
-  : > /var/lib/hermes/.env
-  # Values verbatim, unquoted, one per line -- the exact shape the parser reads
-  # back. Quoting them would mean escaping, and escaping would mean the reader
-  # had to interpret, which is the thing being avoided.
-  for plow_key in PLOW_API_BASE PLOW_HOME_CHANNEL PLOW_AGENT_TOKEN \
-                  HERMES_CUSTOM_PLOW_API_KEY PLOW_MCP_URL API_SERVER_KEY TZ \
-                  HERMES_PROVIDER HERMES_MODEL; do
-    plow_val=$(printenv "$plow_key" 2>/dev/null) || continue
-    [ -n "$plow_val" ] || continue
-    printf '%s=%s\n' "$plow_key" "$plow_val" >> /var/lib/hermes/.env
-  done
-  unset plow_key plow_val
-  chown root:hermes /var/lib/hermes/.env
-  chmod 0640 /var/lib/hermes/.env
-  echo "plow-init: wrote /var/lib/hermes/.env${plow_credentials:+ from $PLOW_CREDENTIALS}" >&2
-fi
-unset plow_credentials
+# Rewritten on every boot, which is what makes a rotated credential take: this
+# file is the gateway's own authority, and a stale copy in a persisted volume is
+# a revoked token the agent keeps presenting. It is also why uid 10000 never
+# gets to create it -- a home the agent can write is a home where it could
+# choose the API base its own bearer token is sent to.
+umask 077
+: > /var/lib/hermes/.env
+# Verbatim, unquoted, one per line: the exact shape the parser reads back.
+# Quoting would mean escaping, and escaping would mean interpreting.
+for plow_key in PLOW_API_BASE PLOW_HOME_CHANNEL PLOW_AGENT_TOKEN \
+                HERMES_CUSTOM_PLOW_API_KEY PLOW_MCP_URL API_SERVER_KEY TZ \
+                HERMES_PROVIDER HERMES_MODEL; do
+  plow_val=$(printenv "$plow_key" 2>/dev/null) || continue
+  [ -n "$plow_val" ] || continue
+  printf '%s=%s\n' "$plow_key" "$plow_val" >> /var/lib/hermes/.env
+done
+unset plow_key plow_val
+chown root:hermes /var/lib/hermes/.env
+chmod 0640 /var/lib/hermes/.env
+echo "plow-init: wrote /var/lib/hermes/.env from $PLOW_CREDENTIALS" >&2
 
 # Last, because it rewrites config.yaml and wants the ownership first-boot.sh
-# has just settled. Reads the container environment, which first-boot.sh does
-# not need and this does.
+# has just settled.
 /etc/s6-overlay/scripts/plow-config

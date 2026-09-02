@@ -32,7 +32,6 @@ run it natively; the tags published so far carry `amd64` alone.
 | `/etc/s6-overlay/s6-rc.d/plow-init/` | oneshot: runs the host's `/exe.dev/setup` once if it is there, then `first-boot.sh`, then reads the credential drop-in and renders the dotenv |
 | `/etc/cont-init.d/00-plow-sanitize` | takes away anything wearing `config.yaml`'s name, and promotes a bind-mounted credential into the drop-in path |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
-| `/usr/local/bin/plow-restart-gateway` | restarts the gateway through the supervisor and waits for the listener |
 
 ## The credential drop-in
 
@@ -58,18 +57,19 @@ agent. The identity is re-asked on every boot, so a home channel or a relay
 that moved moves with it — and a relay that went away is switched off rather
 than reinstated from the copy the home kept.
 
-Plow being unreachable is not an outage the agent has to share. An agent that
-already ran comes up on the identity its home recorded, provided that identity
-was recorded against the very token the drop-in is holding; it says so in the
-log. A first boot, or a token rotated while Plow was down, has no such record
-and refuses to start rather than adopt one that belongs to somebody else —
-`plow-init` is a oneshot every service depends on, so nothing starts.
+There is no fallback behind that fetch. Silence — no connection, no answer in
+time, a 429 or a 5xx — is retried briefly, because a VM's network is not always
+up when its first service is; it is not survived. An agent that cannot be told
+who it is refuses to start rather than start as whoever it was last time: a
+recorded identity belongs to the credential it was recorded under, and a home
+volume outlives its tenant, so reusing one is how a new tenant lands in the
+previous one's chat. Plow **answering** that the credential is not this
+agent's — a 401, 403 or 404 — or answering with something that is not an
+identity, fails immediately without the retries.
 
-That fallback is for *silence* only: no connection, no answer in time, a 429 or
-a 5xx. If Plow **answers** that the credential is not this agent's — a 401, 403
-or 404 — or answers with something that is not an identity, the recorded one is
-precisely what must not be reused, and the boot fails closed however well the
-token matches.
+The same goes for the credential itself: no file, a file that is not a
+root-owned regular file at 0600 or 0400, or one naming anything but those two
+keys, and nothing starts. `plow-init` is a oneshot every service depends on.
 
 ### From a developer's machine
 
@@ -151,13 +151,6 @@ already orders it after first boot — no credentials in `config.yaml`, no
 inbound listener, and pin this image by digest or by an immutable `base-<sha>`
 tag.
 
-## Restarting the gateway
-
-`plow-restart-gateway` — it signals the supervisor and waits until a new
-process is answering on `127.0.0.1:8642`. `systemctl restart hermes-gateway`
-is bridged to it for callers written against the systemd image, and refuses
-every other command rather than returning 0 for work it did not do.
-
 ## Build and check
 
 Requires Docker with buildx. No credential, no pre-steps.
@@ -182,9 +175,6 @@ failure that builds clean and boots looking healthy:
   depends on after first boot, and a second boot changes nothing. Both matter:
   the runtime bootstraps whatever home it is handed, and on the cloud path
   first boot runs twice.
-- the restart Plow's credential update performs hands back a NEW process that
-  is listening — otherwise an update verifies the credential the old process is
-  still holding.
 - the whole shape end to end, against a stubbed identity endpoint — and it is
   the shape every other check above runs in, because there is only one: a boot
   with nothing but the credential drop-in renders the whole dotenv and comes up
@@ -195,13 +185,15 @@ failure that builds clean and boots looking healthy:
   host's own file looks like from in here — is promoted to a root:root 0600
   copy and boots, the mount itself unchanged, and a rewrite of it rotates the
   credential.
-- an unreachable Plow does not take a provisioned agent down: it boots on the
-  identity its home recorded for that same credential — and refuses when the
-  credential has been rotated since, rather than adopting an identity that was
-  recorded for a different one.
-- silence and refusal are told apart: a 503 or a dead socket falls back, while a
-  404 for the same unchanged token, or an answer carrying no `chat_uid`, starts
-  nothing.
+- every way of not being told who this agent is starts nothing: a 404 or an
+  answer carrying no `chat_uid` fails at once, a 503 or a dead socket is
+  retried and then fails, and a home holding a full dotenv for that very token
+  does not rescue any of them.
+- the container environment is not a credential source — an inherited
+  `PLOW_AGENT_TOKEN` or `PLOW_API_BASE` is dropped by init and by the gateway,
+  and the credential file wins — while `HERMES_PROVIDER` and `HERMES_MODEL`
+  still arrive that way, switch the provider, and leave the Plow provider
+  block, the relay flag and the agent's home untouched.
 - a drop-in that cannot be used starts nothing: Plow unreachable on a first
   boot, a name the contract does not allow, or a file that is not root:root at
   0600 (or 0400) — 0644, 0620 and 0602 are each refused by name.

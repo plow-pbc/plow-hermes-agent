@@ -28,7 +28,7 @@ target "base" {
     PLOW_REVISION = PLOW_REVISION
   }
   # One immutable tag per commit; nothing here moves a floating tag, and
-  # publishing a tag blesses nothing -- plow.git's agents.json is what makes a
+  # publishing a tag blesses nothing -- Plow's own agent registry is what makes a
   # revision live.
   tags = ["${REGISTRY}:base-${PLOW_REVISION}"]
 }

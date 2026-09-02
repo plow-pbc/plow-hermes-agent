@@ -14,8 +14,8 @@
 # its OWN config.yaml when it finds none -- a 100 KB generated default with no
 # `plow_chat` platform in it. An agent that simply deletes its config would
 # otherwise come back looking healthy with no phone line and nothing in the log
-# to say so. Measured before this ran: `rm config.yaml` as the agent, restart,
-# and the gateway came up with that default and zero platform connections.
+# to say so: `rm config.yaml` as the agent and restart, and without this the
+# gateway comes up on that default with zero platform connections.
 set -eu
 
 . /usr/local/lib/plow/root-path.sh

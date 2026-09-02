@@ -98,8 +98,7 @@ fi
 # The Hermes runtime bootstraps the home it is pointed at: finding one it does
 # not own, it takes it and its seeded subdirectories, leaving both 0700
 # hermes:hermes. That is right for a plain data volume and wrong for this one,
-# where root ownership plus the sticky bit is the whole of the plow#1564
-# hardening -- at 0700 hermes:hermes the agent owns the directory, and owning
+# where root ownership plus the sticky bit is the whole of the hardening -- at 0700 hermes:hermes the agent owns the directory, and owning
 # the directory is what lets it unlink a root-owned SOUL.md whatever the file's
 # mode says. This runs after that bootstrap, which is what makes it a repair.
 #

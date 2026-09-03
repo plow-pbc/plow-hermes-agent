@@ -28,6 +28,8 @@ RUN set -eu; \
 
 FROM base
 
+COPY LICENSE NOTICE /usr/share/licenses/plow-hermes-agent/
+
 # The agent's home, for everything in the image and not just for the gateway.
 #
 # The upstream image points both of these at /opt/data, and this image's seed

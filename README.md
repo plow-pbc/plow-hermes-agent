@@ -98,3 +98,9 @@ Not automated yet. Built and gated locally, pushed by hand to
 `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
 immutable tag per commit. Plow's own deploy tooling moves the blessed
 `hermes-prod` tag; publishing a `base-<sha>` tag blesses nothing.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 The Plow Collective, Inc.
+
+"Plow" and the Plow logo are trademarks of The Plow Collective, Inc. The license grants no trademark rights.

@@ -7,16 +7,12 @@
 # every tenant. The image owns each invariant config shape; first boot writes
 # the referenced values to Hermes' dotenv without copying a credential into
 # this file.
-# Named `plow`, not `latch`: this is the Plow relay, and the name is enforced
-# rather than cosmetic. plow's own provisioning greps the installed config for
-# this exact key (api/plow/cloud_agent/exe_setup.sh) and refuses the image as an
-# "incompatible blessed image" without it, and the portal's paste-ready snippet
-# emits the same name (api/plow/relay/router.py:_mcp_config, and `plow-<device>`
-# for the per-device form) so a provisioned agent and a hand-registered one read
-# alike. It is also the prefix the relay's tools carry in the model's tool list.
-#
-# The Docker fleet's own configs call the same server `latch` -- nothing
-# validates the name there, and those files never meet this one.
+# Named `plow`, and the name is enforced rather than cosmetic: provisioning
+# greps the installed config for this exact key and refuses the image without
+# it. Plow's own paste-ready snippet emits the same name (and `plow-<device>`
+# for the per-device form), so a provisioned agent and a hand-registered one
+# read alike,
+# and it is the prefix the relay's tools carry in the model's tool list.
 mcp_servers:
   plow:
     url: "${PLOW_MCP_URL}"
@@ -40,10 +36,9 @@ agent:
     # `browser` is Hermes' own browser_* / browser_exec stack. Nothing on
     # this box can back it: the Browser Use harness needs a desktop Chrome and
     # the agent-browser CLI is not installed, so every call ends in
-    # chrome-not-running. Advertised anyway, a fresh agent picks it over
-    # Latch's plow_browser tools, fails, and tells the owner "the browser is
-    # down" (measured live, 2026-09-02). Browsing goes through Latch, on the
-    # owner's own Mac.
+    # chrome-not-running. Advertised anyway, a fresh agent picks it over the
+    # relay's own browser tools, fails, and tells the owner the browser is
+    # down. Browsing goes through the relay, on the owner's own machine.
     - browser
 
 model:
@@ -66,10 +61,9 @@ providers:
 # NOT set here: display.interim_assistant_messages. Hermes also delivers any
 # prose the model emits before or between tool calls as its own chat message,
 # and turning that off looked like the structural fix for commentary reaching
-# the owner. It is the opposite. Measured live, twice: with interim delivery
-# off the entire introduction disappeared — the pitch, the privacy line, the
-# Latch link — and the whole of the owner's turn was "Already saved that. Now
-# I'll wait for her next reply."
+# the owner. It is the opposite: with interim delivery off, the introduction
+# disappears and the owner's turn becomes a bare acknowledgement of work they
+# never saw.
 #
 # The model writes the real message mid-turn, before its last tool call, and a
 # note to itself afterwards. Interim delivery is what carries the real message;
@@ -107,4 +101,11 @@ onboarding:
 plugins:
   enabled:
     - plow-chat-platform
+  entries:
+    plow-chat-platform:
+      # The plugin registers the platform plus its Plow-specific tools, and
+      # none of them replaces an image tool. Denying overrides keeps a future
+      # name collision from silently shadowing one, which would be invisible
+      # from this file.
+      allow_tool_override: false
 _config_version: 37

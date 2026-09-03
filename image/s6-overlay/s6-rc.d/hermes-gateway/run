@@ -1,0 +1,21 @@
+#!/command/with-contenv sh
+# The Hermes gateway, supervised, as uid 10000.
+#
+# `plow-init` published the tenant's environment under
+# /run/s6/container_environment, and with-contenv hands it to this script, so
+# there is nothing here to read or parse.
+set -eu
+
+# The only two values that differ from the image's own ENV. The API server is
+# loopback-only: the agent's sole path to Plow is the outbound socket the chat
+# plugin opens, so there is nothing to expose.
+export API_SERVER_HOST=127.0.0.1
+export API_SERVER_PORT=8642
+
+# with-contenv repopulates HOME from /init, which ran as root, so without this
+# the gateway drops to uid 10000 still pointed at /root -- a directory it
+# cannot write, where anything HOME-anchored silently lands.
+export HOME=/var/lib/hermes
+
+cd /opt/hermes
+exec /command/s6-setuidgid hermes /opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise

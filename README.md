@@ -18,6 +18,23 @@ Running one is [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents)
 — a compose file, a credential, and any image that meets the contract below.
 Nothing in this repository is about running it.
 
+## The repos
+
+One agent is assembled from five repositories, and each knows only its
+neighbours; this is the whole picture.
+
+| repo | owns |
+| --- | --- |
+| [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API an agent talks to — chat, credits, invites, the relay to Latch — the owner's dashboard at `app.plow.co`, the registry `api/cloud-agents/agents.json` that pins which commit of each image tenants boot, and the CI that builds and publishes those images |
+| this repo | the base image: boot, `plow-init`, the gateway config, the base persona, the seed skills, and the pin of the chat plugin |
+| [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin — every turn's prompt framing and the Plow tools — and the canonical copy of the seed skills mirrored here |
+| a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | a persona and its skills, `FROM` this image by digest |
+| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | running any of these images on a machine of your own |
+
+[`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
+deprecated Docker fleet; it still installs the plugin and seed skills from
+their repos by SHA.
+
 `docker build` produces the architecture you are on; the tags published so far
 carry `amd64` alone.
 
@@ -243,10 +260,10 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 
 ## Publishing
 
-Not automated yet. Built and gated locally, pushed by hand to
-`public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
-immutable tag per commit. Plow's own deploy tooling moves the blessed
-`hermes-prod` tag; publishing a `base-<sha>` tag blesses nothing.
+Published by CI in `plow-pbc/plow` (`.github/workflows/build-agent-image.yml`),
+triggered by a revision bump in `api/cloud-agents/agents.json` — never by hand.
+The tag is `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>`,
+one immutable tag per commit.
 
 One repository holds this image and every variant image built from it, so a tag
 has to say which commit it came from: `base-` plus the **full 40-character SHA

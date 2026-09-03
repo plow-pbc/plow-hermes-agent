@@ -301,3 +301,8 @@ def test_an_unchanged_config_is_not_rewritten(tmp_path):
     before = config.stat().st_mtime_ns
     plow_init.configure(identity(), SEED)
     assert config.stat().st_mtime_ns == before
+
+
+def test_upstream_main_hermes_waits_for_plow_init():
+    dependency = SOURCE.parents[1] / "s6-rc.d/main-hermes/dependencies.d/plow-init"
+    assert dependency.is_file()

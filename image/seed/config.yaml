@@ -102,14 +102,13 @@ display:
   busy_input_mode: queue
   # Hermes quiets its own iMessage adapters (photon, bluebubbles are
   # display_config._TIER_LOW) but a plugin platform gets the global defaults:
-  # tool-progress bubbles, a "⏳ Working — N min" heartbeat every 3 minutes,
-  # iteration counters on the busy ack. iMessage cannot edit or delete a
-  # message, so each one is permanent in the thread.
+  # tool-progress bubbles and a "⏳ Working — N min" heartbeat every 3 minutes.
+  # iMessage cannot edit or delete a message, so each one is permanent in the
+  # thread.
   platforms:
     plow_chat:
       tool_progress: "off"
       long_running_notifications: false
-      busy_ack_detail: false
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

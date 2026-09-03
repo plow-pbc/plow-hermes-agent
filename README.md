@@ -162,6 +162,23 @@ the model you were on before you left.
 A credential file naming either is refused: the allowlist for a drop-in is
 `PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, and nothing else.
 
+## Prompt caching
+
+Plow's `/v1/chat/completions` is a LiteLLM proxy in front of Anthropic and
+honours `cache_control`, but Hermes will not infer that: on the OpenAI wire it
+grants caching only to a route whose provider id or hostname reads as LiteLLM,
+and a config-defined provider is `custom` at runtime whatever this image's
+config calls it — so neither signal can match, and every turn re-billed the
+whole prefix at full price. The seed instead declares the capability per model
+(`providers.plow.models.<id>.prompt_caching: true`), which Hermes matches on the
+endpoint and the model id rather than on a name. That match is against the URL
+the agent actually dials, so `plow-init` writes the expanded `base_url` beside
+the flag on every boot — the seed's own `${PLOW_API_BASE}` reference is
+credential-free and never equal to it, and without the expansion the
+declaration is unreachable while looking perfectly set. Measured on a 15-turn
+agent conversation: a repeat turn costs $0.0057 against $0.0430 uncached at the
+same ~19k prompt.
+
 ## Identity
 
 Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image ships

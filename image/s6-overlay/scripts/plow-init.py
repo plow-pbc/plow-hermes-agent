@@ -280,6 +280,23 @@ def configure(identity: Identity, seed: dict) -> None:
         **dict(_leaves(seed["display"], ("display",))),
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
     }
+    # The provider registry entry, in the two spellings Hermes reads it in.
+    #
+    # `models.<id>.prompt_caching` is what turns prompt caching on for this
+    # route (see the seed's own comment), and Hermes finds it by matching the
+    # entry's `base_url` against the URL the agent actually dials. The seed
+    # writes a `${PLOW_API_BASE}` reference -- credential-free by design, and
+    # never equal to a real URL -- so the expanded form is written here, from
+    # the same environment the agent resolves its own endpoint from.
+    #
+    # Both are re-asserted every boot rather than left to the seed: cont-init
+    # seeds only an ABSENT config.yaml, so a home from before this change keeps
+    # a registry with neither key and would cache nothing, for good.
+    provider_key = seed_model.get("provider")
+    if provider_key:
+        wanted[("providers", provider_key, "base_url")] = os.path.expandvars(seed_model.get("base_url", ""))
+        wanted[("providers", provider_key, "models", seed_model.get("default"), "prompt_caching")] = True
+
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
     elif provider == "plow":

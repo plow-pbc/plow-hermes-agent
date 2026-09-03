@@ -269,6 +269,40 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path)
     assert after["tools"]["tool_search"]["enabled"] == "off"
 
 
+def test_a_stale_registry_entry_gets_the_expanded_endpoint_and_the_flag(tmp_path, monkeypatch):
+    """Hermes matches the caching declaration on the endpoint the agent dials.
+
+    The seed's `${PLOW_API_BASE}` reference is credential-free and never equals
+    that URL, so an entry carrying it is one the match can never find -- and a
+    home seeded before this change carries neither key at all. Both are written
+    here on every boot; without this the declaration is unreachable and reads
+    as working.
+    """
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
+    model = SEED["model"]["default"]
+    config = tmp_path / "config.yaml"
+    stale = {
+        **SEED,
+        "providers": {
+            "plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1", "models": {model: {}}},
+            "theirs": {"base_url": "https://elsewhere.invalid"},
+        },
+    }
+    config.write_text(yaml.safe_dump(stale))
+    plow_init.CONFIG = str(config)
+    os.environ.pop("HERMES_PROVIDER", None)
+    os.environ.pop("HERMES_MODEL", None)
+    plow_init.configure(identity(), SEED)
+    after = yaml.safe_load(config.read_text())
+
+    entry = after["providers"]["plow"]
+    assert entry["base_url"] == "https://api.test.invalid/v1"
+    assert entry["models"][model]["prompt_caching"] is True
+    # The rest of the entry, and anybody else's, are not this image's to edit.
+    assert entry["name"] == "plow"
+    assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
+
+
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):
     assert configure(tmp_path)["model"]["default"] == "seeded/model"
 

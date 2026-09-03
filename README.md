@@ -172,9 +172,10 @@ rewrite it — so the agent can delete it or put something else in its place, an
 `skills/` likewise. A **missing** `config.yaml` is seeded from the image's own
 copy — cont-init writes one when the home has none, which is what stops the
 runtime seeding a default with no chat platform in it. A **damaged** one is not
-repaired: nothing inspects the file's contents, and the edit that follows runs
-as the agent's own user, so whatever the agent leaves at that path is its own
-to answer for. A deleted
+repaired: `plow-init` reads it only to re-assert what the image owns — Plow's
+endpoint and model, the retry budget, and every seeded `display` value — on
+every boot, and touches nothing else, so whatever else the agent leaves at that
+path is its own to answer for. A deleted
 skill is the same — the runtime records that deletion and honours it. A variant replaces or extends `SOUL.md` in its own
 layer — see below; first boot re-asserts root ownership either way.
 

@@ -253,9 +253,9 @@ def configure(identity: Identity, seed: dict) -> None:
     the file as it found it. A model id belongs to the provider it was written
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
-    image knows how to guess. The retry budget is the seed's on every boot:
-    cont-init seeds only an absent config.yaml, so a home that predates a seed
-    change would otherwise keep the old value for good.
+    image knows how to guess. The retry budget and the tool_search switch are
+    the seed's on every boot: cont-init seeds only an absent config.yaml, so a
+    home that predates a seed change would otherwise keep the old value for good.
     """
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
@@ -266,6 +266,7 @@ def configure(identity: Identity, seed: dict) -> None:
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
         ("model", "provider"): provider,
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
+        ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]

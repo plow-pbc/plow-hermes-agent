@@ -201,7 +201,7 @@ def test_a_permissive_soul_is_taken_back_to_0644(tmp_path, monkeypatch):
 
 
 SEED = {
-    "model": {"provider": "plow", "default": "seeded/model",
+    "model": {"provider": "plow-litellm", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
@@ -263,11 +263,22 @@ def test_switching_away_from_plow_takes_plows_endpoint_with_it(tmp_path):
 def test_switching_back_restores_it_from_the_seed(tmp_path):
     configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "m"})
     config = tmp_path / "config.yaml"
-    os.environ.update({"HERMES_PROVIDER": "plow", "HERMES_MODEL": "seeded/model"})
+    os.environ.update({"HERMES_PROVIDER": "plow-litellm", "HERMES_MODEL": "seeded/model"})
     plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
     assert after["model"]["base_url"] == SEED["model"]["base_url"]
     assert after["model"]["key_env"] == SEED["model"]["key_env"]
+
+
+def test_the_old_provider_spelling_still_names_plow(tmp_path):
+    """Every home provisioned before the rename carries HERMES_PROVIDER=plow in
+    its dotenv. Read as an unknown provider it would strip Plow's endpoint and
+    credential on the next boot -- the whole fleet, at once."""
+    after = configure(tmp_path, env={"HERMES_PROVIDER": "plow"})
+    assert after["model"]["provider"] == "plow-litellm"
+    assert after["model"]["base_url"] == SEED["model"]["base_url"]
+    assert after["model"]["key_env"] == SEED["model"]["key_env"]
+    assert after["model"]["default"] == "seeded/model"
 
 
 def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
@@ -280,7 +291,7 @@ def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
     os.environ.pop("HERMES_MODEL", None)
     plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
-    assert after["model"]["provider"] == "plow"
+    assert after["model"]["provider"] == "plow-litellm"
     assert after["model"]["default"] == "seeded/model"
 
 

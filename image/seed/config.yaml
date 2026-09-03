@@ -48,14 +48,36 @@ agent:
   # hermes-agent agent_init.py: `_agent_section.get("api_max_retries", 3)`.
   api_max_retries: 9
 
+# The id carries `litellm` on purpose, and it is the whole of this block's
+# caching story.
+#
+# Plow's `/v1/chat/completions` IS a LiteLLM proxy in front of Anthropic, and
+# Hermes decides prompt caching per route: a Claude model on the OpenAI wire
+# gets `cache_control` breakpoints only when the route reads as a LiteLLM one,
+# which it tests by splitting the provider id on `:-_/` and looking for
+# `litellm` as a whole token. Under the old id `plow` no branch matched, the
+# system prompt went out as a plain string, and every turn re-billed the full
+# prefix at uncached price.
+#
+# The same signal does a second thing, and that is why the id is the fix rather
+# than the per-model `prompt_caching: true` declaration. On a LiteLLM route
+# Hermes also stops putting markers on tool messages, because a part-level
+# marker there arrives as `tool_result.content[0].cache_control` — a shape
+# upstream reports as a non-retryable 400. Declaring the capability turns
+# caching on but leaves that gate open; the id turns both the grant and the
+# guard, so they cannot disagree.
+#
+# `key_env` is read from this entry by name and does not follow the id, so the
+# credential variable is unchanged. The relay's `mcp_servers` key above is a
+# different namespace and stays `plow`.
 model:
   default: anthropic/claude-sonnet-5
-  provider: plow
+  provider: plow-litellm
   base_url: "${PLOW_API_BASE}/v1"
   key_env: HERMES_CUSTOM_PLOW_API_KEY
 providers:
-  plow:
-    name: plow
+  plow-litellm:
+    name: plow-litellm
     base_url: "${PLOW_API_BASE}/v1"
     model: anthropic/claude-sonnet-5
     key_env: HERMES_CUSTOM_PLOW_API_KEY

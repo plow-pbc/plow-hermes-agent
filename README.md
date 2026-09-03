@@ -154,10 +154,17 @@ the agent's identity. `plow-init` writes `model.provider` from the first.
 `model.default` follows the provider. Switching **away** from Plow needs both
 knobs — a model id belongs to the provider it was written for, so a name left
 over from Plow means nothing to Anthropic. Coming back to Plow needs neither:
-with `HERMES_PROVIDER=plow` and no `HERMES_MODEL`, the model is restored from
-the image's own seed, along with the endpoint and key that describe Plow. That
-is what keeps a switch back from being an edit — you do not have to remember
-the model you were on before you left.
+with `HERMES_PROVIDER=plow-litellm` and no `HERMES_MODEL`, the model is
+restored from the image's own seed, along with the endpoint and key that
+describe Plow. That is what keeps a switch back from being an edit — you do not
+have to remember the model you were on before you left.
+
+The Plow provider is spelled `plow-litellm`, and the `litellm` in it is
+load-bearing rather than descriptive: Hermes grants Anthropic prompt caching to
+a Claude model on the OpenAI wire only when the provider id reads as a LiteLLM
+route, which Plow's `/v1/chat/completions` is. `HERMES_PROVIDER=plow` is still
+accepted as a spelling of the same provider, so a home provisioned before the
+rename keeps working.
 
 A credential file naming either is refused: the allowlist for a drop-in is
 `PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, and nothing else.

@@ -1,0 +1,57 @@
+#!/bin/sh
+# Two things, as root, before any service starts.
+#
+# 1. Seed the agent's config.yaml if it has none, so the runtime does not seed
+#    its own -- a generated default with no chat platform and no provider,
+#    which boots clean and answers nobody.
+# 2. Promote the credential a developer bind-mounted, so `plow-init` finds it
+#    at the path it reads.
+set -eu
+
+CONFIG=/var/lib/hermes/config.yaml
+SEED=/opt/hermes/plow-seed/config.yaml
+CREDENTIALS=/var/lib/plow/credentials
+
+# Never following an existing path: `cp` would write through a symlink the
+# agent left here, and this runs as root. Redirecting into a `set -C` create
+# fails instead, which is the whole guard -- if anything is already at that
+# name, this leaves it alone and the agent's own config edit deals with it.
+#
+# Written beside the real name and renamed onto it, so the config either is not
+# there or is the whole seed. A copy interrupted partway would otherwise leave
+# a truncated config.yaml, and the next boot keeps it: this seeds an absent
+# path, not a damaged one.
+if [ ! -e "$CONFIG" ]; then
+  rm -f "$CONFIG.tmp"
+  ( set -C; cat "$SEED" > "$CONFIG.tmp" ) 2>/dev/null || true
+  if [ -f "$CONFIG.tmp" ] && [ ! -L "$CONFIG.tmp" ]; then
+    chown hermes:hermes "$CONFIG.tmp"
+    chmod 0640 "$CONFIG.tmp"
+    mv -f "$CONFIG.tmp" "$CONFIG"
+  fi
+fi
+
+# Upstream copies its own `.env.example` into the home when it finds no dotenv:
+# 535 names nobody here asked for, in a file the agent can read. An empty file
+# is enough to stop that -- the runtime only writes when the destination is
+# absent -- and nothing in this image reads it.
+if [ ! -e /var/lib/hermes/.env ]; then
+  umask 077
+  : > /var/lib/hermes/.env
+  chown root:hermes /var/lib/hermes/.env
+  chmod 0640 /var/lib/hermes/.env
+fi
+
+# A bind-mounted credential carries its host's ownership and mode, which on a
+# Linux host is never root's -- and `plow-init` reads that file as root to
+# decide where the agent's own bearer token is sent, so it will not accept one
+# anybody else can read or replace. Relaxing that rule for the mount would
+# relax it for a VM too. So the mount lands under a name of its own and is
+# copied here, contents only, into the file the rule then applies to unchanged.
+if [ -f "$CREDENTIALS.host" ] && [ ! -L "$CREDENTIALS.host" ]; then
+  umask 077
+  cat "$CREDENTIALS.host" > "$CREDENTIALS.tmp"
+  chown root:root "$CREDENTIALS.tmp"
+  chmod 0600 "$CREDENTIALS.tmp"
+  mv -f "$CREDENTIALS.tmp" "$CREDENTIALS"
+fi

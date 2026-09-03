@@ -1,0 +1,1 @@
+/command/with-contenv /opt/hermes/.venv/bin/python /etc/s6-overlay/scripts/plow-init.py

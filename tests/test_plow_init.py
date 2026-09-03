@@ -206,6 +206,7 @@ SEED = {
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
+    "display": {"busy_ack_enabled": False, "platforms": {"plow_chat": {"tool_progress": "off"}}},
     "tools": {"tool_search": {"enabled": "off"}},
 }
 
@@ -232,17 +233,20 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
     assert after["platforms"] == SEED["platforms"]
 
 
-def test_a_home_that_predates_a_seed_change_takes_the_seeds_owned_settings(tmp_path):
+def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path):
     # cont-init seeds only an absent config.yaml, so an existing home carries
-    # whatever it was seeded with -- a retry budget of 3 and no tool_search
-    # switch before 2026-09-03 -- until configure() reconciles it on boot.
+    # whatever it was seeded with -- a retry budget of 3, the gateway's noisy
+    # display defaults, and no tool_search switch, before 2026-09-03 -- until
+    # configure() reconciles it on boot.
     config = tmp_path / "config.yaml"
-    stale = {k: v for k, v in SEED.items() if k != "tools"}
-    config.write_text(yaml.safe_dump({**stale, "agent": {"api_max_retries": 3}}))
+    stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
+             "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
+    config.write_text(yaml.safe_dump(stale))
     plow_init.CONFIG = str(config)
     plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
     assert after["agent"]["api_max_retries"] == 9
+    assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
 
 

@@ -101,6 +101,27 @@ display:
   # gets the tool's failure in its own turn, so the guard against a silent
   # over-claim survives; only the footer to the owner stops.
   file_mutation_verifier: false
+  # Hermes texts a busy acknowledgement ("↪ Redirected current run…",
+  # "⏳ Queued for the next turn…") whenever a message lands mid-run — one per
+  # human line in a group chat during a two-minute task. The message is still
+  # processed; only the echo stops. Key verified against gateway/run.py, which
+  # maps it to HERMES_GATEWAY_BUSY_ACK_ENABLED.
+  busy_ack_enabled: false
+  # A message that lands mid-run waits for the run to finish and gets its own
+  # turn, instead of being injected into the running task as a "correction" —
+  # in a group chat that was every bystander's aside. /stop stays the mid-run
+  # escape. Owner-only interruption needs the gateway to read the plugin's
+  # owner/member flag, which it does not yet; until then everyone queues.
+  busy_input_mode: queue
+  # Hermes quiets its own iMessage adapters (photon, bluebubbles are
+  # display_config._TIER_LOW) but a plugin platform gets the global defaults:
+  # tool-progress bubbles and a "⏳ Working — N min" heartbeat every 3 minutes.
+  # iMessage cannot edit or delete a message, so each one is permanent in the
+  # thread.
+  platforms:
+    plow_chat:
+      tool_progress: "off"
+      long_running_notifications: false
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

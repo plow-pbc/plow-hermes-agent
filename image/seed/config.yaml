@@ -40,6 +40,13 @@ agent:
     # relay's own browser tools, fails, and tells the owner the browser is
     # down. Browsing goes through the relay, on the owner's own machine.
     - browser
+  # Incident 2026-09-03 07:50–08:20 PDT: the model provider answered 404/503 on
+  # every attempt for ~30 min. The image default of 3 attempts gives up in ~14s,
+  # so an owner's message mid-outage came back as "provider failed after
+  # retries". The image's backoff curve is fixed (2s doubling, 60s cap, jitter),
+  # so 9 attempts ride out ≈ 4–6 min of outage. Key name verified against
+  # hermes-agent agent_init.py: `_agent_section.get("api_max_retries", 3)`.
+  api_max_retries: 9
 
 model:
   default: anthropic/claude-sonnet-5

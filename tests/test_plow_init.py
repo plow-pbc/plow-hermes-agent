@@ -270,17 +270,6 @@ def test_switching_back_restores_it_from_the_seed(tmp_path):
     assert after["model"]["key_env"] == SEED["model"]["key_env"]
 
 
-def test_the_old_provider_spelling_still_names_plow(tmp_path):
-    """Every home provisioned before the rename carries HERMES_PROVIDER=plow in
-    its dotenv. Read as an unknown provider it would strip Plow's endpoint and
-    credential on the next boot -- the whole fleet, at once."""
-    after = configure(tmp_path, env={"HERMES_PROVIDER": "plow"})
-    assert after["model"]["provider"] == "plow-litellm"
-    assert after["model"]["base_url"] == SEED["model"]["base_url"]
-    assert after["model"]["key_env"] == SEED["model"]["key_env"]
-    assert after["model"]["default"] == "seeded/model"
-
-
 def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
     """A model id belongs to the provider it was written for. Restoring Plow's
     endpoint and leaving somebody else's model is the pair the two-knob

@@ -162,9 +162,9 @@ have to remember the model you were on before you left.
 The Plow provider is spelled `plow-litellm`, and the `litellm` in it is
 load-bearing rather than descriptive: Hermes grants Anthropic prompt caching to
 a Claude model on the OpenAI wire only when the provider id reads as a LiteLLM
-route, which Plow's `/v1/chat/completions` is. `HERMES_PROVIDER=plow` is still
-accepted as a spelling of the same provider, so a home provisioned before the
-rename keeps working.
+route, which Plow's `/v1/chat/completions` is. There is no alias for the old
+spelling — `HERMES_PROVIDER` is read from the container environment, so nothing
+carries one forward.
 
 A credential file naming either is refused: the allowlist for a drop-in is
 `PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, and nothing else.

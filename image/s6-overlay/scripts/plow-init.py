@@ -44,12 +44,12 @@ RELAY_SERVER = "plow"
 # The inference provider id the seed defines — a different namespace from
 # RELAY_SERVER above, which happens to share the old spelling. The `litellm`
 # token is what earns the route Anthropic prompt caching; see the seed's own
-# comment. `plow` is still accepted from the environment: a home provisioned
-# before the rename carries `HERMES_PROVIDER=plow` in its dotenv, and honouring
-# it as a spelling of the same provider is what keeps this a rename rather than
-# a fleet-wide outage.
+# comment. There is no alias for the old spelling: `HERMES_PROVIDER` is read
+# from the container environment, never from the home, so nothing carries the
+# old value forward, and a `HERMES_PROVIDER=plow` an operator sets today names
+# a provider this image does not define — which is a thing to fail on, not to
+# guess at.
 PLOW_PROVIDER = "plow-litellm"
-PLOW_PROVIDER_ALIASES = frozenset({"plow", PLOW_PROVIDER})
 HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
@@ -280,8 +280,6 @@ def configure(identity: Identity, seed: dict) -> None:
 
     seed_model = seed.get("model", {})
     provider = os.environ.get("HERMES_PROVIDER", PLOW_PROVIDER)
-    if provider in PLOW_PROVIDER_ALIASES:
-        provider = PLOW_PROVIDER
     wanted: dict[tuple[str, ...], object] = {
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
         ("model", "provider"): provider,

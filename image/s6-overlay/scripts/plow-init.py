@@ -245,6 +245,15 @@ def export(values: dict[str, str]) -> None:
             handle.write(value)
 
 
+def _leaves(mapping: dict, path: tuple[str, ...]) -> typing.Iterator[tuple[tuple[str, ...], object]]:
+    """(path, value) for every scalar under `mapping`, nested keys flattened."""
+    for key, value in mapping.items():
+        if isinstance(value, dict):
+            yield from _leaves(value, path + (key,))
+        else:
+            yield path + (key,), value
+
+
 def configure(identity: Identity, seed: dict) -> None:
     """Point the agent at its inference provider and its relay.
 
@@ -253,9 +262,9 @@ def configure(identity: Identity, seed: dict) -> None:
     the file as it found it. A model id belongs to the provider it was written
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
-    image knows how to guess. The retry budget is the seed's on every boot:
-    cont-init seeds only an absent config.yaml, so a home that predates a seed
-    change would otherwise keep the old value for good.
+    image knows how to guess. The retry budget and every display key are the
+    seed's on every boot: cont-init seeds only an absent config.yaml, so a home
+    that predates a seed change would otherwise keep the old value for good.
     """
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
@@ -266,6 +275,7 @@ def configure(identity: Identity, seed: dict) -> None:
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
         ("model", "provider"): provider,
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
+        **dict(_leaves(seed["display"], ("display",))),
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]

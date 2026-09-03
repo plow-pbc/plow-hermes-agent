@@ -299,3 +299,9 @@ uv run --with pydantic --with pydantic-settings --with pyyaml --with pytest pyte
 Run it from the repository root; there is no packaging to install. `plow-init`
 is a hyphenated path rather than an importable module, so the test file loads
 it by path with `importlib` and exercises the real functions.
+
+## License
+
+Apache-2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE). Copyright 2026 The Plow Collective, Inc.
+
+"Plow" and the Plow logo are trademarks of The Plow Collective, Inc. The license grants no trademark rights.

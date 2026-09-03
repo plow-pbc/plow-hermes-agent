@@ -163,6 +163,25 @@ def test_the_dotenv_carries_the_key_and_nothing_else(tmp_path, monkeypatch):
     assert dotenv.read_text() == "API_SERVER_KEY=a-key\n"
 
 
+def test_the_dotenv_replaces_an_existing_foreign_owned_file(tmp_path, monkeypatch):
+    """protected_regular=2 refuses O_CREAT on this existing path; rename works."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("API_SERVER_KEY=old\n")
+    plow_init.HOME_DOTENV = str(dotenv)
+    real_open = os.open
+
+    def protected_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == str(dotenv) and flags & os.O_CREAT:
+            raise PermissionError(13, "Permission denied", path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(plow_init.os, "open", protected_open)
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+    plow_init.own_home_dotenv("new")
+    assert dotenv.read_text() == "API_SERVER_KEY=new\n"
+
+
 @pytest.mark.parametrize("entry", ["skills", "SOUL.md"])
 def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch, entry):
     """`os.chmod` follows a symlink even where the `os.chown` beside it does

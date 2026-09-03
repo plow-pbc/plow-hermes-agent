@@ -27,7 +27,7 @@ import urllib.request
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 from typing import Annotated, Literal, Union
-from pydantic_settings import BaseSettings, DotEnvSettingsSource, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 CREDENTIALS = "/var/lib/plow/credentials"
 CONFIG = "/var/lib/hermes/config.yaml"
@@ -118,7 +118,6 @@ class Identity(BaseModel):
     new without being rebuilt first.
     """
 
-    line: dict
     chats: list[Chat]
     mcp_url: str | None
 
@@ -189,7 +188,11 @@ def read_credentials() -> Credentials:
         # names it once.
         return Credentials(_env_file=CREDENTIALS)
     except ValidationError as error:
-        die(f"{CREDENTIALS} is not the two lines this image reads:\n{error}")
+        # `include_input=False`: the default rendering quotes the offending
+        # input back, and for a missing key that input is the whole parsed
+        # file -- so a credential lacking PLOW_API_BASE would print the token
+        # it does have to s6's stderr, where every log reader can see it.
+        die(f"{CREDENTIALS} is not the two lines this image reads:\n{error.errors(include_input=False)}")
 
 
 def ask_plow(credentials: Credentials) -> Identity:
@@ -221,7 +224,9 @@ def ask_plow(credentials: Credentials) -> Identity:
             try:
                 return Identity.model_validate_json(raw)
             except ValidationError as error:
-                die(f"{url} answered something that is not an identity:\n{error}")
+                # Same reason as the credential above: the raw answer is a
+                # roster of real people.
+                die(f"{url} answered something that is not an identity:\n{error.errors(include_input=False)}")
         print(f"plow-init: attempt {attempt} to reach Plow failed, retrying ({reason})", file=sys.stderr)
         time.sleep(RETRY_DELAY_S)
     die(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
@@ -243,10 +248,12 @@ def export(values: dict[str, str]) -> None:
 def configure(identity: Identity, seed_model: dict) -> None:
     """Point the agent at its inference provider and its relay.
 
-    A structured edit: it writes the three settings it owns and touches nothing
-    else, and is skipped when they already hold these values, so a second boot
-    leaves the file as it found it. HERMES_MODEL is written only when set --
-    a model id belongs to the provider it was written for.
+    A structured edit: it writes the settings it owns and touches nothing else,
+    and is skipped when they already hold these values, so a second boot leaves
+    the file as it found it. A model id belongs to the provider it was written
+    for, so the two move together: HERMES_MODEL when one is named, the seed's
+    otherwise, and only under Plow -- another provider's model is nothing this
+    image knows how to guess.
     """
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
@@ -258,6 +265,13 @@ def configure(identity: Identity, seed_model: dict) -> None:
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
+    elif provider == "plow":
+        # No model asked for, and Plow is what you get when nobody says
+        # otherwise -- so this is also the boot after a home was switched to
+        # another provider and switched back. Its model id came from that
+        # provider and does not exist here; restoring the seed's along with
+        # the endpoint below is what makes the switch two variables both ways.
+        wanted[("model", "default")] = seed_model.get("default")
 
     # `base_url` and `key_env` describe Plow's endpoint and its credential.
     # Left in place under another provider they point every call back at Plow,
@@ -280,8 +294,14 @@ def configure(identity: Identity, seed_model: dict) -> None:
             section[path[-1]] = value
             changed = True
     if changed:
-        with open(CONFIG, "w") as handle:
+        # A sibling, then a rename: `open(CONFIG, "w")` truncates first, so a
+        # boot interrupted mid-dump leaves a half-written config.yaml -- which
+        # the next boot keeps, because cont-init only seeds an absent one.
+        temporary = CONFIG + ".tmp"
+        with open(temporary, "w") as handle:
+            os.fchmod(handle.fileno(), 0o640)
             yaml.safe_dump(config, handle, sort_keys=False)
+        os.replace(temporary, CONFIG)
 
 
 def own_home_dotenv(api_server_key: str) -> None:
@@ -327,13 +347,35 @@ def harden_home() -> None:
     is what lets it unlink a root-owned SOUL.md whatever the file's mode says.
     """
     hermes = pwd.getpwnam("hermes")
-    # `follow_symlinks=False` throughout: root is operating inside a directory
-    # the agent can write, so every path here is one the agent could have
-    # replaced with a link to somewhere else.
+
+    def hold(path: str, flags: int) -> int:
+        """Open the path as the shape it is meant to be, or stop the boot.
+
+        Root is working inside a directory the agent can create entries in, so
+        every path here is one the agent could have replaced. `O_NOFOLLOW`
+        refuses a symlink, `O_DIRECTORY` refuses anything but a directory, and
+        `O_NONBLOCK` means a FIFO left in place fails rather than parking root
+        on an open that never returns.
+        """
+        try:
+            return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | flags)
+        except OSError as error:
+            die(f"{path} is not the file this image left there: {error}")
+
+    # Through the descriptor, not the path. `os.chown` can decline to follow a
+    # link; `os.chmod` on Linux cannot, so a path-based chmod beside a
+    # link-safe chown hands root's mode change to a target the agent chose.
     for path in (HOME_DIR, os.path.join(HOME_DIR, "skills")):
-        os.chown(path, 0, hermes.pw_gid, follow_symlinks=False)
-        os.chmod(path, 0o3770)
-    os.chown(os.path.join(HOME_DIR, "SOUL.md"), 0, 0, follow_symlinks=False)
+        descriptor = hold(path, os.O_DIRECTORY)
+        os.fchown(descriptor, 0, hermes.pw_gid)
+        os.fchmod(descriptor, 0o3770)
+        os.close(descriptor)
+    soul = os.path.join(HOME_DIR, "SOUL.md")
+    descriptor = hold(soul, 0)
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        die(f"{soul} is not a regular file")
+    os.fchown(descriptor, 0, 0)
+    os.close(descriptor)
 
 
 def main() -> None:

@@ -184,8 +184,11 @@ starts from this image and adds nothing else:
 ```dockerfile
 FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 
-# Identity — replace it outright:
-COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
+# Identity — replace it outright. Root-owned and readable: first boot
+# re-asserts root ownership on this file and does not touch its mode, so a
+# variant that ships it 0600 to uid 10000 ends up with an identity the agent
+# cannot read.
+COPY --chown=0:0 --chmod=0644 SOUL.md /var/lib/hermes/SOUL.md
 
 # ...or extend the base one instead:
 #   COPY --chown=10000:10000 persona.md /tmp/persona.md
@@ -194,10 +197,12 @@ COPY --chown=10000:10000 --chmod=0600 SOUL.md /var/lib/hermes/SOUL.md
 #    && rm /tmp/persona.md
 
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
-# Copy them to /opt/hermes/skills/ as well, so a home that starts empty gets
-# them and later image updates reach them. It is a source, not a backup: a
-# skill the agent deleted is recorded as deleted and is not re-added, and
-# everything under /var/lib/hermes/skills is the agent's to change.
+# Both copies, as the base image does. The second is what a home that starts
+# empty is seeded from, and what later image updates reach. It is a source,
+# not a backup: a skill the agent deleted is recorded as deleted and is not
+# re-added, and everything under /var/lib/hermes/skills is the agent's to
+# change.
+COPY --chown=10000:10000 skills/ /opt/hermes/skills/
 
 ```
 

@@ -47,11 +47,6 @@ def credential(tmp_path, body="PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOK
     return path
 
 
-def test_a_credential_at_0600_is_read(tmp_path, owned_by_root):
-    credential(tmp_path)
-    assert plow_init.read_credentials().plow_agent_token == "t"
-
-
 def test_the_process_environment_cannot_outrank_the_file(tmp_path, owned_by_root, monkeypatch):
     """A settings model reads the environment first unless told not to.
 
@@ -70,6 +65,19 @@ def test_a_credential_anyone_else_can_reach_is_refused(tmp_path, owned_by_root, 
     credential(tmp_path, mode=mode)
     with pytest.raises(SystemExit, match="expected root:root at 600 or 400"):
         plow_init.read_credentials()
+
+
+def test_a_refused_credential_does_not_print_the_token(tmp_path, owned_by_root):
+    """This message goes to s6's stderr, which is the container's log.
+
+    Pydantic quotes the offending input by default, and for a missing key that
+    input is everything it did parse -- so the file's own token rides along.
+    """
+    credential(tmp_path, "PLOW_AGENT_TOKEN=sk-the-real-one\n")
+    with pytest.raises(SystemExit) as refusal:
+        plow_init.read_credentials()
+    assert "plow_api_base" in str(refusal.value)
+    assert "sk-the-real-one" not in str(refusal.value)
 
 
 def test_a_third_key_is_refused(tmp_path, owned_by_root):
@@ -92,12 +100,12 @@ def chat(uid, status="active", roles=("owner",), agents=("self",)):
 
 
 def identity(*chats, mcp_url=None):
-    return plow_init.Identity.model_validate({"line": {}, "chats": list(chats), "mcp_url": mcp_url})
+    return plow_init.Identity.model_validate({"chats": list(chats), "mcp_url": mcp_url})
 
 
-@pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
+@pytest.mark.parametrize("missing", ["chats", "mcp_url"])
 def test_an_answer_missing_a_key_is_not_an_identity(missing):
-    body = {"line": {}, "chats": [], "mcp_url": None}
+    body = {"chats": [], "mcp_url": None}
     del body[missing]
     with pytest.raises(Exception, match="[Vv]alidation"):
         plow_init.Identity.model_validate(body)
@@ -154,6 +162,28 @@ def test_the_dotenv_carries_the_key_and_nothing_else(tmp_path, monkeypatch):
     assert dotenv.read_text() == "API_SERVER_KEY=a-key\n"
 
 
+@pytest.mark.parametrize("entry", ["skills", "SOUL.md"])
+def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch, entry):
+    """`os.chmod` follows a symlink even where the `os.chown` beside it does
+    not, so root's mode change lands on whatever the agent pointed at."""
+    home = tmp_path / "home"
+    (home / "skills").mkdir(parents=True)
+    (home / "SOUL.md").write_text("identity\n")
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o700)
+    replaced = home / entry
+    replaced.unlink() if replaced.is_file() else replaced.rmdir()
+    replaced.symlink_to(victim)
+    plow_init.HOME_DIR = str(home)
+    # Ownership needs root; the modes below are real, and they are the point.
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    for call in ("chown", "fchown"):
+        monkeypatch.setattr(plow_init.os, call, lambda *a, **k: None)
+    with pytest.raises(SystemExit, match="not the file this image left there"):
+        plow_init.harden_home()
+    assert victim.stat().st_mode & 0o7777 == 0o700
+
+
 SEED = {
     "model": {"provider": "plow", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
@@ -204,6 +234,29 @@ def test_switching_back_restores_it_from_the_seed(tmp_path):
     after = yaml.safe_load(config.read_text())
     assert after["model"]["base_url"] == SEED["model"]["base_url"]
     assert after["model"]["key_env"] == SEED["model"]["key_env"]
+
+
+def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
+    """A model id belongs to the provider it was written for. Restoring Plow's
+    endpoint and leaving somebody else's model is the pair the two-knob
+    contract exists to prevent."""
+    configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
+    config = tmp_path / "config.yaml"
+    os.environ.pop("HERMES_PROVIDER", None)
+    os.environ.pop("HERMES_MODEL", None)
+    plow_init.configure(identity(), SEED["model"])
+    after = yaml.safe_load(config.read_text())
+    assert after["model"]["provider"] == "plow"
+    assert after["model"]["default"] == "seeded/model"
+
+
+def test_the_config_is_published_by_rename(tmp_path):
+    """An interrupted dump must not be able to leave a truncated config.yaml
+    that the next boot then keeps."""
+    after = configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "m"})
+    assert after["model"]["provider"] == "anthropic"
+    assert not (tmp_path / "config.yaml.tmp").exists()
+    assert (tmp_path / "config.yaml").stat().st_mode & 0o777 == 0o640
 
 
 def test_an_unchanged_config_is_not_rewritten(tmp_path):

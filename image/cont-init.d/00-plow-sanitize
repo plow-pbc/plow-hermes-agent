@@ -16,11 +16,18 @@ CREDENTIALS=/var/lib/plow/credentials
 # agent left here, and this runs as root. Redirecting into a `set -C` create
 # fails instead, which is the whole guard -- if anything is already at that
 # name, this leaves it alone and the agent's own config edit deals with it.
+#
+# Written beside the real name and renamed onto it, so the config either is not
+# there or is the whole seed. A copy interrupted partway would otherwise leave
+# a truncated config.yaml, and the next boot keeps it: this seeds an absent
+# path, not a damaged one.
 if [ ! -e "$CONFIG" ]; then
-  ( set -C; cat "$SEED" > "$CONFIG" ) 2>/dev/null || true
-  if [ -f "$CONFIG" ]; then
-    chown hermes:hermes "$CONFIG"
-    chmod 0640 "$CONFIG"
+  rm -f "$CONFIG.tmp"
+  ( set -C; cat "$SEED" > "$CONFIG.tmp" ) 2>/dev/null || true
+  if [ -f "$CONFIG.tmp" ] && [ ! -L "$CONFIG.tmp" ]; then
+    chown hermes:hermes "$CONFIG.tmp"
+    chmod 0640 "$CONFIG.tmp"
+    mv -f "$CONFIG.tmp" "$CONFIG"
   fi
 fi
 

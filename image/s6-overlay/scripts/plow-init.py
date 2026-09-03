@@ -41,15 +41,6 @@ TIMEOUT_S = 10
 # The one entry in `mcp_servers` this image manages. Any other belongs to
 # whoever added it and is left exactly as it is.
 RELAY_SERVER = "plow"
-# The inference provider id the seed defines — a different namespace from
-# RELAY_SERVER above, which happens to share the old spelling. The `litellm`
-# token is what earns the route Anthropic prompt caching; see the seed's own
-# comment. There is no alias for the old spelling: `HERMES_PROVIDER` is read
-# from the container environment, never from the home, so nothing carries the
-# old value forward, and a `HERMES_PROVIDER=plow` an operator sets today names
-# a provider this image does not define — which is a thing to fail on, not to
-# guess at.
-PLOW_PROVIDER = "plow-litellm"
 HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
@@ -279,8 +270,13 @@ def configure(identity: Identity, seed: dict) -> None:
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
 
-    seed_model = seed.get("model", {})
-    provider = os.environ.get("HERMES_PROVIDER", PLOW_PROVIDER)
+    seed_model = seed["model"]
+    # The seed names Plow's provider; nothing here restates it. Its id carries
+    # `litellm` on purpose -- see the seed's own comment -- and an operator who
+    # sets HERMES_PROVIDER to anything else, the old spelling included, gets
+    # that provider and not this one.
+    plow_provider = seed_model["provider"]
+    provider = os.environ.get("HERMES_PROVIDER", plow_provider)
     wanted: dict[tuple[str, ...], object] = {
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
         ("model", "provider"): provider,
@@ -290,7 +286,7 @@ def configure(identity: Identity, seed: dict) -> None:
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
-    elif provider == PLOW_PROVIDER:
+    elif provider == plow_provider:
         # No model asked for, and Plow is what you get when nobody says
         # otherwise -- so this is also the boot after a home was switched to
         # another provider and switched back. Its model id came from that
@@ -304,7 +300,7 @@ def configure(identity: Identity, seed: dict) -> None:
     # switching back -- which is what keeps a switch two variables rather than
     # an edit.
     for key in ("base_url", "key_env"):
-        wanted[("model", key)] = seed_model.get(key) if provider == PLOW_PROVIDER else None
+        wanted[("model", key)] = seed_model.get(key) if provider == plow_provider else None
 
     changed = False
     for path, value in wanted.items():

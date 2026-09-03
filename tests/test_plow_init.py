@@ -265,7 +265,8 @@ def test_switching_away_from_plow_takes_plows_endpoint_with_it(tmp_path):
 def test_switching_back_restores_it_from_the_seed(tmp_path):
     configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "m"})
     config = tmp_path / "config.yaml"
-    os.environ.update({"HERMES_PROVIDER": "plow-litellm", "HERMES_MODEL": "seeded/model"})
+    os.environ.update({"HERMES_PROVIDER": SEED["model"]["provider"],
+                       "HERMES_MODEL": "seeded/model"})
     plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
     assert after["model"]["base_url"] == SEED["model"]["base_url"]
@@ -282,7 +283,7 @@ def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
     os.environ.pop("HERMES_MODEL", None)
     plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
-    assert after["model"]["provider"] == "plow-litellm"
+    assert after["model"]["provider"] == SEED["model"]["provider"]
     assert after["model"]["default"] == "seeded/model"
 
 

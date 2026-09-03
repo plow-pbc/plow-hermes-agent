@@ -375,6 +375,10 @@ def harden_home() -> None:
     if not stat.S_ISREG(os.fstat(descriptor).st_mode):
         die(f"{soul} is not a regular file")
     os.fchown(descriptor, 0, 0)
+    # Ownership is not enough: an agent that leaves this file 0666 keeps
+    # other-write after root takes it, and the identity stays rewritable by the
+    # thing it is supposed to constrain.
+    os.fchmod(descriptor, 0o644)
     os.close(descriptor)
 
 

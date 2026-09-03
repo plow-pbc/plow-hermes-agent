@@ -10,6 +10,7 @@ which settings it writes into the agent's config.
 import importlib.util
 import os
 import pathlib
+import stat
 import sys
 import types
 
@@ -182,6 +183,21 @@ def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkey
     with pytest.raises(SystemExit, match="not the file this image left there"):
         plow_init.harden_home()
     assert victim.stat().st_mode & 0o7777 == 0o700
+
+
+def test_a_permissive_soul_is_taken_back_to_0644(tmp_path, monkeypatch):
+    """Ownership alone leaves a 0666 SOUL.md writable by the agent it is meant
+    to constrain, so the mode is asserted rather than inherited."""
+    home = tmp_path / "hermes"
+    (home / "skills").mkdir(parents=True)
+    soul = home / "SOUL.md"
+    soul.write_text("the identity\n")
+    soul.chmod(0o666)
+    monkeypatch.setattr(plow_init, "HOME_DIR", str(home))
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+    plow_init.harden_home()
+    assert stat.S_IMODE(soul.stat().st_mode) == 0o644
 
 
 SEED = {

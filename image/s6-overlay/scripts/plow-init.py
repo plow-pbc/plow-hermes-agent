@@ -263,9 +263,10 @@ def configure(identity: Identity, seed: dict) -> None:
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
     image knows how to guess. The retry budget, every display key, and the
-    tool_search switch are the seed's on every boot: cont-init seeds only an
-    absent config.yaml, so a home that predates a seed change would otherwise
-    keep the old value for good.
+    tool_search switch are the seed's on every boot, and so is the provider
+    entry `model.provider` names: cont-init seeds only an absent config.yaml,
+    so a home that predates a seed change would otherwise keep the old value
+    for good.
     """
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
@@ -283,6 +284,19 @@ def configure(identity: Identity, seed: dict) -> None:
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
         **dict(_leaves(seed["display"], ("display",))),
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
+        # The registry entry `model.provider` names, re-asserted from the seed
+        # like the endpoint below. cont-init seeds only an absent config.yaml,
+        # so a home that predates a seed change keeps whatever registry it was
+        # seeded with -- and a provider id the registry does not define is one
+        # every model request fails on. Written whole rather than per leaf:
+        # `models` holds an empty mapping that a leaf walk drops.
+        ("providers", plow_provider): seed["providers"][plow_provider],
+        # And the id this image used to write, removed. Not backward
+        # compatibility -- a registry key the image itself put there, cleaned
+        # up now that the seed names a different one. Only that one: another
+        # entry in `providers` belongs to whoever added it. (`plow` is also
+        # RELAY_SERVER, in the unrelated `mcp_servers` namespace above.)
+        ("providers", "plow"): None,
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]

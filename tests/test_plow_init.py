@@ -203,6 +203,9 @@ def test_a_permissive_soul_is_taken_back_to_0644(tmp_path, monkeypatch):
 SEED = {
     "model": {"provider": "plow-litellm", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
+    "providers": {"plow-litellm": {"name": "plow-litellm", "base_url": "${PLOW_API_BASE}/v1",
+                                   "key_env": "HERMES_CUSTOM_PLOW_API_KEY",
+                                   "models": {"anthropic/claude-sonnet-5": {}}}},
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
@@ -236,10 +239,12 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
 def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path):
     # cont-init seeds only an absent config.yaml, so an existing home carries
     # whatever it was seeded with -- a retry budget of 3, the gateway's noisy
-    # display defaults, and no tool_search switch, before 2026-09-03 -- until
-    # configure() reconciles it on boot.
+    # display defaults, no tool_search switch, and the pre-rename provider
+    # registry -- until configure() reconciles it on boot.
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
+             "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1"},
+                           "theirs": {"base_url": "https://example.invalid"}},
              "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
     config.write_text(yaml.safe_dump(stale))
     plow_init.CONFIG = str(config)
@@ -248,6 +253,15 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path)
     assert after["agent"]["api_max_retries"] == 9
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
+    # The id `model.provider` names is now in the registry. Without this the
+    # selected provider is undefined in the home it was written to, and every
+    # model request fails after the boot that renamed it.
+    plow = SEED["model"]["provider"]
+    assert after["providers"][plow] == SEED["providers"][plow]
+    # ...and the id this image used to write is gone, while an entry somebody
+    # else added is not the image's to remove.
+    assert "plow" not in after["providers"]
+    assert after["providers"]["theirs"] == {"base_url": "https://example.invalid"}
 
 
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):

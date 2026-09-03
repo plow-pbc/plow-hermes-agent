@@ -245,7 +245,7 @@ def export(values: dict[str, str]) -> None:
             handle.write(value)
 
 
-def configure(identity: Identity, seed_model: dict) -> None:
+def configure(identity: Identity, seed: dict) -> None:
     """Point the agent at its inference provider and its relay.
 
     A structured edit: it writes the settings it owns and touches nothing else,
@@ -253,15 +253,19 @@ def configure(identity: Identity, seed_model: dict) -> None:
     the file as it found it. A model id belongs to the provider it was written
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
-    image knows how to guess.
+    image knows how to guess. The retry budget is the seed's on every boot:
+    cont-init seeds only an absent config.yaml, so a home that predates a seed
+    change would otherwise keep the old value for good.
     """
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
 
+    seed_model = seed.get("model", {})
     provider = os.environ.get("HERMES_PROVIDER", "plow")
     wanted: dict[tuple[str, ...], object] = {
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
         ("model", "provider"): provider,
+        ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
     }
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
@@ -418,13 +422,13 @@ def main() -> None:
     # Read while still root: the seed lives outside every home, where the
     # agent cannot reach it -- which is the point of keeping it there.
     with open(SEED_CONFIG) as handle:
-        seed_model = (yaml.safe_load(handle) or {}).get("model", {})
+        seed = yaml.safe_load(handle) or {}
 
     hermes = pwd.getpwnam("hermes")
     os.setgroups([])
     os.setgid(hermes.pw_gid)
     os.setuid(hermes.pw_uid)
-    configure(identity, seed_model)
+    configure(identity, seed)
     print(f"plow-init: configured from {CREDENTIALS} as {home.uid}", file=sys.stderr)
 
 

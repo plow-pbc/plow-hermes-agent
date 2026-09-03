@@ -205,6 +205,7 @@ SEED = {
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
+    "agent": {"api_max_retries": 9},
 }
 
 
@@ -215,11 +216,11 @@ def configure(tmp_path, mcp_url=None, env=None):
     os.environ.pop("HERMES_PROVIDER", None)
     os.environ.pop("HERMES_MODEL", None)
     os.environ.update(env or {})
-    plow_init.configure(identity(mcp_url=mcp_url), SEED["model"])
+    plow_init.configure(identity(mcp_url=mcp_url), SEED)
     return yaml.safe_load(config.read_text())
 
 
-def test_it_writes_the_three_settings_it_owns_and_nothing_else(tmp_path):
+def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
     after = configure(tmp_path, mcp_url="https://relay.invalid/mcp",
                       env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
     assert after["model"]["provider"] == "anthropic"
@@ -228,6 +229,17 @@ def test_it_writes_the_three_settings_it_owns_and_nothing_else(tmp_path):
     # Somebody else's MCP server, and everything else, untouched.
     assert after["mcp_servers"]["theirs"] == SEED["mcp_servers"]["theirs"]
     assert after["platforms"] == SEED["platforms"]
+
+
+def test_a_home_that_predates_a_seed_change_takes_the_seeds_retry_budget(tmp_path):
+    # cont-init seeds only an absent config.yaml, so an existing home carries
+    # whatever budget it was seeded with -- the image default of 3 before
+    # 2026-09-03 -- until configure() reconciles it on boot.
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({**SEED, "agent": {"api_max_retries": 3}}))
+    plow_init.CONFIG = str(config)
+    plow_init.configure(identity(), SEED)
+    assert yaml.safe_load(config.read_text())["agent"]["api_max_retries"] == 9
 
 
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):
@@ -246,7 +258,7 @@ def test_switching_back_restores_it_from_the_seed(tmp_path):
     configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "m"})
     config = tmp_path / "config.yaml"
     os.environ.update({"HERMES_PROVIDER": "plow", "HERMES_MODEL": "seeded/model"})
-    plow_init.configure(identity(), SEED["model"])
+    plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
     assert after["model"]["base_url"] == SEED["model"]["base_url"]
     assert after["model"]["key_env"] == SEED["model"]["key_env"]
@@ -260,7 +272,7 @@ def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
     config = tmp_path / "config.yaml"
     os.environ.pop("HERMES_PROVIDER", None)
     os.environ.pop("HERMES_MODEL", None)
-    plow_init.configure(identity(), SEED["model"])
+    plow_init.configure(identity(), SEED)
     after = yaml.safe_load(config.read_text())
     assert after["model"]["provider"] == "plow"
     assert after["model"]["default"] == "seeded/model"
@@ -279,5 +291,5 @@ def test_an_unchanged_config_is_not_rewritten(tmp_path):
     config = tmp_path / "config.yaml"
     configure(tmp_path)
     before = config.stat().st_mtime_ns
-    plow_init.configure(identity(), SEED["model"])
+    plow_init.configure(identity(), SEED)
     assert config.stat().st_mtime_ns == before

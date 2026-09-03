@@ -48,6 +48,19 @@ agent:
   # hermes-agent agent_init.py: `_agent_section.get("api_max_retries", 3)`.
   api_max_retries: 9
 
+# The relay's tools are listed directly, not behind Hermes' tool_search bridge.
+# By default Hermes hides every MCP tool behind tool_search / tool_describe /
+# tool_call, and the model then has to nest a tool's real arguments inside
+# tool_call's `arguments` object. Measured live (2026-09-02, cloud agent on
+# claude-sonnet-5): every multi-parameter plow_run_command call put `argv`
+# inside `arguments` and left cwd / read_paths / goal beside it, the bridge
+# silently dropped them, and Latch ran sqlite3 in its scratch dir -- reported to
+# the owner as "iMessage needs Full Disk Access". Twelve relay tools are cheap
+# to list; a bridge that loses arguments is not.
+tools:
+  tool_search:
+    enabled: "off"
+
 # The id carries `litellm` on purpose, and it is the whole of this block's
 # caching story.
 #

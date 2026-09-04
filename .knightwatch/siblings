@@ -1,0 +1,14 @@
+# Repos a reviewer of THIS repo may search and cite, materialized under
+# .siblings/<owner>/<repo>. One per line. The reviewer host must also carry a
+# SOURCE_PATHS entry for each, or the sibling reports as `missing`.
+#
+# `hermes-plow-chat` is the plugin this image pins by SHA, so a review that
+# cannot read it cannot see what the pin brings in; `plow` owns the API the base
+# boots against and the registry that pins which image tenants run;
+# `life-assistant-hermes-agent` builds FROM this image and is where a base
+# regression surfaces first. `NousResearch/hermes-agent` stays out — pinned by
+# digest, never read as source.
+
+plow-pbc/hermes-plow-chat
+plow-pbc/plow
+plow-pbc/life-assistant-hermes-agent

@@ -8,11 +8,15 @@ FROM nousresearch/hermes-agent@sha256:8f4e8677281eca188bc9d2fda90806646ba19941fc
 # repository vendors no copy, it pins one commit. Moving the plugin is a
 # one-line change to the default below. The repository is public, so the fetch
 # needs no credential.
-ARG PLOW_CHAT_PLUGIN_SHA=031dd884cba662fa7dd2065d3b2ce681b1fe5d41
+ARG PLOW_CHAT_PLUGIN_SHA=7caaa3e9b7b3021923756bee2ed9801e27dfb6a6
 
 # Fetched in its own stage off the same pinned base — curl and tar are already
 # there, so this costs no extra upstream image and the fetch tooling never
 # reaches the shipped filesystem.
+#
+# Two of the seed skills come out of this same tarball rather than a tracked
+# copy: skill text and the plugin it describes then always come from one
+# commit, and a pin bump moves both together instead of drifting apart.
 FROM base AS plugin
 ARG PLOW_CHAT_PLUGIN_SHA
 RUN set -eu; \
@@ -21,10 +25,14 @@ RUN set -eu; \
     curl --fail-with-body --silent --show-error --location --retry 3 --retry-delay 2 \
       -o /tmp/plugin.tgz \
       "https://api.github.com/repos/plow-pbc/hermes-plow-chat/tarball/$PLOW_CHAT_PLUGIN_SHA"; \
-    mkdir -p /staged/plow_chat; \
+    mkdir -p /staged/plow_chat /staged/seed-skills; \
     top="$(tar -tzf /tmp/plugin.tgz | cut -d/ -f1 | uniq)"; \
     tar -xzf /tmp/plugin.tgz -C /staged/plow_chat --strip-components=2 "$top/plow-chat-platform"; \
-    test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml
+    test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml; \
+    tar -xzf /tmp/plugin.tgz -C /staged/seed-skills --strip-components=2 \
+      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace"; \
+    test -f /staged/seed-skills/growth/plow-invite/SKILL.md \
+      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md
 
 FROM base
 
@@ -53,6 +61,13 @@ ENV S6_SERVICES_GRACETIME=30000
 # uid/gid 10000 (hermes) already exists in this base.
 COPY image/seed/ /var/lib/hermes/
 
+# Staged from the plugin tarball, not tracked here — see the `plugin` stage.
+# Merges into the tree above rather than replacing it, so the tracked
+# plow-connectors skill survives alongside these two. Landed before the
+# chown -R below so they get the same ownership as everything else under
+# the home.
+COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/
+
 # The same skills again, as BUNDLED skills, and both copies are load-bearing.
 #
 # The baked tree is where this image's gateway looks, because HERMES_HOME *is*
@@ -70,6 +85,7 @@ COPY image/seed/ /var/lib/hermes/
 # turn can still rename one out of the scan path. Pre-existing, tracked
 # separately -- do not read the sticky bit as protecting the baked skills.
 COPY image/seed/skills/ /opt/hermes/skills/
+COPY --from=plugin /staged/seed-skills/ /opt/hermes/skills/
 
 ARG PLOW_REVISION
 LABEL org.opencontainers.image.revision="${PLOW_REVISION}"

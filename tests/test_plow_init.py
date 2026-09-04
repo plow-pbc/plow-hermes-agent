@@ -163,6 +163,25 @@ def test_the_dotenv_carries_the_key_and_nothing_else(tmp_path, monkeypatch):
     assert dotenv.read_text() == "API_SERVER_KEY=a-key\n"
 
 
+def test_the_dotenv_replaces_an_existing_foreign_owned_file(tmp_path, monkeypatch):
+    """protected_regular=2 refuses O_CREAT on this existing path; rename works."""
+    dotenv = tmp_path / ".env"
+    dotenv.write_text("API_SERVER_KEY=old\n")
+    plow_init.HOME_DOTENV = str(dotenv)
+    real_open = os.open
+
+    def protected_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == str(dotenv) and flags & os.O_CREAT:
+            raise PermissionError(13, "Permission denied", path)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(plow_init.os, "open", protected_open)
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+    plow_init.own_home_dotenv("new")
+    assert dotenv.read_text() == "API_SERVER_KEY=new\n"
+
+
 @pytest.mark.parametrize("entry", ["skills", "SOUL.md"])
 def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch, entry):
     """`os.chmod` follows a symlink even where the `os.chown` beside it does
@@ -233,13 +252,17 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
     assert after["platforms"] == SEED["platforms"]
 
 
-def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path):
+def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path, monkeypatch):
     # cont-init seeds only an absent config.yaml, so an existing home carries
     # whatever it was seeded with -- a retry budget of 3, the gateway's noisy
     # display defaults, and no tool_search switch, before 2026-09-03 -- until
     # configure() reconciles it on boot.
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
+             "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
+                                    "models": {SEED["model"]["default"]: {}}},
+                           "theirs": {"base_url": "https://elsewhere.invalid"}},
              "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
     config.write_text(yaml.safe_dump(stale))
     plow_init.CONFIG = str(config)
@@ -248,6 +271,14 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path)
     assert after["agent"]["api_max_retries"] == 9
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
+    # Prompt caching: Hermes matches the declaration on the endpoint and the
+    # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
+    # the agent dials -- an entry carrying it is one the match cannot find.
+    entry = after["providers"]["plow"]
+    assert entry["base_url"] == "https://api.test.invalid/v1"
+    assert entry["models"][SEED["model"]["default"]]["prompt_caching"] is True
+    assert entry["name"] == "plow"
+    assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
 
 
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):
@@ -301,3 +332,8 @@ def test_an_unchanged_config_is_not_rewritten(tmp_path):
     before = config.stat().st_mtime_ns
     plow_init.configure(identity(), SEED)
     assert config.stat().st_mtime_ns == before
+
+
+def test_upstream_main_hermes_waits_for_plow_init():
+    dependency = SOURCE.parents[1] / "s6-rc.d/main-hermes/dependencies.d/plow-init"
+    assert dependency.is_file()

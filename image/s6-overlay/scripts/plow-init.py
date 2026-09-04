@@ -19,6 +19,7 @@ import secrets
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 import typing
 import urllib.error
@@ -279,6 +280,36 @@ def configure(identity: Identity, seed: dict) -> None:
         **dict(_leaves(seed["display"], ("display",))),
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
     }
+    # Prompt caching, declared here and nowhere else.
+    #
+    # Plow's `/v1/chat/completions` is a LiteLLM proxy in front of Anthropic and
+    # honours `cache_control`, but Hermes grants caching on the OpenAI wire only
+    # to a route whose provider id or hostname reads as LiteLLM -- and a
+    # config-defined provider is `custom` at runtime whatever the config calls
+    # it, so neither signal can ever match. The per-model declaration is the
+    # other door: Hermes matches it on the ENDPOINT and the MODEL ID, not on a
+    # name. Both halves of that match are written here.
+    #
+    # The endpoint must be the expanded one. The match is against a normalized
+    # URL and the seed's `${PLOW_API_BASE}` reference is never equal to the URL
+    # the agent dials, so a seed-side declaration is unreachable while reading
+    # as set -- which is why the seed does not carry one and this is the single
+    # owner.
+    #
+    # The model id must be the one actually selected. `HERMES_MODEL` replaces
+    # `model.default` a few lines below, and a flag filed under the seed's model
+    # is a flag Hermes never looks up: caching silently off for anyone who sets
+    # that variable.
+    #
+    # Re-asserted every boot rather than left to a first-boot seed: cont-init
+    # seeds only an ABSENT config.yaml, so a home from before this change keeps
+    # a registry with neither key and would cache nothing, for good.
+    provider_key = seed_model.get("provider")
+    if provider_key:
+        plow_model = os.environ.get("HERMES_MODEL") if provider == provider_key else None
+        wanted[("providers", provider_key, "base_url")] = os.path.expandvars(seed_model.get("base_url", ""))
+        wanted[("providers", provider_key, "models", plow_model or seed_model.get("default"), "prompt_caching")] = True
+
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
     elif provider == "plow":
@@ -334,21 +365,29 @@ def own_home_dotenv(api_server_key: str) -> None:
     tenant's credential is published to the environment and has no business in
     a file the agent can read.
 
-    O_NOFOLLOW is the whole of the safety. This is root writing into a
-    directory the agent can create entries in, and the runtime hands this file
-    to the agent on every boot -- so the agent can unlink it and leave a
-    symlink to /etc/shadow in its place. Opening that link as root would
-    truncate whatever it points at. `os.open` refuses instead, and the boot
-    stops.
+    Write a new inode and rename it into place. Besides keeping the prior file
+    intact on failure, this avoids Linux protected_regular refusing O_CREAT on
+    an existing agent-owned file in this shared directory. A symlink is still
+    refused rather than silently replaced so a tampered home stops at boot.
     """
     try:
-        descriptor = os.open(HOME_DOTENV, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o640)
+        if os.path.lexists(HOME_DOTENV) and not stat.S_ISREG(os.lstat(HOME_DOTENV).st_mode):
+            raise OSError("existing path is not a regular file")
+        descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
         die(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
-    with os.fdopen(descriptor, "w") as handle:
-        os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)
-        os.fchmod(handle.fileno(), 0o640)
-        handle.write(f"API_SERVER_KEY={api_server_key}\n")
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)
+            os.fchmod(handle.fileno(), 0o640)
+            handle.write(f"API_SERVER_KEY={api_server_key}\n")
+        os.replace(temporary, HOME_DOTENV)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 
 def harden_home() -> None:

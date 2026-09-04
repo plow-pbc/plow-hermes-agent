@@ -33,3 +33,7 @@ def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
         "$top/seed-skills/productivity/google-workspace",
     ):
         assert staged in DOCKERFILE, f"Dockerfile does not stage {staged} from the plugin archive"
+    for skills_root in ("/var/lib/hermes/skills/", "/opt/hermes/skills/"):
+        assert f"COPY --from=plugin /staged/seed-skills/ {skills_root}" in DOCKERFILE, (
+            f"Dockerfile does not copy the staged seed skills into {skills_root}"
+        )

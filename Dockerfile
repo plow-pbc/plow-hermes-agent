@@ -60,10 +60,11 @@ ENV S6_SERVICES_GRACETIME=30000
 COPY image/seed/ /var/lib/hermes/
 
 # Staged from the plugin tarball, not tracked here — see the `plugin` stage.
-# Landed before the chown -R below so they get the same ownership as
-# everything else under the home.
-COPY --from=plugin /staged/seed-skills/growth/plow-invite/ /var/lib/hermes/skills/growth/plow-invite/
-COPY --from=plugin /staged/seed-skills/productivity/google-workspace/ /var/lib/hermes/skills/productivity/google-workspace/
+# Merges into the tree above rather than replacing it, so the tracked
+# plow-connectors skill survives alongside these two. Landed before the
+# chown -R below so they get the same ownership as everything else under
+# the home.
+COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/
 
 # The same skills again, as BUNDLED skills, and both copies are load-bearing.
 #
@@ -82,8 +83,7 @@ COPY --from=plugin /staged/seed-skills/productivity/google-workspace/ /var/lib/h
 # turn can still rename one out of the scan path. Pre-existing, tracked
 # separately -- do not read the sticky bit as protecting the baked skills.
 COPY image/seed/skills/ /opt/hermes/skills/
-COPY --from=plugin /staged/seed-skills/growth/plow-invite/ /opt/hermes/skills/growth/plow-invite/
-COPY --from=plugin /staged/seed-skills/productivity/google-workspace/ /opt/hermes/skills/productivity/google-workspace/
+COPY --from=plugin /staged/seed-skills/ /opt/hermes/skills/
 
 ARG PLOW_REVISION
 LABEL org.opencontainers.image.revision="${PLOW_REVISION}"

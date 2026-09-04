@@ -7,7 +7,7 @@ supervised by [s6-overlay](https://github.com/just-containers/s6-overlay),
 reachable only through Plow Chat. One image serves two paths: exe.dev unpacks it
 into a VM rootfs and boots its `Cmd`, and `docker run` boots the same `Cmd` in a
 container — `/init` either way, so what the developer runs is what the tenant
-gets. The image is credential-free and tenant-free — two lines land at
+gets. The image is credential-free and tenant-free — two required keys and an optional `AGENT_ID` land at
 `/var/lib/plow/credentials` and the image does the rest. It adds one package
 to the runtime's environment (`pydantic-settings`, pinned, `--no-deps`) and no
 code of its own beyond the init below.
@@ -120,8 +120,8 @@ at boot costs nothing, because the first look finds it.
 The file is the only source: a settings model would otherwise read the process
 environment first, letting `docker run -e PLOW_AGENT_TOKEN=…` outrank the
 credential the image was given, so every source but that file is switched off.
-It is left in place, and a rotation rewrites the required lines and optional id, then
-restart, with no shell into the agent. The identity is re-asked on every boot,
+It is left in place, and a rotation rewrites the required keys and optional id,
+then restarts, with no shell into the agent. The identity is re-asked on every boot,
 so a home channel or a relay that moved moves with it — and a relay that went
 away is switched off rather than left behind.
 
@@ -136,8 +136,8 @@ agent's — a 401, 403 or 404 — or answering with something that is not an
 identity, fails immediately without the retries.
 
 The same goes for the credential itself: no file, a file that is not a
-root-owned regular file at 0600 or 0400, or one naming anything but those two
-keys, and nothing starts. `plow-init` is a oneshot every service depends on.
+root-owned regular file at 0600 or 0400, or one naming anything but the two
+required keys plus optional `AGENT_ID`, and nothing starts. `plow-init` is a oneshot every service depends on.
 
 ### From a developer's machine
 
@@ -151,7 +151,7 @@ itself is never written; a rotation is a rewrite of it and a restart, which
 the next boot copies into place.
 
 `plow-pbc/plow-agents` is the compose file that does this, and the tool that
-writes the two lines.
+writes the two required keys and optional `AGENT_ID`.
 
 ### The host's own hook
 

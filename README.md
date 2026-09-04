@@ -59,11 +59,13 @@ Provisioning's whole involvement with a tenant's VM is one file, `root:root`
 ```
 PLOW_API_BASE=https://api.plow.dev
 PLOW_AGENT_TOKEN=<the agent's own credential>
+AGENT_ID=life # optional: the registered Agent Index id
 ```
 
-`plow-init` reads it as data — never sourced, and only those two names, so a
-provisioner that has drifted ahead of the image is refused rather than
-half-obeyed — and then asks Plow the rest with that credential:
+The provisioner sets `AGENT_ID` from the selected cloud variant when the image
+reports usage; local hosts set it to the registered Agent Index id. It is
+optional, but every unknown key is still refused. `plow-init` reads the file as
+data — never sourced — and then asks Plow the rest with that credential:
 `GET $PLOW_API_BASE/v1/agents/cloud/me` answers with this agent's line, the
 chats it is in, and a relay endpoint. Plow does not name a home channel, so the
 image picks one: the active chat holding exactly this agent and exactly one
@@ -118,7 +120,7 @@ at boot costs nothing, because the first look finds it.
 The file is the only source: a settings model would otherwise read the process
 environment first, letting `docker run -e PLOW_AGENT_TOKEN=…` outrank the
 credential the image was given, so every source but that file is switched off.
-It is left in place, and a rotation is a rewrite of those two lines and a
+It is left in place, and a rotation rewrites the required lines and optional id, then
 restart, with no shell into the agent. The identity is re-asked on every boot,
 so a home channel or a relay that moved moves with it — and a relay that went
 away is switched off rather than left behind.
@@ -177,7 +179,7 @@ is what keeps a switch back from being an edit — you do not have to remember
 the model you were on before you left.
 
 A credential file naming either is refused: the allowlist for a drop-in is
-`PLOW_API_BASE` and `PLOW_AGENT_TOKEN`, and nothing else.
+`PLOW_API_BASE`, `PLOW_AGENT_TOKEN`, and optional `AGENT_ID`, and nothing else.
 
 ## Prompt caching
 

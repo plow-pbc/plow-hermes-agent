@@ -74,23 +74,7 @@ providers:
     key_env: HERMES_CUSTOM_PLOW_API_KEY
     stale_timeout_seconds: 55
     models:
-      # Plow's `/v1/chat/completions` is a LiteLLM proxy in front of Anthropic
-      # and honours `cache_control`. Hermes will not guess that: it grants
-      # caching on the OpenAI wire only for a route whose provider id or
-      # hostname reads as LiteLLM, and a config-defined provider is `custom` at
-      # runtime whatever this file calls it -- so neither signal can ever
-      # match. This declaration is the other door, matched on the endpoint and
-      # the model id rather than on a name, and it is the only one open to us.
-      #
-      # Measured on a 15-turn agent conversation: a repeat turn costs $0.0057
-      # against $0.0430 uncached at the same ~19k prompt, ~7.5x.
-      #
-      # `plow-init` writes the expanded endpoint beside it on every boot. The
-      # match is on a normalized URL, and the `${...}` above never equals the
-      # URL the agent dials -- without that expansion this key is unreachable
-      # and reads as working.
-      anthropic/claude-sonnet-5:
-        prompt_caching: true
+      anthropic/claude-sonnet-5: {}
 # Hermes announces every memory write, and that is noise to an owner who asked
 # one question over iMessage.
 #

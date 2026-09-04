@@ -22,14 +22,14 @@ Nothing in this repository is about running it.
 
 One Plow agent is assembled from these repos. Before you change something,
 find the row that owns it. If the row is not the repo you are in, the change
-goes there and this repo takes a pin bump. The test: **who else would have to
+goes there; the repos that consume it follow, by bumping their pins if they hold one. The test: **who else would have to
 change if this fact changed?** One owner, one place.
 
 | repo | owns | not here |
 | --- | --- | --- |
 | [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) | the runtime: gateway, tool schema, sessions, MCP client | anything Plow-shaped |
 | [`srosro/hermes-agent`](https://github.com/srosro/hermes-agent) | staging for changes going upstream — upstream-fit only; a generic fix or feature Hermes itself would take | anything only Plow needs; that is the plugin or the base |
-| this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, prompt text |
+| this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
 | [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the two seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
@@ -48,8 +48,9 @@ workaround.
 
 **Not here:**
 
-- Prompt text, tool descriptions, and how a turn is framed — owned by the
-  `plow_chat` plugin in `hermes-plow-chat`; this repo carries only its pin.
+- The per-turn prompt framing and the Plow tool descriptions — owned by the
+  `plow_chat` plugin in `hermes-plow-chat`; this repo carries only its pin. The
+  base persona in `image/seed/SOUL.md` is this repo's.
 - A persona or a skill for one assistant — owned by that assistant's variant
   repo, which builds `FROM` this image.
 - A patch to the Hermes runtime — owned by `srosro/hermes-agent` and then

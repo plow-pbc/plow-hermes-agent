@@ -32,7 +32,7 @@ loud and specific is the design here, not a finding.
 
 | Base-image DON'T (suppress / flag-as-shape) | Base-image DO (real finding) |
 |---|---|
-| — | Flag a change that a **sibling repo owns** per `plow-hermes-agent` README § The repos: prompt text or how a turn is framed (the `plow_chat` plugin, `hermes-plow-chat`), a persona or a skill for one assistant (that assistant's variant repo), a patch to the Hermes runtime (`srosro/hermes-agent`, then upstream — the base has no patch mechanism on purpose). The test is who else would have to change if the fact changed. |
+| — | Flag a change that a **sibling repo owns** per `plow-hermes-agent` README § The repos: the per-turn prompt framing or a Plow tool description (the `plow_chat` plugin, `hermes-plow-chat`; the base persona in `image/seed/SOUL.md` stays here), a persona or a skill for one assistant (that assistant's variant repo), a patch to the Hermes runtime (`srosro/hermes-agent`, then upstream — the base has no patch mechanism on purpose). The test is who else would have to change if the fact changed. |
 
 **Update cadence:** edit when the stage changes. Product and architecture edits
 belong in `README.md`, not here.

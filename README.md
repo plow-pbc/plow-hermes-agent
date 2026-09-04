@@ -243,10 +243,12 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 
 ## Publishing
 
-Not automated yet. Built and gated locally, pushed by hand to
-`public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
-immutable tag per commit. Plow's own deploy tooling moves the blessed
-`hermes-prod` tag; publishing a `base-<sha>` tag blesses nothing.
+CI in `plow-pbc/plow` (`.github/workflows/build-agent-image.yml`) builds and
+pushes `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>` — one
+immutable tag per commit — whenever `api/cloud-agents/agents.json` pins a new
+`exe.hermes.revision` (last observed run 2026-09-03 23:07 UTC, success). Plow's
+own deploy tooling moves the blessed `hermes-prod` tag; publishing a
+`base-<sha>` tag blesses nothing.
 
 One repository holds this image and every variant image built from it, so a tag
 has to say which commit it came from: `base-` plus the **full 40-character SHA

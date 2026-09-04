@@ -26,7 +26,7 @@ neighbours; this is the whole picture.
 | repo | owns |
 | --- | --- |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API an agent talks to — chat, credits, invites, the relay to Latch — the owner's dashboard at `app.plow.co`, the registry `api/cloud-agents/agents.json` that pins which commit of each image tenants boot, and the CI that builds and publishes those images |
-| this repo | the base image: boot, `plow-init`, the gateway config, the base persona, the seed skills, and the pin of the chat plugin |
+| this repo | the base image: boot, `plow-init`, the gateway config, the base persona, the `plow-connectors` seed skill, and the pin of the chat plugin — which is what brings the other two seed skills |
 | [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin — every turn's prompt framing and the Plow tools — and the two seed skills staged into this image from its tarball at the pinned plugin SHA |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | a persona and its skills, `FROM` this image by digest |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | running any of these images on a machine of your own |

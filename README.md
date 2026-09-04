@@ -27,7 +27,7 @@ neighbours; this is the whole picture.
 | --- | --- |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API an agent talks to — chat, credits, invites, the relay to Latch — the owner's dashboard at `app.plow.co`, the registry `api/cloud-agents/agents.json` that pins which commit of each image tenants boot, and the CI that builds and publishes those images |
 | this repo | the base image: boot, `plow-init`, the gateway config, the base persona, the seed skills, and the pin of the chat plugin |
-| [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin — every turn's prompt framing and the Plow tools — and the canonical copy of the seed skills mirrored here |
+| [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin — every turn's prompt framing and the Plow tools — and the two seed skills staged into this image from its tarball at the pinned plugin SHA |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | a persona and its skills, `FROM` this image by digest |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | running any of these images on a machine of your own |
 
@@ -261,9 +261,10 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 ## Publishing
 
 Published by CI in `plow-pbc/plow` (`.github/workflows/build-agent-image.yml`),
-triggered by a revision bump in `api/cloud-agents/agents.json` — never by hand.
-The tag is `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>`,
-one immutable tag per commit.
+triggered by a revision bump in `api/cloud-agents/agents.json`, or by a manual
+run of that same workflow — never by a push from a developer's machine. The
+tag is `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>`, one
+immutable tag per commit.
 
 One repository holds this image and every variant image built from it, so a tag
 has to say which commit it came from: `base-` plus the **full 40-character SHA

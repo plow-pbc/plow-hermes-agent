@@ -81,9 +81,14 @@ def test_a_refused_credential_does_not_print_the_token(tmp_path, owned_by_root):
     assert "sk-the-real-one" not in str(refusal.value)
 
 
-def test_a_third_key_is_refused(tmp_path, owned_by_root):
+def test_the_agent_id_third_key_is_read(tmp_path, owned_by_root):
+    credential(tmp_path, "PLOW_API_BASE=x\nPLOW_AGENT_TOKEN=t\nAGENT_ID=life\n")
+    assert plow_init.read_credentials().agent_id == "life"
+
+
+def test_an_unknown_third_key_is_refused(tmp_path, owned_by_root):
     credential(tmp_path, "PLOW_API_BASE=x\nPLOW_AGENT_TOKEN=t\nPLOW_HOME_CHANNEL=cht_host_says\n")
-    with pytest.raises(SystemExit, match="not the two lines this image reads"):
+    with pytest.raises(SystemExit, match="only the documented keys"):
         plow_init.read_credentials()
 
 

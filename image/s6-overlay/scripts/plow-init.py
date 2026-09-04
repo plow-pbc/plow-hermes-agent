@@ -5,8 +5,8 @@ a dependency, so a non-zero exit starts nothing -- which is the point: an agent
 whose setup half ran serves its local API, answers every probe, and cannot be
 reached by the person it belongs to.
 
-A host tells this image two lines, at /var/lib/plow/credentials: where Plow is,
-and what to present to it. The rest of the agent's identity is asked of Plow
+A host tells this image where Plow is, what to present to it, and optionally
+which Agent Index id it reports as, at /var/lib/plow/credentials. The rest of the agent's identity is asked of Plow
 with that credential. Nothing falls back -- no credential, a credential Plow
 will not answer for, or no answer at all, and the container stops.
 """
@@ -52,7 +52,7 @@ def die(message: str) -> typing.NoReturn:
 
 
 class Credentials(BaseSettings):
-    """The two lines a host writes, and only ever from that file.
+    """The two required lines and optional Agent Index id the host writes.
 
     `extra="forbid"` refuses a provisioner that has drifted ahead of this
     image, rather than half-obeying it.
@@ -69,6 +69,7 @@ class Credentials(BaseSettings):
 
     plow_api_base: str
     plow_agent_token: str
+    agent_id: str | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -193,7 +194,7 @@ def read_credentials() -> Credentials:
         # input back, and for a missing key that input is the whole parsed
         # file -- so a credential lacking PLOW_API_BASE would print the token
         # it does have to s6's stderr, where every log reader can see it.
-        die(f"{CREDENTIALS} is not the two lines this image reads:\n{error.errors(include_input=False)}")
+        die(f"{CREDENTIALS} does not contain only the documented keys:\n{error.errors(include_input=False)}")
 
 
 def ask_plow(credentials: Credentials) -> Identity:
@@ -459,6 +460,8 @@ def main() -> None:
         # without one, and nothing reads it from a file.
         "API_SERVER_KEY": secrets.token_hex(32),
     }
+    if credentials.agent_id:
+        values["AGENT_ID"] = credentials.agent_id
     if identity.mcp_url:
         values["PLOW_MCP_URL"] = identity.mcp_url
     export(values)

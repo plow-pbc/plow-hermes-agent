@@ -8,7 +8,7 @@ FROM nousresearch/hermes-agent@sha256:8f4e8677281eca188bc9d2fda90806646ba19941fc
 # repository vendors no copy, it pins one commit. Moving the plugin is a
 # one-line change to the default below. The repository is public, so the fetch
 # needs no credential.
-ARG PLOW_CHAT_PLUGIN_SHA=26e22dbdc22059d70f83b4ac34bf9951972592ab
+ARG PLOW_CHAT_PLUGIN_SHA=7caaa3e9b7b3021923756bee2ed9801e27dfb6a6
 
 # Fetched in its own stage off the same pinned base — curl and tar are already
 # there, so this costs no extra upstream image and the fetch tooling never

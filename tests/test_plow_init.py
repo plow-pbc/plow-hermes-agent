@@ -252,13 +252,17 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
     assert after["platforms"] == SEED["platforms"]
 
 
-def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path):
+def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path, monkeypatch):
     # cont-init seeds only an absent config.yaml, so an existing home carries
     # whatever it was seeded with -- a retry budget of 3, the gateway's noisy
     # display defaults, and no tool_search switch, before 2026-09-03 -- until
     # configure() reconciles it on boot.
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
+             "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
+                                    "models": {SEED["model"]["default"]: {}}},
+                           "theirs": {"base_url": "https://elsewhere.invalid"}},
              "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
     config.write_text(yaml.safe_dump(stale))
     plow_init.CONFIG = str(config)
@@ -267,6 +271,14 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path)
     assert after["agent"]["api_max_retries"] == 9
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
+    # Prompt caching: Hermes matches the declaration on the endpoint and the
+    # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
+    # the agent dials -- an entry carrying it is one the match cannot find.
+    entry = after["providers"]["plow"]
+    assert entry["base_url"] == "https://api.test.invalid/v1"
+    assert entry["models"][SEED["model"]["default"]]["prompt_caching"] is True
+    assert entry["name"] == "plow"
+    assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
 
 
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):

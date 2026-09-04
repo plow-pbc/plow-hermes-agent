@@ -280,6 +280,36 @@ def configure(identity: Identity, seed: dict) -> None:
         **dict(_leaves(seed["display"], ("display",))),
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
     }
+    # Prompt caching, declared here and nowhere else.
+    #
+    # Plow's `/v1/chat/completions` is a LiteLLM proxy in front of Anthropic and
+    # honours `cache_control`, but Hermes grants caching on the OpenAI wire only
+    # to a route whose provider id or hostname reads as LiteLLM -- and a
+    # config-defined provider is `custom` at runtime whatever the config calls
+    # it, so neither signal can ever match. The per-model declaration is the
+    # other door: Hermes matches it on the ENDPOINT and the MODEL ID, not on a
+    # name. Both halves of that match are written here.
+    #
+    # The endpoint must be the expanded one. The match is against a normalized
+    # URL and the seed's `${PLOW_API_BASE}` reference is never equal to the URL
+    # the agent dials, so a seed-side declaration is unreachable while reading
+    # as set -- which is why the seed does not carry one and this is the single
+    # owner.
+    #
+    # The model id must be the one actually selected. `HERMES_MODEL` replaces
+    # `model.default` a few lines below, and a flag filed under the seed's model
+    # is a flag Hermes never looks up: caching silently off for anyone who sets
+    # that variable.
+    #
+    # Re-asserted every boot rather than left to a first-boot seed: cont-init
+    # seeds only an ABSENT config.yaml, so a home from before this change keeps
+    # a registry with neither key and would cache nothing, for good.
+    provider_key = seed_model.get("provider")
+    if provider_key:
+        plow_model = os.environ.get("HERMES_MODEL") if provider == provider_key else None
+        wanted[("providers", provider_key, "base_url")] = os.path.expandvars(seed_model.get("base_url", ""))
+        wanted[("providers", provider_key, "models", plow_model or seed_model.get("default"), "prompt_caching")] = True
+
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
     elif provider == "plow":

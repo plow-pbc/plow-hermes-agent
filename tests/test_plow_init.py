@@ -154,16 +154,18 @@ def test_nothing_in_plow_init_exits_on_a_failure_path():
 
 
 @pytest.fixture
-def image_user(monkeypatch, tmp_path):
+def image_user(request, monkeypatch, tmp_path):
     """The account and home a healthy image already has.
 
     These tests do not run in the image, so the two checks that come before
     the one under test are satisfied rather than exercised; each has its own
-    test below.
+    test below. The uid is whatever the base's stage2 hook left -- 10000 as
+    built, or the host operator's uid once `HERMES_UID` remaps it -- so the
+    default is a remapped one, which is what the fleet boots.
     """
 
     class Hermes:
-        pw_uid, pw_gid = plow_init.AGENT_UID, plow_init.AGENT_UID
+        pw_uid = pw_gid = getattr(request, "param", 1000)
 
     monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: Hermes())
     home = tmp_path / "hermes"
@@ -227,14 +229,19 @@ def test_a_missing_agent_account_parks(parking, monkeypatch):
     assert "no `hermes` account" in parking.read_text()
 
 
-def test_an_agent_account_at_the_wrong_uid_parks(parking, monkeypatch):
-    class Wrong:
-        pw_uid, pw_gid = 1000, 1000
+@pytest.mark.parametrize("image_user", [10000, 1000, 501], indirect=True)
+def test_the_agent_account_is_taken_at_whatever_uid_the_remap_left(parking, image_user):
+    """Refusing a uid other than the build-time 10000 parked the whole fleet.
 
-    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: Wrong())
-    with pytest.raises(Parked):
-        plow_init.verify_boot_preconditions()
-    assert "expected 10000" in parking.read_text()
+    `agent_mgr/local.py` sets `HERMES_UID` to the host operator's uid, and it
+    is mandatory, because the agent home is a bind mount and the container
+    user has to match its owner. The base honours that -- stage2-hook.sh runs
+    `usermod -u "$HERMES_UID" hermes` and chowns the home behind it -- so the
+    remap succeeding is the setup completing, not failing. 10000 is the
+    build-time uid, 1000 a Linux operator, 501 a macOS one.
+    """
+    plow_init.verify_boot_preconditions()
+    assert not parking.exists()
 
 
 def test_an_unhandled_exception_parks_too():

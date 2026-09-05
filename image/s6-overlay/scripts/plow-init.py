@@ -51,7 +51,6 @@ HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 HOST_CREDENTIALS = f"{CREDENTIALS}.host"
-AGENT_UID = 10000
 
 
 def park(reason: str) -> typing.NoReturn:
@@ -230,11 +229,9 @@ def verify_boot_preconditions() -> None:
     a directory this image can work in.
     """
     try:
-        hermes = pwd.getpwnam("hermes")
+        pwd.getpwnam("hermes")
     except KeyError:
         park("no `hermes` account -- the image's user setup did not complete")
-    if hermes.pw_uid != AGENT_UID:
-        park(f"`hermes` is uid {hermes.pw_uid}, expected {AGENT_UID} -- the image's user setup did not complete")
 
     # The promotion is the one cont-init step whose failure is silent AND
     # serves a tenant on the wrong credential: a stale file from an earlier

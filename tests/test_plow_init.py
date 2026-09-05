@@ -443,19 +443,13 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
     # the agent dials -- an entry carrying it is one the match cannot find.
-    entry = after["providers"]["plow"]
-    assert entry["base_url"] == "https://api.test.invalid/v1"
-    assert entry["models"][SEED["model"]["default"]]["prompt_caching"] is True
-    assert entry["name"] == "plow"
-    # The credential too: Hermes resolves a named provider's key from THIS
-    # entry, so one without `key_env` sends the keyless placeholder and 401s
-    # -- the 2026-09-04 outage of a home seeded before the entry carried it.
-    assert entry["key_env"] == SEED["providers"]["plow"]["key_env"]
-    assert entry["stale_timeout_seconds"] == 55
-    # And the entry-level `model` an older seed wrote is gone: `model.default`
-    # is the one selector, and Hermes' auxiliary path would otherwise prefer
-    # this stale one over `HERMES_MODEL`.
-    assert "model" not in entry
+    # The entry is the seed's, whole: the credential a pre-key_env home never
+    # got (the 2026-09-04 outage), minus the entry-level `model` an older seed
+    # wrote (a second selector Hermes' auxiliary path preferred), plus the
+    # expanded endpoint and the caching flag under the selected model.
+    assert after["providers"]["plow"] == {**SEED["providers"]["plow"],
+                                          "base_url": "https://api.test.invalid/v1",
+                                          "models": {"seeded/model": {"prompt_caching": True}}}
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
 
 

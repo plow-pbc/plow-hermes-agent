@@ -345,15 +345,6 @@ def export(values: dict[str, str]) -> None:
             handle.write(value)
 
 
-def _leaves(mapping: dict, path: tuple[str, ...]) -> typing.Iterator[tuple[tuple[str, ...], object]]:
-    """(path, value) for every scalar under `mapping`, nested keys flattened."""
-    for key, value in mapping.items():
-        if isinstance(value, dict):
-            yield from _leaves(value, path + (key,))
-        else:
-            yield path + (key,), value
-
-
 def configure(identity: Identity, seed: dict) -> None:
     """Point the agent at its inference provider and its relay.
 
@@ -362,10 +353,10 @@ def configure(identity: Identity, seed: dict) -> None:
     the file as it found it. A model id belongs to the provider it was written
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
-    image knows how to guess. The retry budget, every display key, and the
-    tool_search switch are the seed's on every boot: cont-init seeds only an
-    absent config.yaml, so a home that predates a seed change would otherwise
-    keep the old value for good.
+    image knows how to guess. The provider entry, the display section, the
+    retry budget and the tool_search switch are the seed's on every boot:
+    cont-init seeds only an absent config.yaml, so a home that predates a seed
+    change would otherwise keep the old shape for good.
     """
     with open(CONFIG) as handle:
         config = yaml.safe_load(handle) or {}
@@ -376,7 +367,7 @@ def configure(identity: Identity, seed: dict) -> None:
         ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
         ("model", "provider"): provider,
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
-        **dict(_leaves(seed["display"], ("display",))),
+        ("display",): seed["display"],
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
     }
     # Prompt caching, declared here and nowhere else.
@@ -406,18 +397,13 @@ def configure(identity: Identity, seed: dict) -> None:
     provider_key = seed_model.get("provider")
     if provider_key:
         plow_model = os.environ.get("HERMES_MODEL") if provider == provider_key else None
-        # Every key of the seed's entry, `key_env` above all: Hermes resolves a
-        # named provider's credential from this entry and nowhere else, so a
-        # home seeded before the entry carried one sends the keyless
-        # placeholder and 401s (2026-09-04). The two below then override.
-        wanted.update(_leaves(seed["providers"][provider_key], ("providers", provider_key)))
-        # `model.default` is the one selector; an entry-level `model` is a
-        # second one Hermes falls back to (auxiliary calls prefer it), and a
-        # home seeded before it was dropped still carries it. Gone, every boot.
-        wanted[("providers", provider_key, "model")] = None
-        wanted[("providers", provider_key, "base_url")] = os.path.expandvars(seed_model.get("base_url", ""))
-        wanted[("providers", provider_key, "models", plow_model or seed_model.get("default"), "prompt_caching")] = True
-
+        # The whole entry is the image's, so it is written whole: a key the
+        # seed gained reaches a home seeded before it (2026-09-04: `key_env`
+        # missing, every call sent `Bearer no-key-required`), and a key the
+        # seed dropped leaves. Two keys are the boot's to add on top.
+        entry = {**seed["providers"][provider_key], "base_url": os.path.expandvars(seed_model.get("base_url", ""))}
+        entry["models"] = {**entry.get("models", {}), plow_model or seed_model.get("default"): {"prompt_caching": True}}
+        wanted[("providers", provider_key)] = entry
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]
     elif provider == "plow":

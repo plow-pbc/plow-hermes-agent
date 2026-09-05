@@ -153,6 +153,33 @@ def test_nothing_in_plow_init_exits_on_a_failure_path():
     assert "raise SystemExit" not in source
 
 
+def test_cont_init_parks_rather_than_being_survived():
+    """The gap S6_BEHAVIOUR_IF_STAGE2_FAILS=1 opens, closed where it happens.
+
+    1 means a failed cont-init script is warned about and carried past. For
+    00-plow-sanitize that is the wrong answer: it promotes a bind-mounted
+    credential into the path plow-init reads, and a boot that skipped it can
+    find a STALE credential from an earlier one and serve a tenant on it. So
+    the script blocks on abort instead -- cont-init never completes, plow-init
+    never runs -- which is 2's blocking without 2's exit.
+    """
+    script = (SOURCE.parents[3] / "image/cont-init.d/00-plow-sanitize").read_text()
+    assert "trap 'status=$?; [ \"$finished\" = 1 ] || park" in script
+    assert "while :; do sleep 86400; done" in script
+    assert script.rstrip().endswith("finished=1")
+
+
+def test_an_unhandled_exception_parks_too():
+    """`park` covers every anticipated failure; this covers the rest.
+
+    An uncaught exception exits the script, exits /init, and panics the VM, so
+    a crash and a refusal have to end the same way.
+    """
+    source = SOURCE.read_text()
+    assert "except Exception:" in source
+    assert "plow-init raised an unhandled exception" in source
+
+
 def test_stage_two_neither_exits_nor_deadlines():
     """Both halves of the Dockerfile's side of this.
 

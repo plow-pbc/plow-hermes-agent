@@ -20,6 +20,7 @@ import signal
 import stat
 import subprocess
 import sys
+import traceback
 import tempfile
 import time
 import typing
@@ -522,4 +523,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:  # noqa: BLE001 -- see below; this is the last stop before PID 1
+        # Every *anticipated* failure calls park() itself, with a reason worth
+        # reading. This catches the rest -- a bug here, a disk that filled, an
+        # OSError nobody predicted -- because an uncaught exception exits this
+        # script, exits /init, and panics the VM. On this platform a crash and
+        # a refusal have to end the same way; only the message differs, so the
+        # traceback goes to the log where it is useful.
+        traceback.print_exc()
+        park("plow-init raised an unhandled exception -- see the traceback above")

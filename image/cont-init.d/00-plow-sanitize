@@ -8,6 +8,29 @@
 #    at the path it reads.
 set -eu
 
+# This script must not fail by exiting, and must not be survived either.
+#
+# S6_BEHAVIOUR_IF_STAGE2_FAILS is 1 -- warn and carry on -- because 2 exits
+# /init, and /init is PID 1 on a microVM, where that is a kernel panic pinning
+# a vCPU. But "carry on" is the wrong answer HERE: the credential promotion
+# below is what puts a developer's bind-mounted credential at the path
+# plow-init reads, and a boot that skipped it can find a STALE credential left
+# by an earlier one and serve a tenant on it. A rotation would silently not
+# take.
+#
+# So this step blocks instead of exiting: cont-init never completes, plow-init
+# never runs, the gateway never starts, and PID 1 stays alive and shell-able.
+# The same shape plow-init uses, for the same reason, written here because a
+# `set -e` abort has to be caught where it happens.
+PARK_MARKER=/run/plow-init.parked
+finished=0
+park() {
+  echo "00-plow-sanitize: $1 -- parking; no gateway will start" >&2
+  printf '%s\n' "00-plow-sanitize: $1" > "$PARK_MARKER" 2>/dev/null || true
+  while :; do sleep 86400; done
+}
+trap 'status=$?; [ "$finished" = 1 ] || park "aborted with status $status"' EXIT
+
 CONFIG=/var/lib/hermes/config.yaml
 SEED=/opt/hermes/plow-seed/config.yaml
 CREDENTIALS=/var/lib/plow/credentials
@@ -55,3 +78,6 @@ if [ -f "$CREDENTIALS.host" ] && [ ! -L "$CREDENTIALS.host" ]; then
   chmod 0600 "$CREDENTIALS.tmp"
   mv -f "$CREDENTIALS.tmp" "$CREDENTIALS"
 fi
+
+# Past every step that can abort. Only now may the EXIT trap let the shell go.
+finished=1

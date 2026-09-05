@@ -203,6 +203,12 @@ RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 # hermes-gateway and main-hermes declare plow-init a dependency, and s6-rc
 # starts neither until that oneshot COMPLETES. plow-init parks on every
 # failure, so it never completes, so nothing serves.
+#
+# 1 does mean a failed *cont-init* script is carried past rather than aborting
+# the boot, which for 00-plow-sanitize would be wrong -- a skipped credential
+# promotion lets plow-init find a stale credential and serve a tenant on it.
+# That is closed in the script, which blocks on abort rather than exiting: 2's
+# blocking without 2's exit. See the comment at the top of it.
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=1
 
 # plow-init parks -- blocks forever -- on any failure, which for a warm-pool VM

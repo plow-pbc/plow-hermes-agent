@@ -1,5 +1,5 @@
 #!/command/with-contenv sh
-# The Hermes gateway, supervised, as uid 10000.
+# The Hermes gateway, supervised, as hermes -- by name, not by uid.
 #
 # `plow-init` published the tenant's environment under
 # /run/s6/container_environment, and with-contenv hands it to this script, so
@@ -13,7 +13,7 @@ export API_SERVER_HOST=127.0.0.1
 export API_SERVER_PORT=8642
 
 # with-contenv repopulates HOME from /init, which ran as root, so without this
-# the gateway drops to uid 10000 still pointed at /root -- a directory it
+# the gateway drops to hermes still pointed at /root -- a directory it
 # cannot write, where anything HOME-anchored silently lands.
 export HOME=/var/lib/hermes
 

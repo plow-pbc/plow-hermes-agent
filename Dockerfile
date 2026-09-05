@@ -170,7 +170,7 @@ COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 # service definitions to it and installs no init of its own:
 #
 #   plow-init       oneshot, configures the agent from its credential
-#   hermes-gateway  longrun, the gateway as uid 10000, depends on plow-init
+#   hermes-gateway  longrun, the gateway as hermes, depends on plow-init
 #
 # COPY merges into the upstream tree, so the base image's own `user` bundle
 # entries survive alongside ours.
@@ -192,8 +192,8 @@ RUN chmod 0755 /etc/s6-overlay/scripts/plow-init.py
 #
 # This image runs exactly one agent, so the multi-profile machinery has nothing
 # to reconcile. Removing the hook is what keeps `hermes-gateway` the service
-# that is actually running — the thing that depends on plow-init, drops to uid
-# 10000, and binds the loopback port provisioning waits for.
+# that is actually running — the thing that depends on plow-init, drops to
+# hermes, and binds the loopback port provisioning waits for.
 RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 
 # 2 stops a failed boot by exiting /init. exe.dev boots this image's Cmd as PID

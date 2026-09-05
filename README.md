@@ -81,7 +81,7 @@ carry `amd64` alone.
 | `/var/lib/plow/credentials.host` | not shipped either — the same file bind-mounted from a developer's machine, promoted into the one above at cont-init |
 | `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads the credential, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
 | `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none, and promotes a bind-mounted credential into the path below |
-| `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as uid 10000, depending on `plow-init` |
+| `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as `hermes`, depending on `plow-init` |
 
 ## The credential drop-in
 
@@ -193,7 +193,7 @@ same reason, and wrapping PID 1 to catch the exit is not open either:
 s6-overlay's `/init` refuses to run unless it is pid 1.
 
 That makes `plow-init` the boot's one gate. It verifies what the gateway needs
-rather than trusting an earlier step — the agent account and its uid, a
+rather than trusting an earlier step — that the agent account exists, a
 bind-mounted credential actually promoted rather than left beside a stale one, a
 home that is a directory — and parks with a precise reason otherwise. A
 cont-init failure it does not depend on stays a warning; nothing that step

@@ -445,7 +445,9 @@ SEED = {
     "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
                            "key_env": "HERMES_CUSTOM_PLOW_API_KEY", "stale_timeout_seconds": 55,
                            "models": {"seeded/model": {}}}},
-    "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
+    "mcp_servers": {"plow": {"url": "${PLOW_MCP_URL}", "headers": {"Authorization": "Bearer ${PLOW_AGENT_TOKEN}"},
+                             "enabled": False},
+                    "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
     "display": {"busy_ack_enabled": False, "platforms": {"plow_chat": {"tool_progress": "off"}}},
@@ -469,7 +471,7 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
                       env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
     assert after["model"]["provider"] == "anthropic"
     assert after["model"]["default"] == "claude-sonnet-4-5"
-    assert after["mcp_servers"]["plow"]["enabled"] is True
+    assert after["mcp_servers"]["plow"] == {**SEED["mcp_servers"]["plow"], "enabled": True}
     # Somebody else's MCP server, and everything else, untouched.
     assert after["mcp_servers"]["theirs"] == SEED["mcp_servers"]["theirs"]
     assert after["platforms"] == SEED["platforms"]
@@ -483,6 +485,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
+             "mcp_servers": {"plow": {"enabled": True}, "theirs": SEED["mcp_servers"]["theirs"]},
              "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
                                     "model": "seeded/model", "models": {SEED["model"]["default"]: {}}},
                            "theirs": {"base_url": "https://elsewhere.invalid"}},
@@ -505,6 +508,10 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
                                           "base_url": "https://api.test.invalid/v1",
                                           "models": {"seeded/model": {"prompt_caching": True}}}
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
+    # The relay entry the same way (#45): a home with only `enabled` gets the
+    # seed's `url` and `headers` back, and `theirs` is untouched.
+    assert after["mcp_servers"]["plow"] == {**SEED["mcp_servers"]["plow"], "enabled": False}
+    assert after["mcp_servers"]["theirs"] == SEED["mcp_servers"]["theirs"]
 
 
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):

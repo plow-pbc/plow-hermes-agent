@@ -362,7 +362,9 @@ def configure(identity: Identity, seed: dict) -> None:
     seed_model = seed.get("model", {})
     provider = os.environ.get("HERMES_PROVIDER", "plow")
     wanted: dict[tuple[str, ...], object] = {
-        ("mcp_servers", RELAY_SERVER, "enabled"): identity.mcp_url is not None,
+        # The relay entry is the image's too, so it is written whole (#45):
+        # a home seeded before it carried `url`/`headers` dispatched to stdio.
+        ("mcp_servers", RELAY_SERVER): {**seed["mcp_servers"][RELAY_SERVER], "enabled": identity.mcp_url is not None},
         ("model", "provider"): provider,
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
         ("display",): seed["display"],

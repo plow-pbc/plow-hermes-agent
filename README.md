@@ -174,8 +174,11 @@ required keys plus optional `AGENT_ID`, and nothing starts. `plow-init` is a one
 ### How it refuses: the container parks
 
 Nothing starting is the rule; how it stops is the part worth stating. `plow-init`
-never exits on a failure. It writes the reason to stderr and to
-`/run/plow-init.parked`, then blocks forever. The gateway is a separate service
+never exits on a failure. It writes the reason to stderr and — while it is
+still root, which is every refusal that names a cause — to
+`/run/plow-init.parked`, then blocks forever. After it drops to the agent's uid
+to write the config, stderr is the only channel left, so a crash past that point
+is in the log rather than the marker. The gateway is a separate service
 that declares this oneshot a dependency, and s6-rc starts it only when the
 oneshot **completes** — so a parked `plow-init` serves nothing, which is the
 whole of fail-closed. It never rested on the exit code.
@@ -192,6 +195,23 @@ reason — no stage-2 failure may take `/init` down with it.
 Plow's warm-pool VMs reach this by design: they are created with no credential,
 exist only to hold the image in the host's cache, and a parked container is
 their healthy steady state.
+
+`S6_BEHAVIOUR_IF_STAGE2_FAILS` is `1` for the same reason: `2` stops the boot by
+exiting `/init`, which is the panic. Wrapping PID 1 to catch that exit does not
+work — s6-overlay's `/init` execs `s6-overlay-suexec`, which refuses to run
+unless it is pid 1, so a wrapper exits 100 on every boot including healthy ones,
+and re-establishing a pid namespace needs privileges a container does not have.
+
+`1` means a failed cont-init script is warned about and the boot carries on, so
+the guarantee is enforced where it can be. `00-plow-sanitize` is this image's own
+and blocks on abort. For inherited scripts, which this image does not patch,
+`plow-init` verifies the preconditions the gateway depends on — the agent
+account and its uid, a bind-mounted credential actually promoted rather than
+left beside a stale one, a home that is a directory — and parks with a precise
+reason if any is missing. Nothing the owner can reach starts without passing
+through that check. A cont-init failure in something the gateway does not depend
+on stays a warning, which is correct: nothing it touched is in the path to
+serving anyone.
 
 ### From a developer's machine
 

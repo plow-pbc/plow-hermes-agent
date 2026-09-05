@@ -48,6 +48,8 @@ RELAY_SERVER = "plow"
 HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
+HOST_CREDENTIALS = f"{CREDENTIALS}.host"
+AGENT_UID = 10000
 
 
 def park(reason: str) -> typing.NoReturn:
@@ -72,6 +74,11 @@ def park(reason: str) -> typing.NoReturn:
     whoever opens that shell.
     """
     print(f"plow-init: {reason} -- parking; no gateway will start", file=sys.stderr, flush=True)
+    # stderr first, and unconditionally: after configure() this process has
+    # dropped to the agent's uid and can no longer write into /run, so the log
+    # is the only channel that survives the whole script. The marker is a
+    # convenience for the boot's root half, which is where every refusal that
+    # names a cause lives.
     try:
         with open(PARK_MARKER, "w") as marker:
             marker.write(f"{reason}\n")
@@ -195,6 +202,60 @@ def home_chat(identity: Identity) -> Chat:
         ) or "no chats at all"
         park(f"cannot tell which chat is home -- {len(matches)} of {len(identity.chats)} qualify: {seen}")
     return matches[0]
+
+
+def verify_boot_preconditions() -> None:
+    """Check what cont-init was supposed to leave behind, before trusting it.
+
+    PID 1 cannot be wrapped to catch a failed cont-init script: s6-overlay's
+    `/init` execs `s6-overlay-suexec`, which refuses to run unless it IS pid 1
+    (`s6-overlay-suexec: fatal: can only run as pid 1` -- measured, it exits
+    100 on every boot including healthy ones). And S6_BEHAVIOUR_IF_STAGE2_FAILS
+    cannot be 2, because 2 exits /init and on a microVM that is a kernel panic
+    pinning a vCPU. So it is 1: a failed cont-init script is warned about and
+    the boot carries on.
+
+    Which makes this the gate. Every service the owner can reach depends on
+    this oneshot, so what the gateway needs has to be true HERE rather than
+    assumed to have been established earlier. A cont-init failure in something
+    the gateway does not depend on stays a warning -- correctly, since nothing
+    it touched is in the path to serving anyone.
+
+    Each check is a state a failed cont-init actually produces, not a
+    hypothetical: no agent account (the inherited uid remap did not run), a
+    bind-mounted credential still sitting unpromoted beside a stale one (the
+    promotion aborted -- the rotation-not-taking case), and a home that is not
+    a directory this image can work in.
+    """
+    try:
+        hermes = pwd.getpwnam("hermes")
+    except KeyError:
+        park("no `hermes` account -- the image's user setup did not complete")
+    if hermes.pw_uid != AGENT_UID:
+        park(f"`hermes` is uid {hermes.pw_uid}, expected {AGENT_UID} -- the image's user setup did not complete")
+
+    # The promotion is the one cont-init step whose failure is silent AND
+    # serves a tenant on the wrong credential: a stale file from an earlier
+    # boot is a valid-looking credential, so nothing downstream would notice.
+    # `lexists`, not `isfile`: presence is what says a promotion was owed, and
+    # the shape that matters most is not a regular file. Docker creates a
+    # DIRECTORY at the mount point when the host source is missing, and
+    # 00-plow-sanitize's `-f` test skips a directory silently -- so the boot
+    # most likely to leave a stale credential in place is also the one that
+    # looks like nothing happened. A symlink is refused for the same reason.
+    if os.path.lexists(HOST_CREDENTIALS):
+        if not stat.S_ISREG(os.lstat(HOST_CREDENTIALS).st_mode):
+            park(f"{HOST_CREDENTIALS} is not a regular file -- nothing was promoted, and {CREDENTIALS} cannot be trusted")
+        try:
+            with open(HOST_CREDENTIALS, "rb") as host, open(CREDENTIALS, "rb") as promoted:
+                same = host.read() == promoted.read()
+        except OSError as error:
+            park(f"{HOST_CREDENTIALS} was never promoted to {CREDENTIALS}: {error}")
+        if not same:
+            park(f"{CREDENTIALS} is not the {HOST_CREDENTIALS} beside it -- the promotion did not run, and this credential is stale")
+
+    if not os.path.isdir(HOME_DIR) or os.path.islink(HOME_DIR):
+        park(f"{HOME_DIR} is not a directory -- the agent has no home to start in")
 
 
 def read_credentials() -> Credentials:
@@ -480,6 +541,7 @@ def main() -> None:
     if os.access(HOST_SETUP, os.X_OK):
         subprocess.run([HOST_SETUP], check=True)
         os.unlink(HOST_SETUP)
+    verify_boot_preconditions()
     harden_home()
 
     credentials = read_credentials()

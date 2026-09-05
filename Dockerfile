@@ -199,16 +199,25 @@ RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 # no stopped state and reboots a halted guest straight back up. 2 exits; 1
 # warns and carries on, which is the only value that cannot pin a core.
 #
-# This does not soften fail-closed, which never rested on the exit code:
-# hermes-gateway and main-hermes declare plow-init a dependency, and s6-rc
-# starts neither until that oneshot COMPLETES. plow-init parks on every
-# failure, so it never completes, so nothing serves.
+# Wrapping PID 1 -- a supervisor that runs /init as a child and turns its exit
+# into something quieter -- does not work and was measured: s6-overlay's /init
+# execs s6-overlay-suexec, which refuses to run unless it IS pid 1
+# (`s6-overlay-suexec: fatal: can only run as pid 1`, exit 100 on every boot,
+# healthy ones included). Re-establishing a pid namespace needs privileges a
+# container does not have. So 1 it is.
 #
-# 1 does mean a failed *cont-init* script is carried past rather than aborting
-# the boot, which for 00-plow-sanitize would be wrong -- a skipped credential
-# promotion lets plow-init find a stale credential and serve a tenant on it.
-# That is closed in the script, which blocks on abort rather than exiting: 2's
-# blocking without 2's exit. See the comment at the top of it.
+# Fail-closed does not rest on either the exit code or this knob. hermes-gateway
+# and main-hermes declare plow-init a dependency and s6-rc starts neither until
+# that oneshot COMPLETES; plow-init parks on every failure, so it never
+# completes, so nothing serves.
+#
+# What 1 costs is that a failed cont-init script is carried past. Two answers,
+# by ownership: 00-plow-sanitize is ours and blocks on abort (2's blocking
+# without 2's exit, see the top of it), and for everything else -- inherited
+# scripts this image does not patch -- plow-init verifies the preconditions the
+# gateway actually depends on and parks if they are not there. A cont-init
+# failure in something the gateway does not depend on stays a warning, which is
+# the right answer: nothing it touched is in the path to serving anyone.
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=1
 
 # plow-init parks -- blocks forever -- on any failure, which for a warm-pool VM

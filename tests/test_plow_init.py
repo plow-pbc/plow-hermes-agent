@@ -169,6 +169,90 @@ def test_cont_init_parks_rather_than_being_survived():
     assert script.rstrip().endswith("finished=1")
 
 
+@pytest.fixture
+def image_user(monkeypatch, tmp_path):
+    """The account and home a healthy image already has.
+
+    These tests do not run in the image, so the two checks that come before
+    the one under test are satisfied rather than exercised; each has its own
+    test below.
+    """
+
+    class Hermes:
+        pw_uid, pw_gid = plow_init.AGENT_UID, plow_init.AGENT_UID
+
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: Hermes())
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setattr(plow_init, "HOME_DIR", str(home))
+
+
+def test_a_stale_credential_beside_an_unpromoted_one_parks(tmp_path, parking, monkeypatch, image_user):
+    """The rotation-not-taking case, and the reason this gate exists.
+
+    00-plow-sanitize promotes a bind-mounted credential into the path this
+    script reads. Under S6_BEHAVIOUR_IF_STAGE2_FAILS=1 a failed cont-init is
+    carried past, so an aborted promotion leaves the previous boot's
+    credential in place -- valid-looking, and belonging to someone else.
+    """
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
+    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=stale\n")
+    (tmp_path / "credentials.host").write_text("PLOW_AGENT_TOKEN=fresh\n")
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "the promotion did not run, and this credential is stale" in parking.read_text()
+
+
+def test_a_host_credential_that_is_not_a_regular_file_parks(tmp_path, parking, monkeypatch, image_user):
+    """Docker makes a DIRECTORY at the mount point when the source is missing.
+
+    00-plow-sanitize's `-f` test skips that silently, so the boot most likely
+    to leave the previous tenant's credential in place is also the one that
+    looks like nothing happened.
+    """
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
+    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=stale\n")
+    (tmp_path / "credentials.host").mkdir()
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "is not a regular file -- nothing was promoted" in parking.read_text()
+
+
+def test_a_promoted_credential_passes(tmp_path, parking, monkeypatch, image_user):
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
+    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=fresh\n")
+    (tmp_path / "credentials.host").write_text("PLOW_AGENT_TOKEN=fresh\n")
+    plow_init.verify_boot_preconditions()
+
+
+def test_no_host_credential_means_nothing_to_promote(tmp_path, parking, monkeypatch, image_user):
+    """A VM has no bind mount. Its absence is the normal case, not a failure."""
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "absent.host"))
+    plow_init.verify_boot_preconditions()
+
+
+def test_a_missing_agent_account_parks(parking, monkeypatch):
+    """What a failed inherited uid-remap step leaves behind."""
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: (_ for _ in ()).throw(KeyError(name)))
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "no `hermes` account" in parking.read_text()
+
+
+def test_an_agent_account_at_the_wrong_uid_parks(parking, monkeypatch):
+    class Wrong:
+        pw_uid, pw_gid = 1000, 1000
+
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: Wrong())
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "expected 10000" in parking.read_text()
+
+
 def test_an_unhandled_exception_parks_too():
     """`park` covers every anticipated failure; this covers the rest.
 

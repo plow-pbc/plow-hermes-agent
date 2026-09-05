@@ -450,43 +450,65 @@ def configure(identity: Identity, seed: dict) -> None:
         os.replace(temporary, CONFIG)
 
 
+# Every name this boot publishes to the process environment (see `values` in
+# `main`), never to a file the agent can read on purpose. This boot just
+# authenticated a fresh value for each one, so a copy persisted under
+# HOME_DOTENV is never anything but a stale shadow -- and the runtime loads
+# that file OVER the environment, so the shadow would win the precedence
+# fight. That is not mere staleness: a rotated PLOW_AGENT_TOKEN or a fleet
+# home reused for a different tenant must not come back up answering on the
+# credential or endpoint this boot just replaced.
+DOTENV_OWNED_NAMES = frozenset({
+    "PLOW_API_BASE",
+    "PLOW_AGENT_TOKEN",
+    "PLOW_HOME_CHANNEL",
+    "HERMES_CUSTOM_PLOW_API_KEY",
+    "API_SERVER_KEY",
+    "AGENT_ID",
+    "PLOW_MCP_URL",
+})
+
+
 def own_home_dotenv(api_server_key: str) -> None:
-    """Merge this boot's API_SERVER_KEY into the home's dotenv; keep every
-    other line exactly as it was found.
+    """Merge this boot's identity into the home's dotenv, without
+    reintroducing what it publishes.
 
     The runtime writes its own API_SERVER_KEY there during cont-init, and it
     loads that file OVER its process environment -- so a key this image
     published would lose to the one persisted in the home, and the per-boot
     key would be decorative. Setting it here settles that: both sources agree.
 
-    A cloud tenant's home holds nothing else in this file, so replacing its
-    one line is indistinguishable from the truncating rewrite this function
-    used to do. The Docker fleet managed by agent-mgr is the other consumer of
-    this image, and there the same file IS the agent's configuration store --
-    its token, its chat settings, its timezone, whatever its own tooling put
-    there. Truncating it to one line used to destroy all of that on every
-    boot. So every line that does not name API_SERVER_KEY is carried across
-    untouched -- unparsed and unreformatted, because a rewrite that "tidies"
-    an operator's file on the way past is a second version of the same bug --
-    and every line that does is dropped, with one fresh line appended in its
-    place. Position is not preserved, and does not need to be: the file never
-    holds more than one assignment of the name either way, so it makes no
-    difference whether a reader takes the first line or the last.
+    The same precedence rule cuts the other way for every other name in
+    DOTENV_OWNED_NAMES. A copy of any of them sitting in this file is never
+    anything but a stale shadow of what this boot just authenticated, and
+    loading it over the environment would let that shadow win -- an old
+    credential outliving its rotation, or a reused fleet home answering as
+    the tenant before it. So every assignment of an owned name is dropped
+    from the file rather than carried across, and API_SERVER_KEY -- the one
+    name this function actually sets -- is appended fresh.
+
+    A cloud tenant's home holds nothing else in this file, so dropping the
+    owned names and appending API_SERVER_KEY is indistinguishable from the
+    truncating rewrite this function used to do. The Docker fleet managed by
+    agent-mgr is the other consumer of this image, and there the same file IS
+    the agent's configuration store -- its Plow Chat, Domo, dashboard and
+    timezone keys, whatever its own tooling put there. None of those names
+    are ones this boot owns, so they are carried across untouched --
+    unparsed and unreformatted, because a rewrite that "tidies" an operator's
+    file on the way past is a second version of the same bug.
+
+    Position is not preserved for API_SERVER_KEY, and does not need to be:
+    every existing assignment of it is dropped before one is appended, so the
+    file never holds more than one regardless of where a reader would look.
 
     Written rather than left missing when no dotenv exists at all, because the
-    runtime seeds a 535-name example into any home it finds without one. And
-    this is still the only name this image ever adds: the tenant's credential
-    is published to the environment and has no business in a file the agent
-    can read. Keeping a key an operator already put there is not this image
-    publishing one, so a fleet home's other keys never gain PLOW_AGENT_TOKEN
-    or anything else here.
+    runtime seeds a 535-name example into any home it finds without one.
 
     Write a new inode and rename it into place. Besides keeping the prior file
     intact on failure, this avoids Linux protected_regular refusing O_CREAT on
     an existing agent-owned file in this shared directory. A symlink is still
     refused rather than silently replaced so a tampered home stops at boot.
     """
-    owned = "API_SERVER_KEY="
     try:
         if os.path.lexists(HOME_DOTENV) and not stat.S_ISREG(os.lstat(HOME_DOTENV).st_mode):
             raise OSError("existing path is not a regular file")
@@ -498,8 +520,8 @@ def own_home_dotenv(api_server_key: str) -> None:
         descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
         park(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
-    kept = [line for line in lines if not line.startswith(owned)]
-    kept.append(f"{owned}{api_server_key}")
+    kept = [line for line in lines if line.partition("=")[0] not in DOTENV_OWNED_NAMES]
+    kept.append(f"API_SERVER_KEY={api_server_key}")
     try:
         with os.fdopen(descriptor, "w") as handle:
             os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)

@@ -197,6 +197,14 @@ RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 # died looks alive from the outside. 2 makes /init exit instead.
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
 
+# Stage 2 waits for the service set with no deadline. plow-init parks -- blocks
+# forever -- when no credential is written, which is a warm-pool VM's normal
+# life; a deadline would call that parked oneshot a stage-2 failure and hand it
+# straight back to the exit above. Pinned rather than inherited because the
+# upstream default has changed between s6-overlay releases and this image's
+# fail-closed shape depends on the value.
+ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
+
 # exe.dev unpacks this image into a VM rootfs and boots its Cmd as PID 1;
 # `docker run` does the same in a container. One entry point serves both.
 ENTRYPOINT []

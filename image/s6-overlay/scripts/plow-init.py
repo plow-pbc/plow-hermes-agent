@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import pwd
 import secrets
+import signal
 import stat
 import subprocess
 import sys
@@ -34,6 +35,7 @@ CREDENTIALS = "/var/lib/plow/credentials"
 CONFIG = "/var/lib/hermes/config.yaml"
 CONTAINER_ENV = "/run/s6/container_environment"
 HOST_SETUP = "/exe.dev/setup"
+PARK_MARKER = "/run/plow-init.parked"
 
 CREDENTIALS_WAIT_S = 60
 RETRIES = 10
@@ -49,6 +51,38 @@ SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 
 def die(message: str) -> typing.NoReturn:
     sys.exit(f"plow-init: {message}")
+
+
+def park(reason: str) -> typing.NoReturn:
+    """Fail closed without letting PID 1 exit.
+
+    Exiting is fail-closed on a host that stops a container and leaves it
+    stopped. exe.dev is not one: the image's CMD *is* PID 1 in a microVM, so a
+    non-zero exit is `Attempted to kill init` -- a panicked kernel spinning a
+    vCPU with no sshd, which is how the warm pool billed two cores for a day.
+    Powering off instead only trades that for a reboot loop; exe.dev has no
+    stopped state and boots a guest that halts straight back up (measured: down
+    ~45s, then up with uptime=1).
+
+    So the one shape that is both quiet and closed is to stay alive and do
+    nothing. This never returns, so the oneshot never completes, so every
+    service that depends on it -- the gateway above all -- never starts. The
+    reason goes to stderr for the container log and to a marker file for
+    whoever opens a shell on the box, which parking is what keeps possible.
+
+    Only the absent-credential path parks. Every other refusal is a host that
+    said something wrong rather than nothing, and still exits.
+    """
+    print(f"plow-init: {reason} -- parking; no gateway will start", file=sys.stderr, flush=True)
+    try:
+        with open(PARK_MARKER, "w") as marker:
+            marker.write(f"{reason}\n")
+    except OSError as exc:
+        # The marker is a convenience for a human with a shell; parking is the
+        # behaviour. Losing the first must not cost the second.
+        print(f"plow-init: could not write {PARK_MARKER}: {exc}", file=sys.stderr, flush=True)
+    while True:
+        signal.pause()
 
 
 class Credentials(BaseSettings):
@@ -179,7 +213,7 @@ def read_credentials() -> Credentials:
     try:
         info = os.lstat(CREDENTIALS)
     except OSError:
-        die(f"no credential at {CREDENTIALS} after {CREDENTIALS_WAIT_S}s -- refusing to start a gateway nobody can reach")
+        park(f"no credential at {CREDENTIALS} after {CREDENTIALS_WAIT_S}s")
     mode = stat.S_IMODE(info.st_mode)
     if not stat.S_ISREG(info.st_mode):
         die(f"{CREDENTIALS} is not a regular file")

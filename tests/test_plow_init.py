@@ -92,11 +92,81 @@ def test_an_unknown_third_key_is_refused(tmp_path, owned_by_root):
         plow_init.read_credentials()
 
 
-def test_a_missing_credential_is_refused(tmp_path):
+class Parked(Exception):
+    """Stands in for `signal.pause()` blocking forever, which a test cannot wait out."""
+
+
+@pytest.fixture
+def parking(monkeypatch):
+    """Let `park` run for real up to the point where it would block."""
+    monkeypatch.setattr(plow_init.signal, "pause", lambda: (_ for _ in ()).throw(Parked()))
+
+
+def test_a_missing_credential_parks_rather_than_exiting(tmp_path, parking, monkeypatch):
+    """The warm pool's normal life, and the whole point of this path.
+
+    Exiting here is what panics the microVM: plow-init's non-zero exit takes
+    /init with it, and /init is PID 1.
+    """
+    monkeypatch.setattr(plow_init, "PARK_MARKER", str(tmp_path / "parked"))
     plow_init.CREDENTIALS = str(tmp_path / "absent")
     plow_init.CREDENTIALS_WAIT_S = 1
-    with pytest.raises(SystemExit, match="no credential at"):
+    with pytest.raises(Parked):
         plow_init.read_credentials()
+
+
+def test_parking_says_why_on_stderr_and_in_the_marker(tmp_path, parking, monkeypatch, capsys):
+    marker = tmp_path / "parked"
+    monkeypatch.setattr(plow_init, "PARK_MARKER", str(marker))
+    with pytest.raises(Parked):
+        plow_init.park("no credential at /var/lib/plow/credentials after 60s")
+    assert "no credential at" in capsys.readouterr().err
+    assert marker.read_text() == "no credential at /var/lib/plow/credentials after 60s\n"
+
+
+def test_an_unwritable_marker_still_parks(tmp_path, parking, monkeypatch, capsys):
+    """The marker is for a human with a shell. Parking is the behaviour."""
+    monkeypatch.setattr(plow_init, "PARK_MARKER", str(tmp_path / "no-such-dir" / "parked"))
+    with pytest.raises(Parked):
+        plow_init.park("no credential")
+    assert "could not write" in capsys.readouterr().err
+
+
+def test_parking_starts_no_gateway(tmp_path, parking, monkeypatch):
+    """`read_credentials` never returns, so nothing downstream of it runs.
+
+    The gateway is a separate s6 service that declares plow-init a dependency;
+    what this asserts is the half this file owns -- the caller never gets a
+    credential back to configure anything with.
+    """
+    monkeypatch.setattr(plow_init, "PARK_MARKER", str(tmp_path / "parked"))
+    plow_init.CREDENTIALS = str(tmp_path / "absent")
+    plow_init.CREDENTIALS_WAIT_S = 1
+    reached = []
+    with pytest.raises(Parked):
+        reached.append(plow_init.read_credentials())
+    assert reached == []
+
+
+def test_a_credential_that_is_present_is_unaffected(tmp_path, owned_by_root, parking):
+    """The tenant path, asserted beside the parking one so a change to either shows."""
+    credential(tmp_path)
+    read = plow_init.read_credentials()
+    assert (read.plow_api_base, read.plow_agent_token) == ("https://api.plow.co", "t")
+
+
+def test_a_credential_the_host_got_wrong_still_exits(tmp_path, owned_by_root, parking):
+    """Only silence parks. A host that said something wrong said it out loud."""
+    credential(tmp_path, mode=0o644)
+    with pytest.raises(SystemExit, match="expected root:root at 600 or 400"):
+        plow_init.read_credentials()
+
+
+def test_stage_two_has_no_deadline_that_would_unpark_the_container():
+    """`park` blocks the oneshot forever; a stage-2 deadline would call that a
+    failure and S6_BEHAVIOUR_IF_STAGE2_FAILS=2 would exit /init anyway."""
+    dockerfile = (SOURCE.parents[3] / "Dockerfile").read_text()
+    assert "ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0" in dockerfile
 
 
 def chat(uid, status="active", roles=("owner",), agents=("self",)):

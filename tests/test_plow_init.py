@@ -388,6 +388,9 @@ def test_a_permissive_soul_is_taken_back_to_0644(tmp_path, monkeypatch):
 SEED = {
     "model": {"provider": "plow", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
+    "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
+                           "key_env": "HERMES_CUSTOM_PLOW_API_KEY", "stale_timeout_seconds": 55,
+                           "models": {"seeded/model": {}}}},
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
@@ -427,7 +430,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
              "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
-                                    "models": {SEED["model"]["default"]: {}}},
+                                    "model": "seeded/model", "models": {SEED["model"]["default"]: {}}},
                            "theirs": {"base_url": "https://elsewhere.invalid"}},
              "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
     config.write_text(yaml.safe_dump(stale))
@@ -440,10 +443,13 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
     # the agent dials -- an entry carrying it is one the match cannot find.
-    entry = after["providers"]["plow"]
-    assert entry["base_url"] == "https://api.test.invalid/v1"
-    assert entry["models"][SEED["model"]["default"]]["prompt_caching"] is True
-    assert entry["name"] == "plow"
+    # The entry is the seed's, whole: the credential a pre-key_env home never
+    # got (the 2026-09-04 outage), minus the entry-level `model` an older seed
+    # wrote (a second selector Hermes' auxiliary path preferred), plus the
+    # expanded endpoint and the caching flag under the selected model.
+    assert after["providers"]["plow"] == {**SEED["providers"]["plow"],
+                                          "base_url": "https://api.test.invalid/v1",
+                                          "models": {"seeded/model": {"prompt_caching": True}}}
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
 
 

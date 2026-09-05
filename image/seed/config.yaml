@@ -70,7 +70,6 @@ providers:
   plow:
     name: plow
     base_url: "${PLOW_API_BASE}/v1"
-    model: anthropic/claude-sonnet-5
     key_env: HERMES_CUSTOM_PLOW_API_KEY
     stale_timeout_seconds: 55
     models:

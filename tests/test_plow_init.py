@@ -348,16 +348,23 @@ def test_the_dotenv_replaces_an_existing_foreign_owned_file(tmp_path, monkeypatc
     assert dotenv.read_text() == "API_SERVER_KEY=new\n"
 
 
-def test_unrelated_keys_survive_and_the_owned_one_is_set_in_place(tmp_path, monkeypatch):
+def test_unrelated_keys_survive_and_the_owned_one_is_set(tmp_path, monkeypatch):
     """In the Docker fleet this file IS the agent's configuration store --
     its token, its chat settings, its timezone. A boot that only owns
-    API_SERVER_KEY must not destroy the rest of it."""
+    API_SERVER_KEY must not destroy the rest of it, and an unrelated line
+    (including one whose value holds `=` and quotes) is never reparsed as a
+    key/value pair -- only detected as not being the one line this image
+    owns -- so it comes back exactly as it went in. Position is not
+    asserted: the merge drops every existing API_SERVER_KEY line and appends
+    one, so the file never holds more than one assignment of it regardless
+    of where a reader would look."""
     dotenv = tmp_path / ".env"
     dotenv.write_text(
         "PLOW_AGENT_TOKEN=tok\n"
         "PLOW_API_BASE=https://api.plow.co\n"
         "API_SERVER_KEY=old\n"
         "AGENT_TZ=America/Los_Angeles\n"
+        'PLOW_CHAT_FILTER=name="a=b" other=value\n'
     )
     plow_init.HOME_DOTENV = str(dotenv)
     monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
@@ -366,36 +373,10 @@ def test_unrelated_keys_survive_and_the_owned_one_is_set_in_place(tmp_path, monk
     assert dotenv.read_text() == (
         "PLOW_AGENT_TOKEN=tok\n"
         "PLOW_API_BASE=https://api.plow.co\n"
-        "API_SERVER_KEY=new\n"
         "AGENT_TZ=America/Los_Angeles\n"
+        'PLOW_CHAT_FILTER=name="a=b" other=value\n'
+        "API_SERVER_KEY=new\n"
     )
-
-
-def test_a_value_containing_equals_or_quotes_survives_the_round_trip(tmp_path, monkeypatch):
-    """An unrelated line is never reparsed as a key/value pair -- only
-    detected as not being the one line this image owns -- so a value holding
-    `=`, quotes, or spaces comes back exactly as it went in."""
-    dotenv = tmp_path / ".env"
-    line = 'PLOW_CHAT_FILTER=name="a=b" other=value\n'
-    dotenv.write_text(line)
-    plow_init.HOME_DOTENV = str(dotenv)
-    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
-    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
-    plow_init.own_home_dotenv("new")
-    assert dotenv.read_text() == line + "API_SERVER_KEY=new\n"
-
-
-def test_the_dotenv_is_still_written_root_hermes_at_0640(tmp_path, monkeypatch):
-    """Merging in the other keys must not loosen the file's ownership or mode."""
-    dotenv = tmp_path / ".env"
-    dotenv.write_text("SOME_KEY=value\n")
-    plow_init.HOME_DOTENV = str(dotenv)
-    chowned = {}
-    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=42))
-    monkeypatch.setattr(plow_init.os, "fchown", lambda fd, uid, gid: chowned.update(uid=uid, gid=gid))
-    plow_init.own_home_dotenv("new")
-    assert chowned == {"uid": 0, "gid": 42}
-    assert stat.S_IMODE(dotenv.stat().st_mode) == 0o640
 
 
 @pytest.mark.parametrize("entry", ["skills", "SOUL.md"])

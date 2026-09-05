@@ -466,9 +466,12 @@ def own_home_dotenv(api_server_key: str) -> None:
     its token, its chat settings, its timezone, whatever its own tooling put
     there. Truncating it to one line used to destroy all of that on every
     boot. So every line that does not name API_SERVER_KEY is carried across
-    untouched, and only the line that does is replaced (or appended, if
-    absent) -- unparsed and unreformatted, because a rewrite that "tidies" an
-    operator's file on the way past is a second version of the same bug.
+    untouched -- unparsed and unreformatted, because a rewrite that "tidies"
+    an operator's file on the way past is a second version of the same bug --
+    and every line that does is dropped, with one fresh line appended in its
+    place. Position is not preserved, and does not need to be: the file never
+    holds more than one assignment of the name either way, so it makes no
+    difference whether a reader takes the first line or the last.
 
     Written rather than left missing when no dotenv exists at all, because the
     runtime seeds a 535-name example into any home it finds without one. And
@@ -495,19 +498,8 @@ def own_home_dotenv(api_server_key: str) -> None:
         descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
         park(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
-    replaced = False
-    kept: list[str] = []
-    for line in lines:
-        if line.startswith(owned):
-            # A later line naming the same key would only shadow the first
-            # substitution, so it is dropped rather than kept as a duplicate.
-            if not replaced:
-                kept.append(f"{owned}{api_server_key}")
-                replaced = True
-        else:
-            kept.append(line)
-    if not replaced:
-        kept.append(f"{owned}{api_server_key}")
+    kept = [line for line in lines if not line.startswith(owned)]
+    kept.append(f"{owned}{api_server_key}")
     try:
         with os.fdopen(descriptor, "w") as handle:
             os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)

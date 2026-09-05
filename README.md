@@ -171,29 +171,27 @@ The same goes for the credential itself: no file, a file that is not a
 root-owned regular file at 0600 or 0400, or one naming anything but the two
 required keys plus optional `AGENT_ID`, and nothing starts. `plow-init` is a oneshot every service depends on.
 
-### No file at all: the container parks
+### How it refuses: the container parks
 
-Nothing starting is the rule; how it stops differs for the one case where the
-host said *nothing* rather than something wrong. After the 60 s wait with no
-credential, `plow-init` writes `/run/plow-init.parked` and blocks forever
-instead of exiting. The gateway still never starts, so the agent is still
-unreachable — but PID 1 stays alive.
+Nothing starting is the rule; how it stops is the part worth stating. `plow-init`
+never exits on a failure. It writes the reason to stderr and to
+`/run/plow-init.parked`, then blocks forever. The gateway is a separate service
+that declares this oneshot a dependency, and s6-rc starts it only when the
+oneshot **completes** — so a parked `plow-init` serves nothing, which is the
+whole of fail-closed. It never rested on the exit code.
 
-That matters because this image's CMD *is* PID 1 on a microVM host. Exiting
-there is not a stopped container, it is `Attempted to kill init`: a panicked
-kernel spinning a full vCPU with no sshd to log into. Powering off instead only
-trades that for a reboot loop, since exe.dev has no stopped state and boots a
-halted guest straight back up. Parking is the only shape that is quiet, closed
-and still debuggable — the box keeps its shell, and `/run/plow-init.parked`
-says why.
+Exiting would be worse than useless here. This image's CMD *is* PID 1 on a
+microVM host: an exiting `/init` is not a stopped container, it is `Attempted to
+kill init` — a panicked kernel spinning a full vCPU with no sshd to log into.
+Powering off instead only trades that for a reboot loop, since exe.dev has no
+stopped state and boots a halted guest straight back up. Parking is the only
+shape that is quiet, closed, and still debuggable: the box keeps its shell, and
+the marker file says why. `S6_BEHAVIOUR_IF_STAGE2_FAILS=1` is set for the same
+reason — no stage-2 failure may take `/init` down with it.
 
-Plow's warm-pool VMs reach this path **by design**: they are created with no
-credential, exist only to hold the image in the host's cache, and a parked
-container is their healthy steady state.
-
-Every other refusal — a bad mode, an unknown key, a credential Plow will not
-answer for — still exits non-zero, because a host that got the file wrong said
-something and should be told loudly.
+Plow's warm-pool VMs reach this by design: they are created with no credential,
+exist only to hold the image in the host's cache, and a parked container is
+their healthy steady state.
 
 ### From a developer's machine
 

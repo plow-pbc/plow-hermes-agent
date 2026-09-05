@@ -192,17 +192,29 @@ RUN chmod 0755 /etc/s6-overlay/scripts/plow-init.py
 # 10000, and binds the loopback port provisioning waits for.
 RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 
-# A failed oneshot must be loud. Without this s6 logs the failure, brings up
-# what it can and leaves PID 1 running, so a VM whose credential injection
-# died looks alive from the outside. 2 makes /init exit instead.
-ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
+# /init must never exit on this platform. exe.dev unpacks the image into a VM
+# rootfs and boots its Cmd as PID 1, so an exiting /init is not a stopped
+# container -- it is `Attempted to kill init`, a panicked kernel pinning a full
+# vCPU with no sshd to log into. Powering off is no escape either: exe.dev has
+# no stopped state and reboots a halted guest straight back up. 2 exits; 1
+# warns and carries on, which is the only value that cannot pin a core.
+#
+# This does not soften fail-closed, which never rested on the exit code:
+# hermes-gateway and main-hermes declare plow-init a dependency, and s6-rc
+# starts neither until that oneshot COMPLETES. plow-init parks on every
+# failure, so it never completes, so nothing serves.
+ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=1
 
-# Stage 2 waits for the service set with no deadline. plow-init parks -- blocks
-# forever -- when no credential is written, which is a warm-pool VM's normal
-# life; a deadline would call that parked oneshot a stage-2 failure and hand it
-# straight back to the exit above. Pinned rather than inherited because the
-# upstream default has changed between s6-overlay releases and this image's
-# fail-closed shape depends on the value.
+# plow-init parks -- blocks forever -- on any failure, which for a warm-pool VM
+# (created with no credential by design) is its normal life. It is an s6-rc
+# oneshot under the top bundle, so it is part of the service set stage 2 brings
+# up and waits on, which is what puts it under this knob at all. A non-zero
+# value would call the parked oneshot a stage-2 failure.
+#
+# The s6-overlay this image carries (3.2.3.0) already defaults to 0, so this
+# changes nothing today. It is pinned so a base-image bump to a release with a
+# non-zero default cannot turn a parked oneshot into a stage-2 failure:
+# releases up to 3.1.6.2 defaulted to 5000.
 ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
 # exe.dev unpacks this image into a VM rootfs and boots its Cmd as PID 1;

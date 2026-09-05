@@ -406,6 +406,11 @@ def configure(identity: Identity, seed: dict) -> None:
     provider_key = seed_model.get("provider")
     if provider_key:
         plow_model = os.environ.get("HERMES_MODEL") if provider == provider_key else None
+        # Every key of the seed's entry, `key_env` above all: Hermes resolves a
+        # named provider's credential from this entry and nowhere else, so a
+        # home seeded before the entry carried one sends the keyless
+        # placeholder and 401s (2026-09-04). The two below then override.
+        wanted.update(_leaves(seed["providers"][provider_key], ("providers", provider_key)))
         wanted[("providers", provider_key, "base_url")] = os.path.expandvars(seed_model.get("base_url", ""))
         wanted[("providers", provider_key, "models", plow_model or seed_model.get("default"), "prompt_caching")] = True
 

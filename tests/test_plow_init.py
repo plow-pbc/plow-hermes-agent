@@ -388,6 +388,9 @@ def test_a_permissive_soul_is_taken_back_to_0644(tmp_path, monkeypatch):
 SEED = {
     "model": {"provider": "plow", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
+    "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
+                           "key_env": "HERMES_CUSTOM_PLOW_API_KEY", "stale_timeout_seconds": 55,
+                           "models": {"seeded/model": {}}}},
     "mcp_servers": {"plow": {"enabled": False}, "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
@@ -444,6 +447,11 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert entry["base_url"] == "https://api.test.invalid/v1"
     assert entry["models"][SEED["model"]["default"]]["prompt_caching"] is True
     assert entry["name"] == "plow"
+    # The credential too: Hermes resolves a named provider's key from THIS
+    # entry, so one without `key_env` sends the keyless placeholder and 401s
+    # -- the 2026-09-04 outage of a home seeded before the entry carried it.
+    assert entry["key_env"] == SEED["providers"]["plow"]["key_env"]
+    assert entry["stale_timeout_seconds"] == 55
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
 
 

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import re
 import secrets
 import signal
 import stat
@@ -468,6 +469,26 @@ DOTENV_OWNED_NAMES = frozenset({
     "PLOW_MCP_URL",
 })
 
+# The runtime's own dotenv grammar (python-dotenv, `dotenv/parser.py`), for
+# the one question that matters here: what name does a line bind? Leading
+# whitespace and an optional, case-sensitive `export` keyword plus its
+# trailing whitespace are not part of the name (`_multiline_whitespace`,
+# `_export`); the name itself is either single-quoted (`_single_quoted_key`)
+# or a run of characters up to the next `=`, `#`, or whitespace
+# (`_unquoted_key`). Matched rather than re-derived so a spelling this misses
+# is one the loader would not bind either -- not a looser grammar of our own.
+_DOTENV_NAME = re.compile(r"\s*(?:export[^\S\r\n]+)?(?:'([^']+)'|([^=#\s]+))")
+
+
+def _dotenv_name(line: str) -> str:
+    """The name the runtime's dotenv loader would bind `line` to, or "" if
+    the line opens no binding at all (blank, or a comment)."""
+    match = _DOTENV_NAME.match(line)
+    if not match:
+        return ""
+    quoted, unquoted = match.groups()
+    return quoted if quoted is not None else unquoted
+
 
 def own_home_dotenv(api_server_key: str) -> None:
     """Merge this boot's identity into the home's dotenv, without
@@ -484,7 +505,9 @@ def own_home_dotenv(api_server_key: str) -> None:
     loading it over the environment would let that shadow win -- an old
     credential outliving its rotation, or a reused fleet home answering as
     the tenant before it. So every assignment of an owned name is dropped
-    from the file rather than carried across, and API_SERVER_KEY -- the one
+    from the file rather than carried across -- however the loader's own
+    grammar would spell it, `export`-prefixed, leading whitespace, or a
+    quoted key included (see `_dotenv_name`) -- and API_SERVER_KEY -- the one
     name this function actually sets -- is appended fresh.
 
     A cloud tenant's home holds nothing else in this file, so dropping the
@@ -514,13 +537,17 @@ def own_home_dotenv(api_server_key: str) -> None:
             raise OSError("existing path is not a regular file")
         try:
             with open(HOME_DOTENV) as handle:
-                lines = handle.read().splitlines()
+                # The loader strips a leading byte-order mark before parsing
+                # (`dotenv.parser.Reader.__init__`); done here too, or a BOM
+                # on the file's first name would hide it from `_dotenv_name`
+                # without hiding it from the loader.
+                lines = handle.read().removeprefix("\ufeff").splitlines()
         except FileNotFoundError:
             lines = []
         descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
         park(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
-    kept = [line for line in lines if line.partition("=")[0] not in DOTENV_OWNED_NAMES]
+    kept = [line for line in lines if _dotenv_name(line) not in DOTENV_OWNED_NAMES]
     kept.append(f"API_SERVER_KEY={api_server_key}")
     try:
         with os.fdopen(descriptor, "w") as handle:

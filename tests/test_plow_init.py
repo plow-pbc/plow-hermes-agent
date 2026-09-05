@@ -430,7 +430,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
              "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
-                                    "models": {SEED["model"]["default"]: {}}},
+                                    "model": "seeded/model", "models": {SEED["model"]["default"]: {}}},
                            "theirs": {"base_url": "https://elsewhere.invalid"}},
              "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
     config.write_text(yaml.safe_dump(stale))
@@ -452,6 +452,10 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # -- the 2026-09-04 outage of a home seeded before the entry carried it.
     assert entry["key_env"] == SEED["providers"]["plow"]["key_env"]
     assert entry["stale_timeout_seconds"] == 55
+    # And the entry-level `model` an older seed wrote is gone: `model.default`
+    # is the one selector, and Hermes' auxiliary path would otherwise prefer
+    # this stale one over `HERMES_MODEL`.
+    assert "model" not in entry
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
 
 

@@ -411,6 +411,10 @@ def configure(identity: Identity, seed: dict) -> None:
         # home seeded before the entry carried one sends the keyless
         # placeholder and 401s (2026-09-04). The two below then override.
         wanted.update(_leaves(seed["providers"][provider_key], ("providers", provider_key)))
+        # `model.default` is the one selector; an entry-level `model` is a
+        # second one Hermes falls back to (auxiliary calls prefer it), and a
+        # home seeded before it was dropped still carries it. Gone, every boot.
+        wanted[("providers", provider_key, "model")] = None
         wanted[("providers", provider_key, "base_url")] = os.path.expandvars(seed_model.get("base_url", ""))
         wanted[("providers", provider_key, "models", plow_model or seed_model.get("default"), "prompt_caching")] = True
 

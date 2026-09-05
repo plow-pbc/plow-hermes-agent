@@ -275,7 +275,7 @@ rewrite it — so the agent can delete it or put something else in its place, an
 copy — cont-init writes one when the home has none, which is what stops the
 runtime seeding a default with no chat platform in it. A **damaged** one is not
 repaired: `plow-init` reads it only to re-assert what the image owns — Plow's
-endpoint, model, and provider entry (its credential's variable name above all), the retry budget, the `tool_search` switch, and every
+endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the `tool_search` switch, and every
 seeded `display` value — on
 every boot, and touches nothing else, so whatever else the agent leaves at that
 path is its own to answer for. A deleted

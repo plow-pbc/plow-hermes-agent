@@ -192,10 +192,23 @@ RUN chmod 0755 /etc/s6-overlay/scripts/plow-init.py
 # 10000, and binds the loopback port provisioning waits for.
 RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 
-# A failed oneshot must be loud. Without this s6 logs the failure, brings up
-# what it can and leaves PID 1 running, so a VM whose credential injection
-# died looks alive from the outside. 2 makes /init exit instead.
-ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=2
+# 2 stops a failed boot by exiting /init. exe.dev boots this image's Cmd as PID
+# 1 in a microVM, where that is `Attempted to kill init` -- a panicked kernel
+# pinning a vCPU with no sshd. Wrapping PID 1 to catch the exit is not open
+# either: s6-overlay's /init execs s6-overlay-suexec, which refuses to run
+# unless it IS pid 1 (measured: exit 100 on every boot, healthy ones included).
+#
+# So 1, and the boot's one gate is plow-init: every service the owner can reach
+# depends on that oneshot, and it verifies what it needs rather than trusting an
+# earlier step to have established it. A cont-init failure it does not depend on
+# stays a warning, correctly -- nothing it touched can serve anyone.
+ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=1
+
+# plow-init parks on a refusal, so its oneshot never completes and stage 2 never
+# finishes. This image's s6-overlay (3.2.3.0) already defaults to 0; pinned so a
+# base bump to a release with a non-zero default (<= 3.1.6.2 was 5000) cannot
+# turn a parked oneshot into a failed boot.
+ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
 # exe.dev unpacks this image into a VM rootfs and boots its Cmd as PID 1;
 # `docker run` does the same in a container. One entry point serves both.

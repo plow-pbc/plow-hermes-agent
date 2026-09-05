@@ -171,6 +171,31 @@ The same goes for the credential itself: no file, a file that is not a
 root-owned regular file at 0600 or 0400, or one naming anything but the two
 required keys plus optional `AGENT_ID`, and nothing starts. `plow-init` is a oneshot every service depends on.
 
+### How it refuses: the container parks
+
+`plow-init` never exits. It writes the reason to stderr and — while it is still
+root, which is every refusal that names a cause — to `/run/plow-init.parked`,
+then blocks forever. The gateway declares this oneshot a dependency and s6-rc
+starts it only when the oneshot *completes*, so a parked `plow-init` serves
+nothing. Fail-closed never rested on the exit code.
+
+Exiting would be worse than useless: this image's CMD *is* PID 1 on a microVM
+host, where an exiting `/init` is `Attempted to kill init` — a panicked kernel
+pinning a vCPU with no sshd. `S6_BEHAVIOUR_IF_STAGE2_FAILS=1` is set for the
+same reason, and wrapping PID 1 to catch the exit is not open either:
+s6-overlay's `/init` refuses to run unless it is pid 1.
+
+That makes `plow-init` the boot's one gate. It verifies what the gateway needs
+rather than trusting an earlier step — the agent account and its uid, a
+bind-mounted credential actually promoted rather than left beside a stale one, a
+home that is a directory — and parks with a precise reason otherwise. A
+cont-init failure it does not depend on stays a warning; nothing that step
+touched can serve anyone.
+
+Plow's warm-pool VMs reach this by design: created with no credential, they
+exist only to hold the image in the host's cache, and a parked container is
+their healthy steady state.
+
 ### From a developer's machine
 
 The same file, and the same rules — but a bind mount carries its host's

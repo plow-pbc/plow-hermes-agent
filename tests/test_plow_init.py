@@ -62,23 +62,25 @@ def test_the_process_environment_cannot_outrank_the_file(tmp_path, owned_by_root
 
 
 @pytest.mark.parametrize("mode", [0o644, 0o620, 0o602, 0o666])
-def test_a_credential_anyone_else_can_reach_is_refused(tmp_path, owned_by_root, mode):
+def test_a_credential_anyone_else_can_reach_is_refused(tmp_path, owned_by_root, parking, mode):
     credential(tmp_path, mode=mode)
-    with pytest.raises(SystemExit, match="expected root:root at 600 or 400"):
+    with pytest.raises(Parked):
         plow_init.read_credentials()
+    assert "expected root:root at 600 or 400" in parking.read_text()
 
 
-def test_a_refused_credential_does_not_print_the_token(tmp_path, owned_by_root):
+def test_a_refused_credential_does_not_print_the_token(tmp_path, owned_by_root, parking):
     """This message goes to s6's stderr, which is the container's log.
 
     Pydantic quotes the offending input by default, and for a missing key that
     input is everything it did parse -- so the file's own token rides along.
     """
     credential(tmp_path, "PLOW_AGENT_TOKEN=sk-the-real-one\n")
-    with pytest.raises(SystemExit) as refusal:
+    with pytest.raises(Parked):
         plow_init.read_credentials()
-    assert "plow_api_base" in str(refusal.value)
-    assert "sk-the-real-one" not in str(refusal.value)
+    reason = parking.read_text()
+    assert "plow_api_base" in reason
+    assert "sk-the-real-one" not in reason
 
 
 def test_the_agent_id_third_key_is_read(tmp_path, owned_by_root):
@@ -86,17 +88,175 @@ def test_the_agent_id_third_key_is_read(tmp_path, owned_by_root):
     assert plow_init.read_credentials().agent_id == "life"
 
 
-def test_an_unknown_third_key_is_refused(tmp_path, owned_by_root):
+def test_an_unknown_third_key_is_refused(tmp_path, owned_by_root, parking):
     credential(tmp_path, "PLOW_API_BASE=x\nPLOW_AGENT_TOKEN=t\nPLOW_HOME_CHANNEL=cht_host_says\n")
-    with pytest.raises(SystemExit, match="only the documented keys"):
+    with pytest.raises(Parked):
         plow_init.read_credentials()
+    assert "only the documented keys" in parking.read_text()
 
 
-def test_a_missing_credential_is_refused(tmp_path):
+class Parked(Exception):
+    """Stands in for `signal.pause()` blocking forever, which a test cannot wait out."""
+
+
+@pytest.fixture(autouse=True)
+def parking(monkeypatch, tmp_path):
+    """Let `park` run for real up to the point where it would block.
+
+    Autouse because parking is now the only way this script refuses anything:
+    a refusal test that did not arrange for this would hang instead of failing.
+    Yields the marker path, so a test can assert the reason a human with a
+    shell would find.
+    """
+    marker = tmp_path / "plow-init.parked"
+    monkeypatch.setattr(plow_init.signal, "pause", lambda: (_ for _ in ()).throw(Parked()))
+    monkeypatch.setattr(plow_init, "PARK_MARKER", str(marker))
+    return marker
+
+
+def test_a_missing_credential_parks_rather_than_exiting(tmp_path, parking):
+    """The warm pool's normal life, and the path that started all this.
+
+    Exiting here is what panics the microVM: plow-init's non-zero exit takes
+    /init with it, and /init is PID 1.
+    """
     plow_init.CREDENTIALS = str(tmp_path / "absent")
     plow_init.CREDENTIALS_WAIT_S = 1
-    with pytest.raises(SystemExit, match="no credential at"):
+    with pytest.raises(Parked):
         plow_init.read_credentials()
+    assert "no credential at" in parking.read_text()
+
+
+def test_parking_says_why_on_stderr_as_well_as_in_the_marker(parking, capsys):
+    with pytest.raises(Parked):
+        plow_init.park("no credential at /var/lib/plow/credentials after 60s")
+    assert "no credential at" in capsys.readouterr().err
+    assert parking.read_text() == "no credential at /var/lib/plow/credentials after 60s\n"
+
+
+def test_an_unwritable_marker_still_parks(monkeypatch, tmp_path, capsys):
+    """The marker is for a human with a shell. Parking is the behaviour."""
+    monkeypatch.setattr(plow_init, "PARK_MARKER", str(tmp_path / "no-such-dir" / "parked"))
+    with pytest.raises(Parked):
+        plow_init.park("no credential")
+    assert "could not write" in capsys.readouterr().err
+
+
+def test_nothing_in_plow_init_exits_on_a_failure_path():
+    """A spinning vCPU is never an acceptable outcome, so there is no exit left.
+
+    Read off the source rather than exercised, because the property is the
+    absence of a call -- one a future edit could reintroduce anywhere.
+    """
+    source = SOURCE.read_text()
+    assert "sys.exit" not in source
+    assert "raise SystemExit" not in source
+
+
+@pytest.fixture
+def image_user(monkeypatch, tmp_path):
+    """The account and home a healthy image already has.
+
+    These tests do not run in the image, so the two checks that come before
+    the one under test are satisfied rather than exercised; each has its own
+    test below.
+    """
+
+    class Hermes:
+        pw_uid, pw_gid = plow_init.AGENT_UID, plow_init.AGENT_UID
+
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: Hermes())
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setattr(plow_init, "HOME_DIR", str(home))
+
+
+def test_a_stale_credential_beside_an_unpromoted_one_parks(tmp_path, parking, monkeypatch, image_user):
+    """The rotation-not-taking case, and the reason this gate exists.
+
+    00-plow-sanitize promotes a bind-mounted credential into the path this
+    script reads. Under S6_BEHAVIOUR_IF_STAGE2_FAILS=1 a failed cont-init is
+    carried past, so an aborted promotion leaves the previous boot's
+    credential in place -- valid-looking, and belonging to someone else.
+    """
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
+    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=stale\n")
+    (tmp_path / "credentials.host").write_text("PLOW_AGENT_TOKEN=fresh\n")
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "the promotion did not run, and this credential is stale" in parking.read_text()
+
+
+def test_a_host_credential_that_is_not_a_regular_file_parks(tmp_path, parking, monkeypatch, image_user):
+    """Docker makes a DIRECTORY at the mount point when the source is missing.
+
+    00-plow-sanitize's `-f` test skips that silently, so the boot most likely
+    to leave the previous tenant's credential in place is also the one that
+    looks like nothing happened.
+    """
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
+    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=stale\n")
+    (tmp_path / "credentials.host").mkdir()
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "is not a regular file -- nothing was promoted" in parking.read_text()
+
+
+def test_a_promoted_credential_passes(tmp_path, parking, monkeypatch, image_user):
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
+    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=fresh\n")
+    (tmp_path / "credentials.host").write_text("PLOW_AGENT_TOKEN=fresh\n")
+    plow_init.verify_boot_preconditions()
+
+
+def test_no_host_credential_means_nothing_to_promote(tmp_path, parking, monkeypatch, image_user):
+    """A VM has no bind mount. Its absence is the normal case, not a failure."""
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
+    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "absent.host"))
+    plow_init.verify_boot_preconditions()
+
+
+def test_a_missing_agent_account_parks(parking, monkeypatch):
+    """What a failed inherited uid-remap step leaves behind."""
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: (_ for _ in ()).throw(KeyError(name)))
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "no `hermes` account" in parking.read_text()
+
+
+def test_an_agent_account_at_the_wrong_uid_parks(parking, monkeypatch):
+    class Wrong:
+        pw_uid, pw_gid = 1000, 1000
+
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda name: Wrong())
+    with pytest.raises(Parked):
+        plow_init.verify_boot_preconditions()
+    assert "expected 10000" in parking.read_text()
+
+
+def test_an_unhandled_exception_parks_too():
+    """`park` covers every anticipated failure; this covers the rest.
+
+    An uncaught exception exits the script, exits /init, and panics the VM, so
+    a crash and a refusal have to end the same way.
+    """
+    source = SOURCE.read_text()
+    assert "except Exception:" in source
+    assert "plow-init raised an unhandled exception" in source
+
+
+def test_stage_two_neither_exits_nor_deadlines():
+    """Both halves of the Dockerfile's side of this.
+
+    FAILS=2 exits /init on any stage-2 failure, which on a microVM is the
+    panic. MAXTIME non-zero would call a parked oneshot such a failure.
+    """
+    dockerfile = (SOURCE.parents[3] / "Dockerfile").read_text()
+    assert "ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=1" in dockerfile
+    assert "ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0" in dockerfile
 
 
 def chat(uid, status="active", roles=("owner",), agents=("self",)):
@@ -132,9 +292,10 @@ def test_the_home_chat_is_the_owner_alone_with_this_agent():
         (chat("a", agents=("self", "peer")),),          # another assistant is here too
     ],
 )
-def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats):
-    with pytest.raises(SystemExit, match="cannot tell which chat is home"):
+def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats, parking):
+    with pytest.raises(Parked):
         plow_init.home_chat(identity(*chats))
+    assert "cannot tell which chat is home" in parking.read_text()
 
 
 @pytest.mark.parametrize("mcp_url", [None, "https://relay.invalid/mcp"])
@@ -151,7 +312,7 @@ def test_a_symlinked_dotenv_is_refused_not_followed(tmp_path):
     dotenv = tmp_path / ".env"
     dotenv.symlink_to(victim)
     plow_init.HOME_DOTENV = str(dotenv)
-    with pytest.raises(SystemExit, match="not a regular file this image can write"):
+    with pytest.raises(Parked):
         plow_init.own_home_dotenv("a-key")
     assert victim.read_text() == "root-owned target\n"
 
@@ -204,7 +365,7 @@ def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkey
     monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
     for call in ("chown", "fchown"):
         monkeypatch.setattr(plow_init.os, call, lambda *a, **k: None)
-    with pytest.raises(SystemExit, match="not the file this image left there"):
+    with pytest.raises(Parked):
         plow_init.harden_home()
     assert victim.stat().st_mode & 0o7777 == 0o700
 

@@ -1,14 +1,15 @@
 """Configure this agent from its credential, then let the gateway start.
 
 Runs once, as root, before any service. Everything downstream declares this as
-a dependency, so a non-zero exit starts nothing -- which is the point: an agent
-whose setup half ran serves its local API, answers every probe, and cannot be
-reached by the person it belongs to.
+a dependency, and s6-rc starts none of it until this oneshot completes -- which
+is the point: an agent whose setup half ran serves its local API, answers every
+probe, and cannot be reached by the person it belongs to. So a refusal here
+parks rather than exits, and the completion never comes.
 
 A host tells this image where Plow is, what to present to it, and optionally
 which Agent Index id it reports as, at /var/lib/plow/credentials. The rest of the agent's identity is asked of Plow
 with that credential. Nothing falls back -- no credential, a credential Plow
-will not answer for, or no answer at all, and the container stops.
+will not answer for, or no answer at all, and nothing starts.
 """
 
 from __future__ import annotations
@@ -16,9 +17,11 @@ from __future__ import annotations
 import os
 import pwd
 import secrets
+import signal
 import stat
 import subprocess
 import sys
+import traceback
 import tempfile
 import time
 import typing
@@ -34,6 +37,7 @@ CREDENTIALS = "/var/lib/plow/credentials"
 CONFIG = "/var/lib/hermes/config.yaml"
 CONTAINER_ENV = "/run/s6/container_environment"
 HOST_SETUP = "/exe.dev/setup"
+PARK_MARKER = "/run/plow-init.parked"
 
 CREDENTIALS_WAIT_S = 60
 RETRIES = 10
@@ -45,10 +49,50 @@ RELAY_SERVER = "plow"
 HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
+HOST_CREDENTIALS = f"{CREDENTIALS}.host"
+AGENT_UID = 10000
 
 
-def die(message: str) -> typing.NoReturn:
-    sys.exit(f"plow-init: {message}")
+def park(reason: str) -> typing.NoReturn:
+    """Refuse, loudly, without letting PID 1 exit.
+
+    Exiting is fail-closed on a host that stops a container and leaves it
+    stopped. exe.dev is not one: this image's CMD *is* PID 1 in a microVM, so a
+    non-zero exit is `Attempted to kill init` -- a panicked kernel spinning a
+    full vCPU with no sshd, which is how the warm pool billed two cores for a
+    day. Powering off instead only trades that for a reboot loop; exe.dev has
+    no stopped state and boots a halted guest straight back up (measured: down
+    ~45s, then up with uptime=1). A spinning vCPU is never an acceptable
+    outcome, so nothing in this script exits on a failure path.
+
+    Fail-closed is not weakened by that, because it never rested on the exit
+    code: the gateway and main-hermes declare this oneshot a dependency, and
+    s6-rc starts neither until it COMPLETES. Parking means it never does. The
+    agent stays unreachable; what changes is that the box stays alive and
+    shell-able, which is what makes a failure diagnosable at all.
+
+    The reason goes to stderr for the container log and to a marker file for
+    whoever opens that shell.
+    """
+    print(f"plow-init: {reason} -- parking; no gateway will start", file=sys.stderr, flush=True)
+    # stderr first, and unconditionally: after configure() this process has
+    # dropped to the agent's uid and can no longer write into /run, so the log
+    # is the only channel that survives the whole script. The marker is a
+    # convenience for the boot's root half, which is where every refusal that
+    # names a cause lives.
+    try:
+        with open(PARK_MARKER, "w") as marker:
+            marker.write(f"{reason}\n")
+    except OSError as exc:
+        # Load-bearing, not defensive. park() is now the only way this script
+        # refuses anything, so an exception escaping it exits plow-init, exits
+        # /init, and panics the VM -- the precise outcome the function exists
+        # to prevent, reached from every failure path at once. The marker is a
+        # convenience for a human with a shell; parking is the behaviour, and
+        # losing the first must never cost the second.
+        print(f"plow-init: could not write {PARK_MARKER}: {exc}", file=sys.stderr, flush=True)
+    while True:
+        signal.pause()
 
 
 class Credentials(BaseSettings):
@@ -157,8 +201,62 @@ def home_chat(identity: Identity) -> Chat:
             )
             for chat in identity.chats
         ) or "no chats at all"
-        die(f"cannot tell which chat is home -- {len(matches)} of {len(identity.chats)} qualify: {seen}")
+        park(f"cannot tell which chat is home -- {len(matches)} of {len(identity.chats)} qualify: {seen}")
     return matches[0]
+
+
+def verify_boot_preconditions() -> None:
+    """Check what cont-init was supposed to leave behind, before trusting it.
+
+    PID 1 cannot be wrapped to catch a failed cont-init script: s6-overlay's
+    `/init` execs `s6-overlay-suexec`, which refuses to run unless it IS pid 1
+    (`s6-overlay-suexec: fatal: can only run as pid 1` -- measured, it exits
+    100 on every boot including healthy ones). And S6_BEHAVIOUR_IF_STAGE2_FAILS
+    cannot be 2, because 2 exits /init and on a microVM that is a kernel panic
+    pinning a vCPU. So it is 1: a failed cont-init script is warned about and
+    the boot carries on.
+
+    Which makes this the gate. Every service the owner can reach depends on
+    this oneshot, so what the gateway needs has to be true HERE rather than
+    assumed to have been established earlier. A cont-init failure in something
+    the gateway does not depend on stays a warning -- correctly, since nothing
+    it touched is in the path to serving anyone.
+
+    Each check is a state a failed cont-init actually produces, not a
+    hypothetical: no agent account (the inherited uid remap did not run), a
+    bind-mounted credential still sitting unpromoted beside a stale one (the
+    promotion aborted -- the rotation-not-taking case), and a home that is not
+    a directory this image can work in.
+    """
+    try:
+        hermes = pwd.getpwnam("hermes")
+    except KeyError:
+        park("no `hermes` account -- the image's user setup did not complete")
+    if hermes.pw_uid != AGENT_UID:
+        park(f"`hermes` is uid {hermes.pw_uid}, expected {AGENT_UID} -- the image's user setup did not complete")
+
+    # The promotion is the one cont-init step whose failure is silent AND
+    # serves a tenant on the wrong credential: a stale file from an earlier
+    # boot is a valid-looking credential, so nothing downstream would notice.
+    # `lexists`, not `isfile`: presence is what says a promotion was owed, and
+    # the shape that matters most is not a regular file. Docker creates a
+    # DIRECTORY at the mount point when the host source is missing, and
+    # 00-plow-sanitize's `-f` test skips a directory silently -- so the boot
+    # most likely to leave a stale credential in place is also the one that
+    # looks like nothing happened. A symlink is refused for the same reason.
+    if os.path.lexists(HOST_CREDENTIALS):
+        if not stat.S_ISREG(os.lstat(HOST_CREDENTIALS).st_mode):
+            park(f"{HOST_CREDENTIALS} is not a regular file -- nothing was promoted, and {CREDENTIALS} cannot be trusted")
+        try:
+            with open(HOST_CREDENTIALS, "rb") as host, open(CREDENTIALS, "rb") as promoted:
+                same = host.read() == promoted.read()
+        except OSError as error:
+            park(f"{HOST_CREDENTIALS} was never promoted to {CREDENTIALS}: {error}")
+        if not same:
+            park(f"{CREDENTIALS} is not the {HOST_CREDENTIALS} beside it -- the promotion did not run, and this credential is stale")
+
+    if not os.path.isdir(HOME_DIR) or os.path.islink(HOME_DIR):
+        park(f"{HOME_DIR} is not a directory -- the agent has no home to start in")
 
 
 def read_credentials() -> Credentials:
@@ -179,12 +277,12 @@ def read_credentials() -> Credentials:
     try:
         info = os.lstat(CREDENTIALS)
     except OSError:
-        die(f"no credential at {CREDENTIALS} after {CREDENTIALS_WAIT_S}s -- refusing to start a gateway nobody can reach")
+        park(f"no credential at {CREDENTIALS} after {CREDENTIALS_WAIT_S}s")
     mode = stat.S_IMODE(info.st_mode)
     if not stat.S_ISREG(info.st_mode):
-        die(f"{CREDENTIALS} is not a regular file")
+        park(f"{CREDENTIALS} is not a regular file")
     if (info.st_uid, info.st_gid) != (0, 0) or mode not in (0o600, 0o400):
-        die(f"{CREDENTIALS} is {info.st_uid}:{info.st_gid} mode {mode:04o} -- expected root:root at 600 or 400")
+        park(f"{CREDENTIALS} is {info.st_uid}:{info.st_gid} mode {mode:04o} -- expected root:root at 600 or 400")
     try:
         # The path is passed rather than baked into the class, so this module
         # names it once.
@@ -194,7 +292,7 @@ def read_credentials() -> Credentials:
         # input back, and for a missing key that input is the whole parsed
         # file -- so a credential lacking PLOW_API_BASE would print the token
         # it does have to s6's stderr, where every log reader can see it.
-        die(f"{CREDENTIALS} does not contain only the documented keys:\n{error.errors(include_input=False)}")
+        park(f"{CREDENTIALS} does not contain only the documented keys:\n{error.errors(include_input=False)}")
 
 
 def ask_plow(credentials: Credentials) -> Identity:
@@ -218,7 +316,7 @@ def ask_plow(credentials: Credentials) -> Identity:
             # 401, 403 and 404 are Plow saying this credential is not this
             # agent's -- revoked, or naming an agent that is gone.
             if not (error.code == 429 or 500 <= error.code < 600):
-                die(f"{url} answered {error.code} -- Plow refused this credential")
+                park(f"{url} answered {error.code} -- Plow refused this credential")
             reason = f"answered {error.code}"
         except OSError as error:
             reason = f"unreachable: {error}"
@@ -228,10 +326,10 @@ def ask_plow(credentials: Credentials) -> Identity:
             except ValidationError as error:
                 # Same reason as the credential above: the raw answer is a
                 # roster of real people.
-                die(f"{url} answered something that is not an identity:\n{error.errors(include_input=False)}")
+                park(f"{url} answered something that is not an identity:\n{error.errors(include_input=False)}")
         print(f"plow-init: attempt {attempt} to reach Plow failed, retrying ({reason})", file=sys.stderr)
         time.sleep(RETRY_DELAY_S)
-    die(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
+    park(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
 
 
 def export(values: dict[str, str]) -> None:
@@ -376,7 +474,7 @@ def own_home_dotenv(api_server_key: str) -> None:
             raise OSError("existing path is not a regular file")
         descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
-        die(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
+        park(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
     try:
         with os.fdopen(descriptor, "w") as handle:
             os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)
@@ -416,7 +514,7 @@ def harden_home() -> None:
         try:
             return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | flags)
         except OSError as error:
-            die(f"{path} is not the file this image left there: {error}")
+            park(f"{path} is not the file this image left there: {error}")
 
     # Through the descriptor, not the path. `os.chown` can decline to follow a
     # link; `os.chmod` on Linux cannot, so a path-based chmod beside a
@@ -429,7 +527,7 @@ def harden_home() -> None:
     soul = os.path.join(HOME_DIR, "SOUL.md")
     descriptor = hold(soul, 0)
     if not stat.S_ISREG(os.fstat(descriptor).st_mode):
-        die(f"{soul} is not a regular file")
+        park(f"{soul} is not a regular file")
     os.fchown(descriptor, 0, 0)
     # Ownership is not enough: an agent that leaves this file 0666 keeps
     # other-write after root takes it, and the identity stays rewritable by the
@@ -444,6 +542,7 @@ def main() -> None:
     if os.access(HOST_SETUP, os.X_OK):
         subprocess.run([HOST_SETUP], check=True)
         os.unlink(HOST_SETUP)
+    verify_boot_preconditions()
     harden_home()
 
     credentials = read_credentials()
@@ -487,4 +586,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception:  # noqa: BLE001 -- see below; this is the last stop before PID 1
+        # Every *anticipated* failure calls park() itself, with a reason worth
+        # reading. This catches the rest -- a bug here, a disk that filled, an
+        # OSError nobody predicted -- because an uncaught exception exits this
+        # script, exits /init, and panics the VM. On this platform a crash and
+        # a refusal have to end the same way; only the message differs, so the
+        # traceback goes to the log where it is useful.
+        traceback.print_exc()
+        park("plow-init raised an unhandled exception -- see the traceback above")

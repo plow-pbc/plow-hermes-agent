@@ -1,14 +1,15 @@
 """Configure this agent from its credential, then let the gateway start.
 
 Runs once, as root, before any service. Everything downstream declares this as
-a dependency, so a non-zero exit starts nothing -- which is the point: an agent
-whose setup half ran serves its local API, answers every probe, and cannot be
-reached by the person it belongs to.
+a dependency, and s6-rc starts none of it until this oneshot completes -- which
+is the point: an agent whose setup half ran serves its local API, answers every
+probe, and cannot be reached by the person it belongs to. So a refusal here
+parks rather than exits, and the completion never comes.
 
 A host tells this image where Plow is, what to present to it, and optionally
 which Agent Index id it reports as, at /var/lib/plow/credentials. The rest of the agent's identity is asked of Plow
 with that credential. Nothing falls back -- no credential, a credential Plow
-will not answer for, or no answer at all, and the container stops.
+will not answer for, or no answer at all, and nothing starts.
 """
 
 from __future__ import annotations

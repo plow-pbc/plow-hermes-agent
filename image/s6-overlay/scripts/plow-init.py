@@ -29,6 +29,7 @@ import urllib.error
 import urllib.request
 
 import yaml
+from dotenv.parser import parse_stream
 from pydantic import BaseModel, Field, ValidationError
 from typing import Annotated, Literal, Union
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
@@ -445,19 +446,67 @@ def configure(identity: Identity, seed: dict) -> None:
         os.replace(temporary, CONFIG)
 
 
+# Every name this boot publishes to the process environment (see `values` in
+# `main`), never to a file the agent can read on purpose. This boot just
+# authenticated a fresh value for each one, so a copy persisted under
+# HOME_DOTENV is never anything but a stale shadow -- and the runtime loads
+# that file OVER the environment, so the shadow would win the precedence
+# fight. That is not mere staleness: a rotated PLOW_AGENT_TOKEN or a fleet
+# home reused for a different tenant must not come back up answering on the
+# credential or endpoint this boot just replaced.
+DOTENV_OWNED_NAMES = frozenset({
+    "PLOW_API_BASE",
+    "PLOW_AGENT_TOKEN",
+    "PLOW_HOME_CHANNEL",
+    "HERMES_CUSTOM_PLOW_API_KEY",
+    "API_SERVER_KEY",
+    "AGENT_ID",
+    "PLOW_MCP_URL",
+})
+
+
 def own_home_dotenv(api_server_key: str) -> None:
-    """Make the home's dotenv agree with the environment, on the one name in it.
+    """Merge this boot's identity into the home's dotenv, without
+    reintroducing what it publishes.
 
     The runtime writes its own API_SERVER_KEY there during cont-init, and it
     loads that file OVER its process environment -- so a key this image
-    published would lose to the one persisted in the home, and the per-boot key
-    would be decorative. Overwriting the file with ours settles it: both
-    sources say the same thing.
+    published would lose to the one persisted in the home, and the per-boot
+    key would be decorative. Setting it here settles that: both sources agree.
 
-    Written rather than emptied, because the runtime seeds a 535-name example
-    into any home it finds without a dotenv. And this one name only: the
-    tenant's credential is published to the environment and has no business in
-    a file the agent can read.
+    The same precedence rule cuts the other way for every other name in
+    DOTENV_OWNED_NAMES. A copy of any of them sitting in this file is never
+    anything but a stale shadow of what this boot just authenticated, and
+    loading it over the environment would let that shadow win -- an old
+    credential outliving its rotation, or a reused fleet home answering as
+    the tenant before it. So every assignment of an owned name is dropped
+    from the file rather than carried across, and API_SERVER_KEY -- the one
+    name this function actually sets -- is appended fresh.
+
+    Which assignment is which is asked of the loader's own parser, not of a
+    grammar of this image's own -- `export`, leading whitespace and quoted
+    keys come free, and so does the case a line-at-a-time filter gets wrong
+    in the dangerous direction: a quoted operator value spanning several
+    lines whose continuation opens with `PLOW_AGENT_TOKEN=` is one binding of
+    the operator's name, and split into lines it reads as an owned one this
+    function would then delete.
+
+    A cloud tenant's home holds nothing else in this file, so dropping the
+    owned names and appending API_SERVER_KEY is indistinguishable from the
+    truncating rewrite this function used to do. The Docker fleet managed by
+    agent-mgr is the other consumer of this image, and there the same file IS
+    the agent's configuration store -- its Plow Chat, Domo, dashboard and
+    timezone keys, whatever its own tooling put there. None of those names
+    are ones this boot owns, so they are carried across untouched --
+    unparsed and unreformatted, because a rewrite that "tidies" an operator's
+    file on the way past is a second version of the same bug.
+
+    Position is not preserved for API_SERVER_KEY, and does not need to be:
+    every existing assignment of it is dropped before one is appended, so the
+    file never holds more than one regardless of where a reader would look.
+
+    Written rather than left missing when no dotenv exists at all, because the
+    runtime seeds a 535-name example into any home it finds without one.
 
     Write a new inode and rename it into place. Besides keeping the prior file
     intact on failure, this avoids Linux protected_regular refusing O_CREAT on
@@ -467,14 +516,28 @@ def own_home_dotenv(api_server_key: str) -> None:
     try:
         if os.path.lexists(HOME_DOTENV) and not stat.S_ISREG(os.lstat(HOME_DOTENV).st_mode):
             raise OSError("existing path is not a regular file")
+        try:
+            # utf-8-sig is the encoding the loader opens this file with
+            # (`hermes_cli.env_loader`), so a leading byte-order mark is gone
+            # before the parser sees it here exactly as it is there.
+            with open(HOME_DOTENV, encoding="utf-8-sig") as handle:
+                bindings = list(parse_stream(handle))
+        except FileNotFoundError:
+            bindings = []
         descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
         park(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
+    # `original.string` is the binding's own text, spans and all; a comment or
+    # a blank run comes back under a null key and is carried across with it.
+    kept = [b.original.string for b in bindings if b.key not in DOTENV_OWNED_NAMES]
+    if kept and not kept[-1].endswith(("\n", "\r")):
+        kept.append("\n")
+    kept.append(f"API_SERVER_KEY={api_server_key}\n")
     try:
         with os.fdopen(descriptor, "w") as handle:
             os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)
             os.fchmod(handle.fileno(), 0o640)
-            handle.write(f"API_SERVER_KEY={api_server_key}\n")
+            handle.writelines(kept)
         os.replace(temporary, HOME_DOTENV)
     except BaseException:
         try:

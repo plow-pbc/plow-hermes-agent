@@ -147,11 +147,15 @@ RUN chown -R 10000:10000 /var/lib/hermes \
  && install -d -m 0755 /usr/local/lib/plow
 
 # `plow-init` declares its credential file and Plow's answer as models rather
-# than parsing either by hand. pydantic, python-dotenv and PyYAML are already
-# in the runtime's environment at the versions its lock pins; this adds the one
-# package that is not, with --no-deps so the install cannot move any of them.
+# than parsing either by hand, and reads the home's dotenv with the runtime's
+# own parser rather than a grammar of its own. pydantic, python-dotenv and
+# PyYAML are already in the runtime's environment at the versions its lock
+# pins; this adds the one package that is not, with --no-deps so the install
+# cannot move any of them. The import below is the one plow-init makes, run
+# against the interpreter its s6 oneshot runs under -- a boot that cannot
+# import these starts nothing, so it fails the build instead.
 RUN set -eu; \
-    /opt/hermes/.venv/bin/python -c 'import pydantic, dotenv, yaml'; \
+    /opt/hermes/.venv/bin/python -c 'import pydantic, dotenv.parser, yaml'; \
     uv pip install --python /opt/hermes/.venv/bin/python --no-deps pydantic-settings==2.14.2; \
     /opt/hermes/.venv/bin/python -c 'import pydantic_settings'
 # A pristine config.yaml, out of the agent's reach: the copy cont-init seeds

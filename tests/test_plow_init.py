@@ -1,6 +1,6 @@
 """What `plow-init` decides, without booting anything.
 
-    uv run --with pydantic --with pydantic-settings --with pyyaml pytest
+    uv run --with pydantic --with pydantic-settings --with python-dotenv --with pyyaml pytest
 
 Covers the three decisions the image cannot afford to get wrong: which
 credential files it will read, what it does with each answer from Plow, and
@@ -346,6 +346,53 @@ def test_the_dotenv_replaces_an_existing_foreign_owned_file(tmp_path, monkeypatc
     monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
     plow_init.own_home_dotenv("new")
     assert dotenv.read_text() == "API_SERVER_KEY=new\n"
+
+
+@pytest.mark.parametrize(
+    "template",
+    ["{name}={value}", "export {name}={value}", "  {name}={value}", "'{name}'={value}", "\ufeff{name}={value}"],
+    ids=["plain", "export", "leading-whitespace", "quoted-key", "byte-order-mark"],
+)
+def test_unrelated_keys_survive_but_a_stale_identity_does_not(tmp_path, monkeypatch, template):
+    """Hermes loads this file OVER its process environment, so a persisted
+    PLOW_AGENT_TOKEN would win over the one this boot just authenticated --
+    a stale credential outliving its rotation, or a reused fleet home
+    answering as the previous tenant. That holds for every spelling Hermes'
+    own dotenv loader binds a name from -- plain, `export`-prefixed, leading
+    whitespace, a single-quoted key, or a leading byte-order mark its
+    utf-8-sig decode eats -- so this image has to recognise the name under
+    all of them, not just the plain form. An operator's own key survives
+    untouched in the same spelling (a mid-file BOM is not stripped and makes
+    a different name, which is exactly why it survives), a value holding `=`
+    and quotes round-trips unparsed, and so does a quoted value spanning
+    several lines whose continuation opens with an owned name -- one binding
+    of the operator's key, not an assignment of the runtime's. Position is
+    not asserted for API_SERVER_KEY: the merge drops every existing
+    assignment of it and appends one, so the file never holds more than one
+    regardless of where a reader would look."""
+    dotenv = tmp_path / ".env"
+    stale_token = template.format(name="PLOW_AGENT_TOKEN", value="stale-token")
+    operator_key = template.format(name="AGENT_TZ", value="America/Los_Angeles")
+    spanning = 'PLOW_CHAT_PROMPT="ask me\nPLOW_AGENT_TOKEN=is not a binding here\nabout it"'
+    dotenv.write_text(
+        f"{stale_token}\n"
+        "PLOW_API_BASE=https://api.plow.co\n"
+        "API_SERVER_KEY=old\n"
+        f"{operator_key}\n"
+        'PLOW_CHAT_FILTER=name="a=b" other=value\n'
+        f"{spanning}\n",
+        encoding="utf-8",
+    )
+    plow_init.HOME_DOTENV = str(dotenv)
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+    plow_init.own_home_dotenv("new")
+    assert dotenv.read_text(encoding="utf-8") == (
+        f"{operator_key}\n"
+        'PLOW_CHAT_FILTER=name="a=b" other=value\n'
+        f"{spanning}\n"
+        "API_SERVER_KEY=new\n"
+    )
 
 
 @pytest.mark.parametrize("entry", ["skills", "SOUL.md"])

@@ -451,35 +451,68 @@ def configure(identity: Identity, seed: dict) -> None:
 
 
 def own_home_dotenv(api_server_key: str) -> None:
-    """Make the home's dotenv agree with the environment, on the one name in it.
+    """Merge this boot's API_SERVER_KEY into the home's dotenv; keep every
+    other line exactly as it was found.
 
     The runtime writes its own API_SERVER_KEY there during cont-init, and it
     loads that file OVER its process environment -- so a key this image
-    published would lose to the one persisted in the home, and the per-boot key
-    would be decorative. Overwriting the file with ours settles it: both
-    sources say the same thing.
+    published would lose to the one persisted in the home, and the per-boot
+    key would be decorative. Setting it here settles that: both sources agree.
 
-    Written rather than emptied, because the runtime seeds a 535-name example
-    into any home it finds without a dotenv. And this one name only: the
-    tenant's credential is published to the environment and has no business in
-    a file the agent can read.
+    A cloud tenant's home holds nothing else in this file, so replacing its
+    one line is indistinguishable from the truncating rewrite this function
+    used to do. The Docker fleet managed by agent-mgr is the other consumer of
+    this image, and there the same file IS the agent's configuration store --
+    its token, its chat settings, its timezone, whatever its own tooling put
+    there. Truncating it to one line used to destroy all of that on every
+    boot. So every line that does not name API_SERVER_KEY is carried across
+    untouched, and only the line that does is replaced (or appended, if
+    absent) -- unparsed and unreformatted, because a rewrite that "tidies" an
+    operator's file on the way past is a second version of the same bug.
+
+    Written rather than left missing when no dotenv exists at all, because the
+    runtime seeds a 535-name example into any home it finds without one. And
+    this is still the only name this image ever adds: the tenant's credential
+    is published to the environment and has no business in a file the agent
+    can read. Keeping a key an operator already put there is not this image
+    publishing one, so a fleet home's other keys never gain PLOW_AGENT_TOKEN
+    or anything else here.
 
     Write a new inode and rename it into place. Besides keeping the prior file
     intact on failure, this avoids Linux protected_regular refusing O_CREAT on
     an existing agent-owned file in this shared directory. A symlink is still
     refused rather than silently replaced so a tampered home stops at boot.
     """
+    owned = "API_SERVER_KEY="
     try:
         if os.path.lexists(HOME_DOTENV) and not stat.S_ISREG(os.lstat(HOME_DOTENV).st_mode):
             raise OSError("existing path is not a regular file")
+        try:
+            with open(HOME_DOTENV) as handle:
+                lines = handle.read().splitlines()
+        except FileNotFoundError:
+            lines = []
         descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(HOME_DOTENV), prefix=".plow-env.")
     except OSError as error:
         park(f"{HOME_DOTENV} is not a regular file this image can write: {error}")
+    replaced = False
+    kept: list[str] = []
+    for line in lines:
+        if line.startswith(owned):
+            # A later line naming the same key would only shadow the first
+            # substitution, so it is dropped rather than kept as a duplicate.
+            if not replaced:
+                kept.append(f"{owned}{api_server_key}")
+                replaced = True
+        else:
+            kept.append(line)
+    if not replaced:
+        kept.append(f"{owned}{api_server_key}")
     try:
         with os.fdopen(descriptor, "w") as handle:
             os.fchown(handle.fileno(), 0, pwd.getpwnam("hermes").pw_gid)
             os.fchmod(handle.fileno(), 0o640)
-            handle.write(f"API_SERVER_KEY={api_server_key}\n")
+            handle.write("".join(f"{line}\n" for line in kept))
         os.replace(temporary, HOME_DOTENV)
     except BaseException:
         try:

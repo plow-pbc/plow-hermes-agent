@@ -112,9 +112,12 @@ generating a fresh `API_SERVER_KEY` on every boot.
 The tenant's credential is never written to disk inside the container. The
 loopback `API_SERVER_KEY` is the one exception, and only because it has to be:
 the runtime writes a key of its own into `$HERMES_HOME/.env` during cont-init
-and loads that file over its process environment, so `plow-init` overwrites
-that file with the key it just published — one name, `root:hermes 0640`. Both
-sources then agree, and the value is still regenerated on every boot.
+and loads that file over its process environment, so `plow-init` sets that one
+name to the key it just published, `root:hermes 0640`, and leaves every other
+line in the file exactly as it found it — nothing else lives there for a
+cloud tenant, but a bind-mounted fleet home can hold its own configuration in
+this same file and keeps it. Both sources then agree, and the value is still
+regenerated on every boot.
 
 ```json
 {

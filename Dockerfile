@@ -192,44 +192,22 @@ RUN chmod 0755 /etc/s6-overlay/scripts/plow-init.py
 # 10000, and binds the loopback port provisioning waits for.
 RUN rm -f /etc/cont-init.d/02-reconcile-profiles
 
-# /init must never exit on this platform. exe.dev unpacks the image into a VM
-# rootfs and boots its Cmd as PID 1, so an exiting /init is not a stopped
-# container -- it is `Attempted to kill init`, a panicked kernel pinning a full
-# vCPU with no sshd to log into. Powering off is no escape either: exe.dev has
-# no stopped state and reboots a halted guest straight back up. 2 exits; 1
-# warns and carries on, which is the only value that cannot pin a core.
+# 2 stops a failed boot by exiting /init. exe.dev boots this image's Cmd as PID
+# 1 in a microVM, where that is `Attempted to kill init` -- a panicked kernel
+# pinning a vCPU with no sshd. Wrapping PID 1 to catch the exit is not open
+# either: s6-overlay's /init execs s6-overlay-suexec, which refuses to run
+# unless it IS pid 1 (measured: exit 100 on every boot, healthy ones included).
 #
-# Wrapping PID 1 -- a supervisor that runs /init as a child and turns its exit
-# into something quieter -- does not work and was measured: s6-overlay's /init
-# execs s6-overlay-suexec, which refuses to run unless it IS pid 1
-# (`s6-overlay-suexec: fatal: can only run as pid 1`, exit 100 on every boot,
-# healthy ones included). Re-establishing a pid namespace needs privileges a
-# container does not have. So 1 it is.
-#
-# Fail-closed does not rest on either the exit code or this knob. hermes-gateway
-# and main-hermes declare plow-init a dependency and s6-rc starts neither until
-# that oneshot COMPLETES; plow-init parks on every failure, so it never
-# completes, so nothing serves.
-#
-# What 1 costs is that a failed cont-init script is carried past. Two answers,
-# by ownership: 00-plow-sanitize is ours and blocks on abort (2's blocking
-# without 2's exit, see the top of it), and for everything else -- inherited
-# scripts this image does not patch -- plow-init verifies the preconditions the
-# gateway actually depends on and parks if they are not there. A cont-init
-# failure in something the gateway does not depend on stays a warning, which is
-# the right answer: nothing it touched is in the path to serving anyone.
+# So 1, and the boot's one gate is plow-init: every service the owner can reach
+# depends on that oneshot, and it verifies what it needs rather than trusting an
+# earlier step to have established it. A cont-init failure it does not depend on
+# stays a warning, correctly -- nothing it touched can serve anyone.
 ENV S6_BEHAVIOUR_IF_STAGE2_FAILS=1
 
-# plow-init parks -- blocks forever -- on any failure, which for a warm-pool VM
-# (created with no credential by design) is its normal life. It is an s6-rc
-# oneshot under the top bundle, so it is part of the service set stage 2 brings
-# up and waits on, which is what puts it under this knob at all. A non-zero
-# value would call the parked oneshot a stage-2 failure.
-#
-# The s6-overlay this image carries (3.2.3.0) already defaults to 0, so this
-# changes nothing today. It is pinned so a base-image bump to a release with a
-# non-zero default cannot turn a parked oneshot into a stage-2 failure:
-# releases up to 3.1.6.2 defaulted to 5000.
+# plow-init parks on a refusal, so its oneshot never completes and stage 2 never
+# finishes. This image's s6-overlay (3.2.3.0) already defaults to 0; pinned so a
+# base bump to a release with a non-zero default (<= 3.1.6.2 was 5000) cannot
+# turn a parked oneshot into a failed boot.
 ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0
 
 # exe.dev unpacks this image into a VM rootfs and boots its Cmd as PID 1;

@@ -298,7 +298,12 @@ FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 # re-asserts root ownership on this file and does not touch its mode, so a
 # variant that ships it 0600 to uid 10000 ends up with an identity the agent
 # cannot read.
-COPY --chown=0:0 --chmod=0644 SOUL.md /var/lib/hermes/SOUL.md
+COPY --chown=0:0 SOUL.md /var/lib/hermes/SOUL.md
+# The mode in its own step: `COPY --chmod=` is BuildKit-only, and a stock
+# Docker still selects the legacy builder, where it fails the build outright
+# with "the --chmod option requires BuildKit". `life-assistant-hermes-agent`
+# sets the mode this way for the same reason.
+RUN chmod 0644 /var/lib/hermes/SOUL.md
 
 # ...or extend the base one instead:
 #   COPY --chown=10000:10000 persona.md /tmp/persona.md

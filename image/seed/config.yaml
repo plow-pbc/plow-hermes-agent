@@ -48,6 +48,18 @@ agent:
   # hermes-agent agent_init.py: `_agent_section.get("api_max_retries", 3)`.
   api_max_retries: 9
 
+# Hermes' cron drift guard (#44585) skips an unpinned job whenever the global
+# provider or model differs from the one snapshotted when the job was created,
+# and alerts once -- into the job's own delivery target, which for a job
+# registered from the CLI is nobody. Here only plow-init changes the provider,
+# on boot, from this seed and HERMES_PROVIDER/HERMES_MODEL: a change is a
+# deploy, not drift, and spend is capped by Plow. Left on, the fleet's move
+# onto this image (2026-09-06) silently stopped every cron job created under
+# the previous provider. Key name verified against hermes_cli/config.py:
+# `cron_config.get("model_drift_guard", True) is not False`.
+cron:
+  model_drift_guard: false
+
 # The relay's tools are listed directly, not behind Hermes' tool_search bridge.
 # By default Hermes hides every MCP tool behind tool_search / tool_describe /
 # tool_call, and the model then has to nest a tool's real arguments inside

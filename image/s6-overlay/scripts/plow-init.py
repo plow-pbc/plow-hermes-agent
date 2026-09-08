@@ -367,6 +367,7 @@ def configure(identity: Identity, seed: dict) -> None:
         ("mcp_servers", RELAY_SERVER): {**seed["mcp_servers"][RELAY_SERVER], "enabled": identity.mcp_url is not None},
         ("model", "provider"): provider,
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
+        ("cron", "model_drift_guard"): seed["cron"]["model_drift_guard"],
         ("display",): seed["display"],
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
     }

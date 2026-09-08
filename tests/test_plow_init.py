@@ -450,6 +450,7 @@ SEED = {
                     "theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
+    "cron": {"model_drift_guard": False},
     "display": {"busy_ack_enabled": False, "platforms": {"plow_chat": {"tool_progress": "off"}}},
     "tools": {"tool_search": {"enabled": "off"}},
 }
@@ -484,7 +485,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # configure() reconciles it on boot.
     monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
     config = tmp_path / "config.yaml"
-    stale = {**{k: v for k, v in SEED.items() if k != "tools"}, "agent": {"api_max_retries": 3},
+    stale = {**{k: v for k, v in SEED.items() if k not in ("tools", "cron")}, "agent": {"api_max_retries": 3},
              "mcp_servers": {"plow": {"enabled": True}, "theirs": SEED["mcp_servers"]["theirs"]},
              "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
                                     "model": "seeded/model", "models": {SEED["model"]["default"]: {}}},
@@ -497,6 +498,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert after["agent"]["api_max_retries"] == 9
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
+    assert after["cron"]["model_drift_guard"] is False
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
     # the agent dials -- an entry carrying it is one the match cannot find.

@@ -121,6 +121,14 @@ display:
     plow_chat:
       tool_progress: "off"
       long_running_notifications: false
+      # The third of _TIER_LOW's knobs, and the one that carries the model's
+      # own prose: without it the room reads every line of an errand's
+      # working-out ("Now selecting Credit/Debit Card", "Filling password via
+      # vault") before the answer. False is the default the plugin then
+      # raises to true while the credential is verbose -- so it has to be
+      # named here, because plow-init re-asserts this whole display block from
+      # the seed on every boot and a key absent here is a key dropped.
+      interim_assistant_messages: false
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

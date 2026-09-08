@@ -87,7 +87,15 @@ providers:
     models:
       anthropic/claude-sonnet-5: {}
 # Hermes announces every memory write, and that is noise to an owner who asked
-# one question over iMessage.
+# one question over iMessage -- but the plow_chat plugin already drops that
+# announcement, and every other prefixed diagnostic, unless the owner's
+# `verbose_output_enabled` preference is set (its `send`, on the
+# BACKGROUND_REVIEW / NO_REPLY / WORKING prefixes). Setting this to "off" here
+# suppressed it a second time, at the producer, where no preference can reach
+# it: `summarize_background_review_actions` returns [] for mode "off", so the
+# message the plugin's gate exists to gate was never created. Two owners of one
+# behaviour, and the static one upstream always won -- the dashboard toggle
+# could not turn it back on. Produce it; let the preference decide delivery.
 #
 # NOT set here: display.interim_assistant_messages. Hermes also delivers any
 # prose the model emits before or between tool calls as its own chat message,
@@ -103,7 +111,7 @@ providers:
 # prompt problem, and this key stays absent until something can suppress the
 # notes without suppressing the message they were written beside.
 display:
-  memory_notifications: "off"
+  memory_notifications: "on"
   # When a write_file or patch fails and nothing later writes that path,
   # Hermes appends a "⚠️ File-mutation verifier" footer to the reply —
   # container paths and a traceback, addressed to a developer reading a
@@ -129,10 +137,21 @@ display:
   # tool-progress bubbles and a "⏳ Working — N min" heartbeat every 3 minutes.
   # iMessage cannot edit or delete a message, so each one is permanent in the
   # thread.
+  #
+  # tool_progress stays off: the bubbles are the noisiest of the surfaces and
+  # Hermes edits and later deletes them by message id, which the plugin's
+  # delivery gate cannot honour for a message it dropped.
+  #
+  # long_running_notifications does NOT stay off, for the same reason
+  # memory_notifications no longer does. The plugin gates the heartbeat on
+  # `verbose_output_enabled` -- that is what hermes-plow-chat#60 added, one day
+  # before this key turned the heartbeat off at the producer and made that gate
+  # dead code. `_NOTIFY_INTERVAL` is None when this is false, so nothing is ever
+  # emitted for the gate to read. Produce it; let the preference decide.
   platforms:
     plow_chat:
       tool_progress: "off"
-      long_running_notifications: false
+      long_running_notifications: true
 # Hermes' 2200-char default is a budget for durable technique notes, and an
 # agent that also records outcomes ("the $1,500 transfer completed") loses them
 # to consolidation within a day or two — the one-line facts are what get dropped

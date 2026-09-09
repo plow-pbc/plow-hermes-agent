@@ -11,13 +11,8 @@ services:
       # ownership in, and the image copies the file into place as root itself.
       - ./plow-credentials:/var/lib/plow/credentials.host:ro
       # The agent's home, kept across `up`/`down` for its sessions and setup.
-      # A skill edit reaches a running agent on rebuild + restart -- the base
-      # runtime reconciles the bundled copy at /opt/hermes/skills into the
-      # home -- unless the agent has customised that skill, or deleted it.
-      # Two exceptions need `down -v`, as does a full reset: SOUL.md, shipped
-      # straight into the home with no bundled copy behind it, and
-      # google-workspace, whose home copy collides by name with the upstream
-      # base's own skill -- the sync calls that one the agent's and keeps it.
+      # `docker compose down -v` starts this agent fresh, and is what an edit
+      # to SOUL.md needs before the agent sees it.
       - agent-home:/var/lib/hermes
     # The agent checkpoints its session on SIGTERM and its supervisor allows
     # 30s for that, so Docker's own deadline has to sit outside that one.

@@ -220,7 +220,10 @@ itself is never written; a rotation is a rewrite of it and a restart, which
 the next boot copies into place.
 
 `compose.yml` here is the mount that does this; `plow-agents mint <line>`
-writes the two required keys and optional `AGENT_ID` into `./plow-credentials`.
+writes the two required keys and the `# plow-agent-uid:` comment into
+`./plow-credentials`, never `AGENT_ID`. This image reads that one from the
+credential file alone; a variant's index reporter takes it from the compose
+`environment` instead.
 
 ### The host's own hook
 
@@ -391,8 +394,18 @@ Any credential works: the image asks Plow who holds it, so point it at a Plow
 that will answer.
 
 ```sh
-plow-agents mint <line>        # ./plow-credentials, mode 600
-docker compose up --build -d   # compose.yml here; `logs -f agent` to watch
+plow-agents mint <line>
+docker compose up --build -d
+```
+
+Anywhere but production, write the file yourself — or mint against that Plow
+with `--api-base`, adding `--agent-api-base` when the container reaches it at
+an address you do not:
+
+```sh
+printf 'PLOW_API_BASE=https://plow.example\nPLOW_AGENT_TOKEN=<token>\n' > plow-credentials
+chmod 600 plow-credentials
+docker compose up --build -d
 ```
 
 ## Tests

@@ -399,8 +399,9 @@ docker compose up --build -d
 ```
 
 Anywhere but production, write the file yourself — or mint against that Plow
-with `--api-base`, adding `--agent-api-base` when the container reaches it at
-an address you do not:
+with `plow-agents --api-base https://plow.example mint <line>`, where the flag
+sits before the verb, adding `--agent-api-base` after it when the container
+reaches that Plow at an address you do not:
 
 ```sh
 printf 'PLOW_API_BASE=https://plow.example\nPLOW_AGENT_TOKEN=<token>\n' > plow-credentials

@@ -355,6 +355,34 @@ def test_the_dotenv_replaces_an_existing_foreign_owned_file(tmp_path, monkeypatc
     assert dotenv.read_text() == "API_SERVER_KEY=new\n"
 
 
+def test_own_home_dotenv_strips_the_legacy_credential_aliases(tmp_path, monkeypatch):
+    """A rotation must not leave the old token readable under its legacy name.
+
+    PLOW_CHAT_TOKEN is what an agent found and used after its value had been
+    revoked. The chat-directory names are not credentials and stay.
+    """
+    dotenv = tmp_path / ".env"
+    dotenv.write_text(
+        "PLOW_CHAT_TOKEN=revoked\n"
+        "PLOW_CHAT_BASE_URL=https://old.example\n"
+        "PLOW_CHAT_CHAT_UID=cht_keep\n"
+        "PLOW_CHAT_GROUP_UIDS=cht_g=Owners\n"
+        "HOSTEX_TOKEN=untouched\n"
+    )
+    plow_init.HOME_DOTENV = str(dotenv)
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+
+    plow_init.own_home_dotenv("a-key")
+
+    body = dotenv.read_text()
+    assert "PLOW_CHAT_TOKEN" not in body
+    assert "PLOW_CHAT_BASE_URL" not in body
+    assert "PLOW_CHAT_CHAT_UID=cht_keep" in body
+    assert "PLOW_CHAT_GROUP_UIDS=cht_g=Owners" in body
+    assert "HOSTEX_TOKEN=untouched" in body
+
+
 @pytest.mark.parametrize(
     "template",
     ["{name}={value}", "export {name}={value}", "  {name}={value}", "'{name}'={value}", "\ufeff{name}={value}"],

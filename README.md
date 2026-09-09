@@ -14,9 +14,9 @@ code of its own beyond the init below.
 There is no local mode: a developer's machine writes that same file and gets
 the same boot, which is what makes the one path worth checking.
 
-Running one is [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents)
-— a compose file, a credential, and any image that meets the contract below.
-Nothing in this repository is about running it.
+Running one is `compose.yml` here and a credential from
+[`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents): `plow-agents
+mint <line>`, then `docker compose up --build -d`.
 
 ## The repos
 
@@ -33,7 +33,7 @@ change if this fact changed?** One owner, one place.
 | [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the two seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
-| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | running any of these images on a machine of your own | an agent's persona or skills; a second copy of a plow CLI command |
+| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | minting, rotating and retiring the credential that runs any of these images on a machine of your own | the compose file each image repo ships; an agent's persona or skills; a second copy of a plow CLI command |
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
@@ -219,8 +219,8 @@ too, so the mount lands beside the drop-in instead, at
 itself is never written; a rotation is a rewrite of it and a restart, which
 the next boot copies into place.
 
-`plow-pbc/plow-agents` is the compose file that does this, and the tool that
-writes the two required keys and optional `AGENT_ID`.
+`compose.yml` here is the mount that does this; `plow-agents mint <line>`
+writes the two required keys and optional `AGENT_ID` into `./plow-credentials`.
 
 ### The host's own hook
 
@@ -391,13 +391,9 @@ Any credential works: the image asks Plow who holds it, so point it at a Plow
 that will answer.
 
 ```sh
-docker build -t plow-agent .
-printf 'PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN=<token>\n' > plow-credentials
-chmod 600 plow-credentials
-docker run --rm -v "$PWD/plow-credentials:/var/lib/plow/credentials.host:ro" plow-agent
+plow-agents mint <line>        # ./plow-credentials, mode 600
+docker compose up --build -d   # compose.yml here; `logs -f agent` to watch
 ```
-
-`plow-agents` is the compose file and the tool that mints that credential.
 
 ## Tests
 

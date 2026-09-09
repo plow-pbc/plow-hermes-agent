@@ -14,8 +14,10 @@ services:
       # A skill edit reaches a running agent on rebuild + restart -- the base
       # runtime reconciles the bundled copy at /opt/hermes/skills into the
       # home -- unless the agent has customised that skill, or deleted it.
-      # SOUL.md ships straight into the home with no bundled copy, so a change
-      # to it, like a full reset, needs `down -v`.
+      # Two exceptions need `down -v`, as does a full reset: SOUL.md, shipped
+      # straight into the home with no bundled copy behind it, and
+      # google-workspace, whose home copy collides by name with the upstream
+      # base's own skill -- the sync calls that one the agent's and keeps it.
       - agent-home:/var/lib/hermes
     # The agent checkpoints its session on SIGTERM and its supervisor allows
     # 30s for that, so Docker's own deadline has to sit outside that one.

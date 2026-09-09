@@ -118,8 +118,13 @@ boot publishes — the tenant's credential, its endpoint, its home channel, its
 relay URL — is dropped from the file rather than carried across, since a
 persisted copy of any of them would be a stale shadow that wins the same
 precedence fight: an old credential outliving its rotation, or a reused fleet
-home answering as the tenant before it. Everything else in the file — a
-bind-mounted fleet home's own configuration — is left exactly as it was
+home answering as the tenant before it. Two names this boot does *not* publish
+go with them — `PLOW_CHAT_TOKEN` and `PLOW_CHAT_BASE_URL`, the legacy spellings
+of that same credential and endpoint — because a rotation leaves the old value
+readable there under a name nothing reads on purpose, which is how an agent
+came to authenticate with a revoked token. The other `PLOW_CHAT_*` names are
+chat-directory data with live consumers, and stay. Everything else in the file
+— a bind-mounted fleet home's own configuration — is left exactly as it was
 found. Both sources then agree on `API_SERVER_KEY`, and the value is still
 regenerated on every boot.
 

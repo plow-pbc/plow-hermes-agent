@@ -370,7 +370,10 @@ def test_unrelated_keys_survive_but_a_stale_identity_does_not(tmp_path, monkeypa
     utf-8-sig decode eats -- so this image has to recognise the name under
     all of them, not just the plain form. An operator's own key survives
     untouched in the same spelling (a mid-file BOM is not stripped and makes
-    a different name, which is exactly why it survives), a value holding `=`
+    a different name, which is exactly why it survives). The same holds for
+    the credential's legacy spellings: PLOW_CHAT_TOKEN and PLOW_CHAT_BASE_URL
+    go, while PLOW_CHAT_CHAT_UID -- chat-directory data with live consumers,
+    wrong rather than revoked when stale -- stays. A value holding `=`
     and quotes round-trips unparsed, and so does a quoted value spanning
     several lines whose continuation opens with an owned name -- one binding
     of the operator's key, not an assignment of the runtime's. Position is
@@ -384,6 +387,9 @@ def test_unrelated_keys_survive_but_a_stale_identity_does_not(tmp_path, monkeypa
     dotenv.write_text(
         f"{stale_token}\n"
         "PLOW_API_BASE=https://api.plow.co\n"
+        "PLOW_CHAT_TOKEN=revoked\n"
+        "PLOW_CHAT_BASE_URL=https://old.example\n"
+        "PLOW_CHAT_CHAT_UID=cht_keep\n"
         "API_SERVER_KEY=old\n"
         f"{operator_key}\n"
         'PLOW_CHAT_FILTER=name="a=b" other=value\n'
@@ -395,6 +401,7 @@ def test_unrelated_keys_survive_but_a_stale_identity_does_not(tmp_path, monkeypa
     monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
     plow_init.own_home_dotenv("new")
     assert dotenv.read_text(encoding="utf-8") == (
+        "PLOW_CHAT_CHAT_UID=cht_keep\n"
         f"{operator_key}\n"
         'PLOW_CHAT_FILTER=name="a=b" other=value\n'
         f"{spanning}\n"

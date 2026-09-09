@@ -454,9 +454,19 @@ def configure(identity: Identity, seed: dict) -> None:
 # fight. That is not mere staleness: a rotated PLOW_AGENT_TOKEN or a fleet
 # home reused for a different tenant must not come back up answering on the
 # credential or endpoint this boot just replaced.
+#
+# The two PLOW_CHAT_* names are the legacy spellings of the same credential and
+# endpoint, and carry the same hazard under a different key: a rotation leaves
+# the old value here answering 401, in a file the agent reads, under a name
+# nothing in the runtime consumes. An agent found one and used it. The other
+# PLOW_CHAT_* names -- CHAT_UID, GROUP_UIDS, APPROVAL_GROUP -- are directory
+# data with live consumers, so a stale one is wrong rather than revoked; they
+# stay.
 DOTENV_OWNED_NAMES = frozenset({
     "PLOW_API_BASE",
     "PLOW_AGENT_TOKEN",
+    "PLOW_CHAT_BASE_URL",
+    "PLOW_CHAT_TOKEN",
     "PLOW_HOME_CHANNEL",
     "HERMES_CUSTOM_PLOW_API_KEY",
     "API_SERVER_KEY",

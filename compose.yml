@@ -1,0 +1,23 @@
+services:
+  agent:
+    # This repository is the base image, so this builds it rather than pulling
+    # one: about a minute from cold on a laptop, nearly all of it the upstream
+    # pull. That upstream is public and pulls anonymously, so a `403 Forbidden`
+    # on it is a stale `docker login` rather than an entitlement -- `docker
+    # logout` and build again.
+    build: .
+    volumes:
+      # `.host`, not the path the agent reads: a bind carries this machine's
+      # ownership in, and the image copies the file into place as root itself.
+      - ./plow-credentials:/var/lib/plow/credentials.host:ro
+      # The agent's home, kept across `up`/`down` for its sessions and setup.
+      # A skill edit reaches it on rebuild + restart via the gateway's
+      # reconcile; only SOUL.md (shipped straight into the home) or a full
+      # reset need `down -v`.
+      - agent-home:/var/lib/hermes
+    # The agent checkpoints its session on SIGTERM and its supervisor allows
+    # 30s for that, so Docker's own deadline has to sit outside that one.
+    stop_grace_period: 35s
+
+volumes:
+  agent-home:

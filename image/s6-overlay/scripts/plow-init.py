@@ -569,7 +569,8 @@ def compose_identity() -> None:
 
     A temp file in the home and os.replace(), so a SOUL.md the agent swapped
     for a symlink is replaced as a directory entry and never written through.
-    Root writes it; harden_home() then asserts what root left.
+    Root writes it at whatever mode mkstemp chose; harden_home() takes the
+    owner and the mode of what root left, through a held descriptor, next.
 
     Every step is inside the park, not just the read: an exception escaping
     here exits plow-init and panics the microVM, so a full disk or a variant
@@ -586,7 +587,6 @@ def compose_identity() -> None:
         descriptor, staged = tempfile.mkstemp(prefix=".SOUL.md.", dir=HOME_DIR)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(identity)
-        os.chmod(staged, 0o644)
         os.replace(staged, os.path.join(HOME_DIR, "SOUL.md"))
     except (OSError, UnicodeDecodeError) as error:
         park(f"the identity could not be composed from {SEED_SOUL} + {SEED_PERSONA}: {error}")

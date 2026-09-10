@@ -409,7 +409,10 @@ def test_unrelated_keys_survive_but_a_stale_identity_does_not(tmp_path, monkeypa
     )
 
 
-def _seed(tmp_path, monkeypatch, base="# Plow assistant\n\nbase rules\n", persona=None):
+BASE = "# Plow assistant\n\nbase rules\n"
+
+
+def _seed(tmp_path, monkeypatch, base=BASE, persona=None):
     seed = tmp_path / "plow-seed"
     seed.mkdir()
     (seed / "SOUL.md").write_text(base)
@@ -422,46 +425,42 @@ def _seed(tmp_path, monkeypatch, base="# Plow assistant\n\nbase rules\n", person
     monkeypatch.setattr(plow_init, "SEED_PERSONA", str(seed / "persona.md"))
     monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
     monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
-    monkeypatch.setattr(plow_init.os, "chown", lambda *a, **k: None)
     return home
 
 
-@pytest.mark.parametrize("entry", ["skills"])
-def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch, entry):
+def test_a_skills_directory_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch):
     """`os.chmod` follows a symlink even where the `os.chown` beside it does
     not, so root's mode change lands on whatever the agent pointed at."""
     home = _seed(tmp_path, monkeypatch)
     victim = tmp_path / "victim"
     victim.mkdir(mode=0o700)
-    replaced = home / entry
-    replaced.unlink() if replaced.is_file() else replaced.rmdir()
-    replaced.symlink_to(victim)
+    (home / "skills").rmdir()
+    (home / "skills").symlink_to(victim)
     with pytest.raises(Parked):
         plow_init.harden_home()
     assert victim.stat().st_mode & 0o7777 == 0o700
 
 
-def test_the_identity_is_the_base_followed_by_the_variant_persona(tmp_path, monkeypatch):
-    home = _seed(tmp_path, monkeypatch, persona="# Who you are\n\nvariant rules\n")
+@pytest.mark.parametrize(
+    "persona, stale, expected",
+    [
+        ("variant\n", None, BASE + "\nvariant\n"),
+        (None, None, BASE),
+        ("new\n", "old\n", BASE + "\nnew\n"),
+    ],
+    ids=["base+variant", "base-only", "replaces-stale-home"],
+)
+def test_identity_composition(tmp_path, monkeypatch, persona, stale, expected):
+    """The base persona, then the variant's if it ships one -- and whatever an
+    older image left in a volume home never shadows either
+    (life-assistant-hermes-agent#168)."""
+    home = _seed(tmp_path, monkeypatch, persona=persona)
+    if stale is not None:
+        (home / "SOUL.md").write_text(stale)
     plow_init.harden_home()
     soul = home / "SOUL.md"
-    assert soul.read_text() == "# Plow assistant\n\nbase rules\n\n# Who you are\n\nvariant rules\n"
+    assert soul.read_text() == expected
     assert stat.S_IMODE(soul.stat().st_mode) == 0o644
-
-
-def test_a_variant_without_a_persona_is_a_plain_base_agent(tmp_path, monkeypatch):
-    home = _seed(tmp_path, monkeypatch)
-    plow_init.harden_home()
-    assert (home / "SOUL.md").read_text() == "# Plow assistant\n\nbase rules\n"
-
-
-def test_a_populated_home_is_reconciled_on_every_boot(tmp_path, monkeypatch):
-    """A volume home seeded by an older image must not shadow the current one
-    (life-assistant-hermes-agent#168)."""
-    home = _seed(tmp_path, monkeypatch, persona="new persona\n")
-    (home / "SOUL.md").write_text("what an older image left here\n")
-    plow_init.harden_home()
-    assert (home / "SOUL.md").read_text() == "# Plow assistant\n\nbase rules\n\nnew persona\n"
 
 
 def test_a_soul_the_agent_turned_into_a_link_is_replaced_not_written_through(tmp_path, monkeypatch):

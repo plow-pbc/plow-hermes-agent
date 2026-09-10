@@ -160,6 +160,18 @@ RUN set -eu; \
     /opt/hermes/.venv/bin/python -c 'import pydantic, dotenv.parser, yaml'; \
     uv pip install --python /opt/hermes/.venv/bin/python --no-deps pydantic-settings==2.14.2; \
     /opt/hermes/.venv/bin/python -c 'import pydantic_settings'
+
+# Phone numbers are what a Plow agent hands people, not secrets. Upstream's
+# redactor masks every E.164 number in the agent's own replies, force=True, so
+# no config reaches it: "text this to +165****6415" reached a real prospect on
+# 2026-09-10. This turns off that one pass; every credential pattern still runs.
+# The assert re-proves both halves with the runtime's own interpreter, so an
+# upstream bump that moves the pass fails the build instead of re-masking.
+RUN set -eu; \
+    printf '\n_SIGNAL_PHONE_RE = re.compile(r"(?!)")  # plow: see Dockerfile\n' >> /opt/hermes/agent/redact.py; \
+    cd /opt/hermes && .venv/bin/python -c 'from agent.redact import redact_sensitive_text as r; \
+out = r("+16505550100 sk-ant-api03-" + "Ab3" * 14, force=True); \
+assert out.startswith("+16505550100 sk-ant...") and "Ab3Ab3" not in out, out'
 # A pristine config.yaml, out of the agent's reach: the copy cont-init seeds
 # into a home that has none. The home's own copy belongs to uid 10000.
 COPY --chmod=0644 image/seed/config.yaml /opt/hermes/plow-seed/config.yaml

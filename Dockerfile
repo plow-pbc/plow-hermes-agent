@@ -59,7 +59,11 @@ ENV HERMES_HOME=/var/lib/hermes \
 ENV S6_SERVICES_GRACETIME=30000
 
 # uid/gid 10000 (hermes) already exists in this base.
-COPY image/seed/ /var/lib/hermes/
+# The home's seed, minus the identity: SOUL.md is composed into the home on
+# every boot by plow-init from /opt/hermes/plow-seed (below), so the image ships
+# no copy inside the home for a populated volume to shadow.
+COPY image/seed/config.yaml /var/lib/hermes/config.yaml
+COPY image/seed/skills/ /var/lib/hermes/skills/
 
 # Staged from the plugin tarball, not tracked here — see the `plugin` stage.
 # Merges into the tree above rather than replacing it, so the tracked
@@ -111,13 +115,13 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 #
 # The sticky bit is what separates the two. With `t` set, uid 10000 may create
 # and remove its OWN entries here but cannot unlink or rename anyone else's --
-# so a root-owned SOUL.md sits in a writable directory and is still
-# unreplaceable. config.yaml is the agent's own -- the chat plugin rewrites it,
-# and `plow-init` edits it as the agent rather than as root -- so it is not
-# protected by this and is not meant to be. Without it, file modes alone are not enough: an agent
-# that cannot WRITE SOUL.md can still delete it and write its own in its place,
-# because unlink permission comes from the directory, not the file. That is the
-# hole this closes.
+# so the root-owned SOUL.md plow-init writes at boot sits in a writable
+# directory and is still unreplaceable. config.yaml is the agent's own -- the
+# chat plugin rewrites it, and `plow-init` edits it as the agent rather than
+# as root -- so it is not protected by this and is not meant to be. Without
+# it, file modes alone are not enough: an agent that cannot WRITE SOUL.md can
+# still delete it and write its own in its place, because unlink permission
+# comes from the directory, not the file. That is the hole this closes.
 #
 # skills/ gets the same mode, but NOT the same protection, and the difference
 # matters. `chown -R` above hands everything under skills/ to uid 10000; only
@@ -140,8 +144,6 @@ COPY --from=plugin /staged/plow_chat/ /opt/hermes/plugins/plow_chat/
 RUN chown -R 10000:10000 /var/lib/hermes \
  && chown root:hermes /var/lib/hermes /var/lib/hermes/skills \
  && chmod 3770 /var/lib/hermes /var/lib/hermes/skills \
- && chown root:root /var/lib/hermes/SOUL.md \
- && chmod 0644 /var/lib/hermes/SOUL.md \
  && chown 10000:10000 /var/lib/hermes/config.yaml \
  && chmod 0640 /var/lib/hermes/config.yaml \
  && install -d -m 0755 /usr/local/lib/plow
@@ -161,6 +163,9 @@ RUN set -eu; \
 # A pristine config.yaml, out of the agent's reach: the copy cont-init seeds
 # into a home that has none. The home's own copy belongs to uid 10000.
 COPY --chmod=0644 image/seed/config.yaml /opt/hermes/plow-seed/config.yaml
+# The base persona. A variant adds /opt/hermes/plow-seed/persona.md beside it;
+# plow-init writes the home's SOUL.md from the two on every boot.
+COPY --chmod=0644 image/seed/SOUL.md /opt/hermes/plow-seed/SOUL.md
 # Ahead of upstream's own cont-init, which seeds a config of its own into a
 # home that has none -- one with no chat platform and no provider in it.
 COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/

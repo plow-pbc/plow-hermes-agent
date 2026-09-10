@@ -50,6 +50,13 @@ RELAY_SERVER = "plow"
 HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
+# The identity, composed on every boot: the base persona this image ships,
+# then the variant's own, if it ships one. Composed rather than COPYed into the
+# home because a populated volume shadows the image layer forever, and because
+# a variant that replaced the file whole silently dropped every base rule
+# (plow-hermes-agent#66, life-assistant-hermes-agent#168).
+SEED_SOUL = "/opt/hermes/plow-seed/SOUL.md"
+SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
 HOST_CREDENTIALS = f"{CREDENTIALS}.host"
 
 
@@ -557,6 +564,34 @@ def own_home_dotenv(api_server_key: str) -> None:
         raise
 
 
+def compose_identity() -> None:
+    """Write $HOME/SOUL.md from the image's base persona plus the variant's.
+
+    A temp file in the home and os.replace(), so a SOUL.md the agent swapped
+    for a symlink is replaced as a directory entry and never written through.
+    Root writes it at whatever mode mkstemp chose; harden_home() takes the
+    owner and the mode of what root left, through a held descriptor, next.
+
+    Every step is inside the park, not just the read: an exception escaping
+    here exits plow-init and panics the microVM, so a full disk or a variant
+    that shipped its persona in some other encoding has to park like anything
+    else. The staged file is left where it fell -- the boot is over, nothing
+    starts, and it is a breadcrumb for whoever opens the shell.
+    """
+    try:
+        with open(SEED_SOUL, encoding="utf-8") as base:
+            identity = base.read()
+        if os.path.exists(SEED_PERSONA):
+            with open(SEED_PERSONA, encoding="utf-8") as persona:
+                identity += "\n" + persona.read()
+        descriptor, staged = tempfile.mkstemp(prefix=".SOUL.md.", dir=HOME_DIR)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(identity)
+        os.replace(staged, os.path.join(HOME_DIR, "SOUL.md"))
+    except (OSError, UnicodeDecodeError) as error:
+        park(f"the identity could not be composed from {SEED_SOUL} + {SEED_PERSONA}: {error}")
+
+
 def harden_home() -> None:
     """Put the home's ownership back, after the runtime has taken it.
 
@@ -567,7 +602,10 @@ def harden_home() -> None:
 
     At 0700 hermes:hermes the agent owns its own home, and owning the directory
     is what lets it unlink a root-owned SOUL.md whatever the file's mode says.
+    The identity is written fresh here first, from the image's seed, so what
+    follows is asserting root's own file rather than repairing the agent's.
     """
+    compose_identity()
     hermes = pwd.getpwnam("hermes")
 
     def hold(path: str, flags: int) -> int:

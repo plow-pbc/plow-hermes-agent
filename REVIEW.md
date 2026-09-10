@@ -28,6 +28,13 @@ Subtractive remedies outrank additive ones. `plow-init` is a oneshot every
 service depends on, so anything it refuses starts nothing — a refusal that is
 loud and specific is the design here, not a finding.
 
+- **`image/seed/SOUL.md` is a fleet prompt change.** It reaches every deployed
+  agent on its next pin bump. Block an edit that (a) states something
+  variant-specific — anything a persona.md in life-assistant, str, x-manager,
+  ph-replier or course-qa says belongs there, not here — or (b) restates a rule
+  `hermes-plugin-plow` already injects per turn (`LATCH_PROMPT`, `_DISCLOSURE`,
+  `platform_hint`): one owner per rule, and name which one.
+
 **Repo-specific contrast pairs:**
 
 | Base-image DON'T (suppress / flag-as-shape) | Base-image DO (real finding) |

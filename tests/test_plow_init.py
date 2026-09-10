@@ -409,41 +409,87 @@ def test_unrelated_keys_survive_but_a_stale_identity_does_not(tmp_path, monkeypa
     )
 
 
-@pytest.mark.parametrize("entry", ["skills", "SOUL.md"])
-def test_a_home_entry_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch, entry):
+BASE = "# Plow assistant\n\nbase rules\n"
+
+
+def _seed(tmp_path, monkeypatch, base=BASE, persona=None):
+    seed = tmp_path / "plow-seed"
+    seed.mkdir()
+    (seed / "SOUL.md").write_text(base)
+    if persona is not None:
+        (seed / "persona.md").write_text(persona)
+    home = tmp_path / "hermes"
+    (home / "skills").mkdir(parents=True)
+    monkeypatch.setattr(plow_init, "HOME_DIR", str(home))
+    monkeypatch.setattr(plow_init, "SEED_SOUL", str(seed / "SOUL.md"))
+    monkeypatch.setattr(plow_init, "SEED_PERSONA", str(seed / "persona.md"))
+    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+    return home
+
+
+def test_a_skills_directory_the_agent_replaced_with_a_link_is_refused(tmp_path, monkeypatch):
     """`os.chmod` follows a symlink even where the `os.chown` beside it does
     not, so root's mode change lands on whatever the agent pointed at."""
-    home = tmp_path / "home"
-    (home / "skills").mkdir(parents=True)
-    (home / "SOUL.md").write_text("identity\n")
+    home = _seed(tmp_path, monkeypatch)
     victim = tmp_path / "victim"
     victim.mkdir(mode=0o700)
-    replaced = home / entry
-    replaced.unlink() if replaced.is_file() else replaced.rmdir()
-    replaced.symlink_to(victim)
-    plow_init.HOME_DIR = str(home)
-    # Ownership needs root; the modes below are real, and they are the point.
-    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
-    for call in ("chown", "fchown"):
-        monkeypatch.setattr(plow_init.os, call, lambda *a, **k: None)
+    (home / "skills").rmdir()
+    (home / "skills").symlink_to(victim)
     with pytest.raises(Parked):
         plow_init.harden_home()
     assert victim.stat().st_mode & 0o7777 == 0o700
 
 
-def test_a_permissive_soul_is_taken_back_to_0644(tmp_path, monkeypatch):
-    """Ownership alone leaves a 0666 SOUL.md writable by the agent it is meant
-    to constrain, so the mode is asserted rather than inherited."""
-    home = tmp_path / "hermes"
-    (home / "skills").mkdir(parents=True)
-    soul = home / "SOUL.md"
-    soul.write_text("the identity\n")
-    soul.chmod(0o666)
-    monkeypatch.setattr(plow_init, "HOME_DIR", str(home))
-    monkeypatch.setattr(plow_init.pwd, "getpwnam", lambda _: types.SimpleNamespace(pw_uid=0, pw_gid=0))
-    monkeypatch.setattr(plow_init.os, "fchown", lambda *a, **k: None)
+@pytest.mark.parametrize(
+    "persona, stale, expected",
+    [
+        ("variant\n", None, BASE + "\nvariant\n"),
+        (None, None, BASE),
+        ("new\n", "old\n", BASE + "\nnew\n"),
+    ],
+    ids=["base+variant", "base-only", "replaces-stale-home"],
+)
+def test_identity_composition(tmp_path, monkeypatch, persona, stale, expected):
+    """The base persona, then the variant's if it ships one -- and whatever an
+    older image left in a volume home never shadows either
+    (life-assistant-hermes-agent#168)."""
+    home = _seed(tmp_path, monkeypatch, persona=persona)
+    if stale is not None:
+        (home / "SOUL.md").write_text(stale)
     plow_init.harden_home()
+    soul = home / "SOUL.md"
+    assert soul.read_text() == expected
     assert stat.S_IMODE(soul.stat().st_mode) == 0o644
+
+
+def test_a_soul_the_agent_turned_into_a_link_is_replaced_not_written_through(tmp_path, monkeypatch):
+    home = _seed(tmp_path, monkeypatch, persona="p\n")
+    victim = tmp_path / "victim"
+    victim.write_text("untouched\n")
+    (home / "SOUL.md").symlink_to(victim)
+    plow_init.harden_home()
+    assert victim.read_text() == "untouched\n"
+    assert not (home / "SOUL.md").is_symlink()
+    assert (home / "SOUL.md").read_text().endswith("\np\n")
+
+
+def test_a_base_image_without_its_persona_parks(tmp_path, monkeypatch, parking):
+    _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "SEED_SOUL", str(tmp_path / "missing" / "SOUL.md"))
+    with pytest.raises(Parked):
+        plow_init.harden_home()
+    assert "SOUL.md" in parking.read_text()
+
+
+def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, monkeypatch, parking):
+    """An exception escaping the composition exits plow-init and panics the
+    microVM, so a variant that shipped its persona in another encoding parks."""
+    _seed(tmp_path, monkeypatch)
+    (tmp_path / "plow-seed" / "persona.md").write_bytes(b"caf\xe9\n")
+    with pytest.raises(Parked):
+        plow_init.harden_home()
+    assert "could not be composed" in parking.read_text()
 
 
 SEED = {

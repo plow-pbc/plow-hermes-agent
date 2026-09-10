@@ -11,8 +11,9 @@ services:
       # ownership in, and the image copies the file into place as root itself.
       - ./plow-credentials:/var/lib/plow/credentials.host:ro
       # The agent's home, kept across `up`/`down` for its sessions and setup.
-      # `docker compose down -v` starts this agent fresh, and is what an edit
-      # to SOUL.md needs before the agent sees it.
+      # `docker compose down -v` starts this agent fresh. An edit to SOUL.md
+      # does not need it -- plow-init composes the identity into the home on
+      # every boot.
       - agent-home:/var/lib/hermes
     # The agent checkpoints its session on SIGTERM and its supervisor allows
     # 30s for that, so Docker's own deadline has to sit outside that one.

@@ -483,6 +483,16 @@ def test_a_base_image_without_its_persona_parks(tmp_path, monkeypatch, parking):
     assert "SOUL.md" in parking.read_text()
 
 
+def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, monkeypatch, parking):
+    """An exception escaping the composition exits plow-init and panics the
+    microVM, so a variant that shipped its persona in another encoding parks."""
+    _seed(tmp_path, monkeypatch)
+    (tmp_path / "plow-seed" / "persona.md").write_bytes(b"caf\xe9\n")
+    with pytest.raises(Parked):
+        plow_init.harden_home()
+    assert "could not be composed" in parking.read_text()
+
+
 SEED = {
     "model": {"provider": "plow", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},

@@ -570,20 +570,26 @@ def compose_identity() -> None:
     A temp file in the home and os.replace(), so a SOUL.md the agent swapped
     for a symlink is replaced as a directory entry and never written through.
     Root writes it; harden_home() then asserts what root left.
+
+    Every step is inside the park, not just the read: an exception escaping
+    here exits plow-init and panics the microVM, so a full disk or a variant
+    that shipped its persona in some other encoding has to park like anything
+    else. The staged file is left where it fell -- the boot is over, nothing
+    starts, and it is a breadcrumb for whoever opens the shell.
     """
     try:
         with open(SEED_SOUL, encoding="utf-8") as base:
             identity = base.read()
-    except OSError as error:
-        park(f"{SEED_SOUL} is not in this image: {error}")
-    if os.path.exists(SEED_PERSONA):
-        with open(SEED_PERSONA, encoding="utf-8") as persona:
-            identity += "\n" + persona.read()
-    descriptor, staged = tempfile.mkstemp(prefix=".SOUL.md.", dir=HOME_DIR)
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write(identity)
-    os.chmod(staged, 0o644)
-    os.replace(staged, os.path.join(HOME_DIR, "SOUL.md"))
+        if os.path.exists(SEED_PERSONA):
+            with open(SEED_PERSONA, encoding="utf-8") as persona:
+                identity += "\n" + persona.read()
+        descriptor, staged = tempfile.mkstemp(prefix=".SOUL.md.", dir=HOME_DIR)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(identity)
+        os.chmod(staged, 0o644)
+        os.replace(staged, os.path.join(HOME_DIR, "SOUL.md"))
+    except (OSError, UnicodeDecodeError) as error:
+        park(f"the identity could not be composed from {SEED_SOUL} + {SEED_PERSONA}: {error}")
 
 
 def harden_home() -> None:

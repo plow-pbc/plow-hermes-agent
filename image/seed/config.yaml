@@ -144,7 +144,7 @@ display:
   #
   # long_running_notifications does NOT stay off, for the same reason
   # memory_notifications no longer does. The plugin gates the heartbeat on
-  # `verbose_output_enabled` -- that is what hermes-plow-chat#60 added, one day
+  # `verbose_output_enabled` -- that is what hermes-plugin-plow#60 added, one day
   # before this key turned the heartbeat off at the producer and made that gate
   # dead code. `_NOTIFY_INTERVAL` is None when this is false, so nothing is ever
   # emitted for the gate to read. Produce it; let the preference decide.

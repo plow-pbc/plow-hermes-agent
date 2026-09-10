@@ -4,7 +4,7 @@
 # customer credentials.
 FROM nousresearch/hermes-agent@sha256:8f4e8677281eca188bc9d2fda90806646ba19941fce55fa8fda2d63112ff48a8 AS base
 
-# The plow_chat plugin's canonical home is plow-pbc/hermes-plow-chat; this
+# The plow_chat plugin's canonical home is plow-pbc/hermes-plugin-plow; this
 # repository vendors no copy, it pins one commit. Moving the plugin is a
 # one-line change to the default below. The repository is public, so the fetch
 # needs no credential.
@@ -24,7 +24,7 @@ RUN set -eu; \
       || { echo "PLOW_CHAT_PLUGIN_SHA is not a 40-character commit SHA" >&2; exit 1; }; \
     curl --fail-with-body --silent --show-error --location --retry 3 --retry-delay 2 \
       -o /tmp/plugin.tgz \
-      "https://api.github.com/repos/plow-pbc/hermes-plow-chat/tarball/$PLOW_CHAT_PLUGIN_SHA"; \
+      "https://api.github.com/repos/plow-pbc/hermes-plugin-plow/tarball/$PLOW_CHAT_PLUGIN_SHA"; \
     mkdir -p /staged/plow_chat /staged/seed-skills; \
     top="$(tar -tzf /tmp/plugin.tgz | cut -d/ -f1 | uniq)"; \
     tar -xzf /tmp/plugin.tgz -C /staged/plow_chat --strip-components=2 "$top/plow-chat-platform"; \

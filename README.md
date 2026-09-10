@@ -30,7 +30,7 @@ change if this fact changed?** One owner, one place.
 | [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) | the runtime: gateway, tool schema, sessions, MCP client | anything Plow-shaped |
 | [`srosro/hermes-agent`](https://github.com/srosro/hermes-agent) | staging for changes going upstream — upstream-fit only; a generic fix or feature Hermes itself would take | anything only Plow needs; that is the plugin or the base |
 | this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
-| [`plow-pbc/hermes-plow-chat`](https://github.com/plow-pbc/hermes-plow-chat) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the two seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
+| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the two seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | minting, rotating and retiring the credential that runs any of these images on a machine of your own | the compose file each image repo ships; an agent's persona or skills; a second copy of a plow CLI command |
@@ -49,7 +49,7 @@ workaround.
 **Not here:**
 
 - The per-turn prompt framing and the Plow tool descriptions — owned by the
-  `plow_chat` plugin in `hermes-plow-chat`; this repo carries only its pin. The
+  `plow_chat` plugin in `hermes-plugin-plow`; this repo carries only its pin. The
   base persona in `image/seed/SOUL.md` is this repo's.
 - A persona or a skill for one assistant — owned by that assistant's variant
   repo, which builds `FROM` this image.
@@ -63,7 +63,7 @@ workaround.
   plugin it describes come from one commit and move together on a pin bump:
   https://github.com/plow-pbc/plow-hermes-agent/pull/31
 - Violates — #21 (and its duplicate #22) applied to this repo's tracked copy of
-  `plow-invite/SKILL.md` the identical edit `hermes-plow-chat` had already made
+  `plow-invite/SKILL.md` the identical edit `hermes-plugin-plow` had already made
   in the canonical copy: two PRs for one text change, in the repo that does not
   own the text: https://github.com/plow-pbc/plow-hermes-agent/pull/21
 
@@ -346,7 +346,7 @@ tag.
 ## The plugin pin
 
 The `plow_chat` plugin lives in
-[plow-pbc/hermes-plow-chat](https://github.com/plow-pbc/hermes-plow-chat) and is
+[plow-pbc/hermes-plugin-plow](https://github.com/plow-pbc/hermes-plugin-plow) and is
 never vendored here. The Dockerfile pins one commit and fetches it at build
 time; the same ARG feeds the `co.plow.plow-chat-plugin.revision` label, so the
 plugin in the image and the plugin named by the image cannot drift apart.

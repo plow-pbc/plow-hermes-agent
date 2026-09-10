@@ -9,6 +9,9 @@ import pathlib
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOUL = (ROOT / "image" / "seed" / "SOUL.md").read_text()
+# Prose wraps; the contract is the words. Assert sentences against this so a
+# reflow that keeps the rule intact does not read as the rule going missing.
+SOUL_FLOW = " ".join(SOUL.split())
 DOCKERFILE = (ROOT / "Dockerfile").read_text()
 
 
@@ -16,6 +19,21 @@ def test_the_persona_does_not_claim_to_run_on_the_owners_machine():
     for false_claim in ("own private machine", "one agent on one machine"):
         assert false_claim not in SOUL, f"SOUL.md still says {false_claim!r}"
     assert "Plow Latch on their Mac" in SOUL
+
+
+def test_the_persona_separates_its_own_lines_from_the_owners_accounts():
+    """Voice follows the account a message leaves from, not the medium: an
+    agent has its own number and its own address, and it also reaches the
+    owner's mailbox and the owner's Messages. iMessage sits on both sides, so
+    a persona that names only the medium cannot tell the model which it is."""
+    assert "## Your own lines, and your owner's accounts" in SOUL
+    assert "what you send goes out under their name, in their voice" in SOUL_FLOW
+    for rule in (
+        "signed as yourself",
+        "Never send a message through your owner's channels as yourself",
+        "The medium does not decide this; the account does.",
+    ):
+        assert rule in SOUL_FLOW, f"SOUL.md no longer says {rule!r}"
 
 
 def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():

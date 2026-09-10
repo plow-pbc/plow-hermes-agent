@@ -74,7 +74,7 @@ carry `amd64` alone.
 
 | path | what it is |
 |---|---|
-| `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned), `skills/` |
+| `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned, composed at boot), `skills/` |
 | `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into the home, so the agent's phone line does not live in a directory the agent can write |
 | `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway seeds them into a home that lacks them and updates the ones the agent has not customised. A skill the agent deleted stays deleted — the runtime records that and honours it |
 | `/var/lib/plow/credentials` | not shipped — the host's drop-in, if there is one; see below |
@@ -274,9 +274,20 @@ same ~19k prompt.
 
 ## Identity
 
-Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image ships
-one, at `/var/lib/hermes/SOUL.md`, root-owned in a sticky home so a turn can
-neither rewrite nor unlink it. That protects what root owns and nothing else:
+Hermes reads `$HERMES_HOME/SOUL.md` as the agent's identity. This image does
+not ship that file; `plow-init` writes it on every boot from
+`/opt/hermes/plow-seed/SOUL.md` — the base persona, `image/seed/SOUL.md` in
+this repo — followed by `/opt/hermes/plow-seed/persona.md` when a variant ships
+one. Root-owned 0644 in a sticky home, so a turn can neither rewrite nor unlink
+it, and rewritten every boot so a populated volume never shadows a newer image.
+**The base persona reaches every deployed agent on its next base-pin bump.** It
+says only what is true of every Plow agent; a variant's `persona.md` says only
+what is specific to that agent; what has to be said per turn about the chat
+platform (Latch routing, group-room disclosure) belongs in `hermes-plugin-plow`,
+not here. One owner per rule: before adding a sentence to the base persona, grep
+the plugin's prompt constants for it.
+
+The sticky home protects what root owns and nothing else:
 `config.yaml` is handed to the agent on purpose — the chat plugin has to
 rewrite it — so the agent can delete it or put something else in its place, and
 `skills/` likewise. A **missing** `config.yaml` is seeded from the image's own
@@ -287,8 +298,7 @@ endpoint, model, provider entry and relay entry (the credential's variable name 
 seeded `display` value — on
 every boot, and touches nothing else, so whatever else the agent leaves at that
 path is its own to answer for. A deleted
-skill is the same — the runtime records that deletion and honours it. A variant replaces or extends `SOUL.md` in its own
-layer — see below; first boot re-asserts root ownership either way.
+skill is the same — the runtime records that deletion and honours it.
 
 `plow-init` is a oneshot and every service depends on it, so anything it
 refuses starts nothing — better a box that visibly never came up than one
@@ -302,22 +312,13 @@ starts from this image and adds nothing else:
 ```dockerfile
 FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
 
-# Identity — replace it outright. Root-owned and readable: first boot
-# re-asserts root ownership on this file and does not touch its mode, so a
-# variant that ships it 0600 to uid 10000 ends up with an identity the agent
-# cannot read.
-COPY --chown=0:0 SOUL.md /var/lib/hermes/SOUL.md
+# Identity: only what is specific to this agent. plow-init writes the home's
+# SOUL.md on every boot as the base persona followed by this file. Do not COPY
+# anything to /var/lib/hermes/SOUL.md — it is overwritten at boot.
+COPY --chown=0:0 persona.md /opt/hermes/plow-seed/persona.md
 # The mode in its own step: `COPY --chmod=` is BuildKit-only, and a stock
-# Docker still selects the legacy builder, where it fails the build outright
-# with "the --chmod option requires BuildKit". `life-assistant-hermes-agent`
-# sets the mode this way for the same reason.
-RUN chmod 0644 /var/lib/hermes/SOUL.md
-
-# ...or extend the base one instead:
-#   COPY --chown=10000:10000 persona.md /tmp/persona.md
-#   RUN printf '\n' >> /var/lib/hermes/SOUL.md \
-#    && cat /tmp/persona.md >> /var/lib/hermes/SOUL.md \
-#    && rm /tmp/persona.md
+# Docker still selects the legacy builder, where it fails the build outright.
+RUN chmod 0644 /opt/hermes/plow-seed/persona.md
 
 COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
 # Both copies, as the base image does. The second is what a home that starts
@@ -328,6 +329,9 @@ COPY --chown=10000:10000 skills/ /var/lib/hermes/skills/
 COPY --chown=10000:10000 skills/ /opt/hermes/skills/
 
 ```
+
+The composed identity exists only after boot, so to inspect a published
+variant read `docker run <tag> cat /opt/hermes/plow-seed/persona.md`, or boot it.
 
 A variant that needs a background job adds its own s6 longrun under
 `/etc/s6-overlay/s6-rc.d/`, with `plow-init` in its `dependencies.d/` and its

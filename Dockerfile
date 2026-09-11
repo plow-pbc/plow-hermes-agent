@@ -30,9 +30,11 @@ RUN set -eu; \
     tar -xzf /tmp/plugin.tgz -C /staged/plow_chat --strip-components=2 "$top/plow-chat-platform"; \
     test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml; \
     tar -xzf /tmp/plugin.tgz -C /staged/seed-skills --strip-components=2 \
-      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace"; \
+      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace" \
+      "$top/seed-skills/productivity/owners-mac"; \
     test -f /staged/seed-skills/growth/plow-invite/SKILL.md \
-      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md
+      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md \
+      -a -f /staged/seed-skills/productivity/owners-mac/SKILL.md
 
 FROM base
 

@@ -16,7 +16,6 @@ import os
 import pathlib
 import stat
 import sys
-import time
 import types
 import urllib.error
 import urllib.request
@@ -537,14 +536,14 @@ def test_the_first_user_profile_carries_the_owners_own_facts(tmp_path, monkeypat
     entries = text.split("\n§\n")
     assert text == "\n§\n".join(e.strip() for e in entries)  # the store's own round-trip, or it backs the file up as drift
     assert len(text) <= 1375  # user_char_limit is over the whole file
-    for fact in ("This server holds only", "other Plow lines", "Messages and mail", "Mac", time.strftime("%Y-%m-%d")):
+    for fact in ("This server holds only", "other Plow lines", "Messages and mail", "Mac"):
         assert fact in text
     if name_line:
         assert entries[0] == name_line
-        assert len(entries) == 3
+        assert len(entries) == 2
     else:
         assert "The owner is" not in text
-        assert len(entries) == 2
+        assert len(entries) == 1
     assert provider_key not in text  # the handle never reaches the prompt
 
 

@@ -92,9 +92,13 @@ _no_redirect_opener = urllib.request.build_opener(_RefuseRedirects)
 # ENTRY_DELIMITER "\n§\n", user_char_limit 1375 over the whole file), well
 # under budget. General to every Plow agent.
 USER_PROFILE = (
+    # Only facts true regardless of the home's age: an existing agent upgraded
+    # to this image has real prior sessions, so a "sessions begin today /
+    # nothing earlier" claim (keyed on USER.md absence) would be false for it.
+    # The line below already tells the model its empty store is not the whole
+    # picture -- check the Mac -- which is the actual goal.
     "This server holds only this agent's own work. The owner may have other Plow lines and earlier "
     "agents, whose work is in Messages and mail on their Mac, not in this agent's sessions or memory.",
-    "This agent's own sessions begin {today}; nothing earlier is in session_search.",
 )
 
 
@@ -747,7 +751,7 @@ def seed_user_profile(home: Chat) -> None:
     owner = next(p for p in home.participants if isinstance(p, MemberParticipant))
     name = _owner_display_name(owner)
     entries = [f"The owner is {name}."] if name else []
-    entries += [USER_PROFILE[0], USER_PROFILE[1].format(today=time.strftime("%Y-%m-%d"))]
+    entries += list(USER_PROFILE)
     content = "\n§\n".join(entries)
 
     memories = os.path.join(HOME_DIR, "memories")

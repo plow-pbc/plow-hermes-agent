@@ -500,35 +500,29 @@ def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, mo
 
 
 INSTRUCTIONS = {"jsonrpc": "2.0", "id": 1, "result": {"instructions": "Use these.", "protocolVersion": "2025-06-18"}}
-MARKER = "# Your owner's Mac, in Latch's own words"
-WRITTEN = f"{MARKER}\n\nUse these.\n"
-MANAGED_STALE = f"{MARKER}\n\nsome earlier Mac's routing\n"  # a marked file a prior boot (or tenant) wrote
-AGENT_FILE = "My own HERMES.md, hands off\n"                   # no marker -> the agent authored it
+WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
+PRIOR = "whatever a prior boot left here\n"  # HERMES.md is plow-init's, like SOUL.md; a prior file is overwritten
 
 
 @pytest.mark.parametrize(
     "mcp_url, answer, before, after",
     [
         ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), None, WRITTEN),
-        ("https://relay.invalid/mcp", f"event: message\ndata: {json.dumps(INSTRUCTIONS)}\n\n", MANAGED_STALE, WRITTEN),
-        ("https://relay.invalid/mcp", OSError("Mac is off"), MANAGED_STALE, None),
+        ("https://relay.invalid/mcp", f"event: message\ndata: {json.dumps(INSTRUCTIONS)}\n\n", PRIOR, WRITTEN),
+        ("https://relay.invalid/mcp", OSError("Mac is off"), PRIOR, None),
         ("https://relay.invalid/mcp", OSError("Mac is off"), None, None),
-        ("https://relay.invalid/mcp", json.dumps({"result": {}}), MANAGED_STALE, None),
-        (None, json.dumps(INSTRUCTIONS), MANAGED_STALE, None),
+        ("https://relay.invalid/mcp", json.dumps({"result": {}}), PRIOR, None),
+        (None, json.dumps(INSTRUCTIONS), PRIOR, None),
         (None, json.dumps(INSTRUCTIONS), None, None),
-        ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), AGENT_FILE, AGENT_FILE),
-        (None, json.dumps(INSTRUCTIONS), AGENT_FILE, AGENT_FILE),
-        ("https://relay.invalid/mcp", OSError("Mac is off"), AGENT_FILE, AGENT_FILE),
     ],
-    ids=["json", "sse-replaces-managed", "failed-fetch-removes-managed", "offline-first-boot",
-         "no-instructions-removes-managed", "no-mac-removes-managed", "no-mac-nothing",
-         "agent-file-survives-success", "agent-file-survives-off", "agent-file-survives-failed-fetch"],
+    ids=["writes-whole", "overwrites-any-prior", "failed-fetch-removes", "offline-first-boot",
+         "no-instructions-removes", "no-mac-removes", "no-mac-nothing"],
 )
 def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, answer, before, after):
     """Latch's `initialize.instructions` is the routing rule Hermes drops on
-    connect (#72). plow-init writes or removes only the marked file it manages,
-    never an agent-authored one; no Mac or a failed fetch clears a marked file
-    rather than leave a prior tenant's routing behind. The boot never stops."""
+    connect (#72). HERMES.md is plow-init's, like SOUL.md: a Mac writes it whole
+    (overwriting any prior file), and no Mac or a failed fetch removes it so no
+    stale routing survives. The boot never stops."""
     home = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
     requests = []
@@ -599,29 +593,15 @@ def test_a_stale_hermes_md_that_cannot_be_removed_does_not_stop_the_boot(tmp_pat
     error, not merely an absent file) logs and lets the boot continue."""
     home = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    (home / "HERMES.md").write_text(MANAGED_STALE)
+    (home / "HERMES.md").write_text(PRIOR)
 
     def denied(*_):
         raise PermissionError("denied")
 
     monkeypatch.setattr(plow_init.os, "unlink", denied)
     plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=None), "tok")
-    assert "could not remove stale" in capsys.readouterr().err
-    assert (home / "HERMES.md").read_text() == MANAGED_STALE  # unlink failed -> file untouched
-
-
-def test_a_non_utf8_agent_file_is_left_alone_not_crashed_on(tmp_path, monkeypatch):
-    """An agent may author a HERMES.md that is not even UTF-8; reading it for
-    the marker must fail safe (leave it), never crash the boot."""
-    home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    raw = b"\xff\xfe not utf-8, the agent's own\n"
-    (home / "HERMES.md").write_bytes(raw)
-    monkeypatch.setattr(plow_init._no_redirect_opener, "open",
-                        lambda request, timeout: contextlib.nullcontext(
-                            types.SimpleNamespace(read=lambda: json.dumps(INSTRUCTIONS).encode())))
-    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
-    assert (home / "HERMES.md").read_bytes() == raw  # untouched
+    assert "could not remove" in capsys.readouterr().err
+    assert (home / "HERMES.md").read_text() == PRIOR  # unlink failed -> file untouched
 
 
 def test_instructions_with_an_unpaired_surrogate_do_not_stop_the_boot(tmp_path, monkeypatch):
@@ -643,7 +623,7 @@ def test_a_relay_error_reason_phrase_cannot_forge_the_boot_log(tmp_path, monkeyp
     line; terminal-control bytes in it must be stripped before they do."""
     home = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    (home / "HERMES.md").write_text(MANAGED_STALE)
+    (home / "HERMES.md").write_text(PRIOR)
     esc, reason = chr(27), "boom" + chr(27) + "[2J" + chr(10) + "forged log line"  # ESC + embedded newline
     crafted = plow_init.urllib.error.HTTPError(
         "https://relay.invalid/mcp", 500, reason, http.client.HTTPMessage(), None)

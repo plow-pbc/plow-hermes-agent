@@ -62,11 +62,6 @@ HOST_CREDENTIALS = f"{CREDENTIALS}.host"
 # Latch's `initialize.instructions`, which Hermes drops on connect, written
 # where it reads them instead: the context tier, via `terminal.cwd` (#72).
 HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
-# The leading line every managed HERMES.md carries. It is the one thing that
-# says "plow-init wrote this and may replace or remove it": a file without it
-# was authored by the agent and is never this image's to touch, and a home
-# reused by a new tenant must not keep a prior tenant's Mac-supplied prompt.
-HERMES_MD_MARKER = "# Your owner's Mac, in Latch's own words"
 INSTRUCTIONS_TIMEOUT_S = 5
 
 
@@ -395,60 +390,33 @@ def _loggable(text: object) -> str:
     return "".join(c if c.isprintable() else " " for c in str(text))
 
 
-def _hermes_md_is_managed() -> bool:
-    """True when HERMES.md is one plow-init wrote (carries the marker) or is
-    absent -- either way it is ours to write or remove. A file whose first line
-    is not the marker was authored by the agent and must be left alone; one this
-    image cannot read is treated the same, to fail safe."""
-    try:
-        with open(HERMES_MD, encoding="utf-8") as handle:
-            return handle.readline().rstrip("\n") == HERMES_MD_MARKER
-    except FileNotFoundError:
-        return True
-    except (OSError, UnicodeError):
-        # Unreadable, or an agent-authored file that is not even UTF-8: not our
-        # marker, so not ours to touch.
-        return False
-
-
-def _clear_managed_hermes_md(why: str) -> None:
-    """Remove the HERMES.md plow-init wrote, so a Mac that is gone -- or a home
-    reused by a new tenant -- cannot keep a prior boot's Mac-supplied prompt in
-    context. Only a marked file is ours; an agent-authored one is untouched.
-    Non-fatal."""
-    if not _hermes_md_is_managed():
-        return
+def _remove_hermes_md(why: str) -> None:
+    """Remove HERMES.md so a boot without a Mac leaves no stale routing behind.
+    Non-fatal, like every step here."""
     try:
         os.unlink(HERMES_MD)
     except FileNotFoundError:
         return
     except OSError as error:
-        print(f"plow-init: could not remove stale {HERMES_MD}: {error}", file=sys.stderr)
+        print(f"plow-init: could not remove {HERMES_MD} ({_loggable(error)})", file=sys.stderr)
         return
-    print(f"plow-init: removed stale {HERMES_MD} -- {why}", file=sys.stderr)
+    print(f"plow-init: removed {HERMES_MD} -- {why}", file=sys.stderr)
 
 
 def write_latch_instructions(identity: Identity, token: str) -> None:
-    """Write $HOME/HERMES.md from Latch's instructions, root-owned like SOUL.md.
-    plow-init only ever writes or removes a file carrying its own marker: an
-    agent-authored HERMES.md is left untouched. No Mac, or a fetch that fails,
-    clears any marked file rather than leave a prior tenant's routing behind --
-    a home outlives its tenant. The boot goes on either way.
-
-    The marker check and the write/unlink that follows it need no lock: this
-    oneshot runs as root before the gateway (main-hermes declares it a
-    dependency), so the agent process that could author or replace this file
-    does not exist yet -- there is no second writer to race."""
+    """Write $HOME/HERMES.md from Latch's instructions, whole every boot -- a
+    plow-init-managed file, the way compose_identity() writes SOUL.md, not the
+    agent's to author. exe.dev unpacks a fresh rootfs per agent, so there is no
+    prior tenant's file to preserve; agents keep their own notes in MEMORY.md.
+    No Mac, or a fetch that fails, removes it so no stale routing survives. The
+    boot goes on either way."""
     if identity.mcp_url is None:
-        _clear_managed_hermes_md("the account has no Mac")
+        _remove_hermes_md("the account has no Mac")
         return
     try:
         instructions = fetch_latch_instructions(identity.mcp_url, token)
     except Exception as error:  # noqa: BLE001 -- a Mac that is off is the ordinary case
-        _clear_managed_hermes_md(f"the fetch failed ({_loggable(error)})")
-        return
-    if not _hermes_md_is_managed():
-        print(f"plow-init: {HERMES_MD} is agent-authored -- leaving it", file=sys.stderr)
+        _remove_hermes_md(f"the fetch failed ({_loggable(error)})")
         return
     staged = None
     try:
@@ -456,7 +424,7 @@ def write_latch_instructions(identity: Identity, token: str) -> None:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             os.fchown(handle.fileno(), 0, 0)
             os.fchmod(handle.fileno(), 0o644)
-            handle.write(f"{HERMES_MD_MARKER}\n\n{instructions}\n")
+            handle.write(f"# Your owner's Mac, in Latch's own words\n\n{instructions}\n")
         os.replace(staged, HERMES_MD)
     except (OSError, UnicodeError) as error:  # a surrogate in the fetched text encodes no better than a full disk
         if staged is not None:
@@ -464,7 +432,7 @@ def write_latch_instructions(identity: Identity, token: str) -> None:
                 os.unlink(staged)
             except OSError:
                 pass
-        print(f"plow-init: {HERMES_MD} not written ({error})", file=sys.stderr)
+        print(f"plow-init: {HERMES_MD} not written ({_loggable(error)})", file=sys.stderr)
         return
     print(f"plow-init: wrote {HERMES_MD} from Latch's instructions", file=sys.stderr)
 

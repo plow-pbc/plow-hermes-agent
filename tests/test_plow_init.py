@@ -506,9 +506,10 @@ WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
         ("https://relay.invalid/mcp", OSError("Mac is off"), "stale\n", "stale\n"),
         ("https://relay.invalid/mcp", OSError("Mac is off"), None, None),
         ("https://relay.invalid/mcp", json.dumps({"result": {}}), None, None),
+        ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), "unwritable", "unwritable"),
         (None, json.dumps(INSTRUCTIONS), None, None),
     ],
-    ids=["json", "sse-replaces-stale", "off-keeps-previous", "off-writes-nothing", "no-instructions", "no-mac"],
+    ids=["json", "sse-replaces-stale", "off-keeps-previous", "off-writes-nothing", "no-instructions", "write-fails", "no-mac"],
 )
 def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, answer, before, after):
     """Latch's `initialize.instructions` is the routing rule Hermes drops on
@@ -525,6 +526,11 @@ def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, ans
         return contextlib.nullcontext(types.SimpleNamespace(read=lambda: answer.encode()))
 
     monkeypatch.setattr(plow_init.urllib.request, "urlopen", urlopen)
+    if before == "unwritable":
+        def replace(*_):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(plow_init.os, "replace", replace)
     if before is not None:
         (home / "HERMES.md").write_text(before)
     plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=mcp_url), "tok")

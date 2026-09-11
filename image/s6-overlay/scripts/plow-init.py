@@ -370,6 +370,7 @@ def write_latch_instructions(identity: Identity, token: str) -> None:
     written, and the boot goes on either way."""
     if identity.mcp_url is None:
         return
+    staged = None
     try:
         instructions = fetch_latch_instructions(identity.mcp_url, token)
         descriptor, staged = tempfile.mkstemp(prefix=".HERMES.md.", dir=HOME_DIR)
@@ -379,8 +380,13 @@ def write_latch_instructions(identity: Identity, token: str) -> None:
             handle.write(f"# Your owner's Mac, in Latch's own words\n\n{instructions}\n")
         os.replace(staged, HERMES_MD)
     except Exception as error:  # noqa: BLE001 -- nothing here is worth not booting over
+        if staged is not None:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
         kept = "the previous one stays" if os.path.exists(HERMES_MD) else "none written"
-        print(f"plow-init: Latch's instructions not fetched ({error}); HERMES.md: {kept}", file=sys.stderr)
+        print(f"plow-init: Latch's instructions not written ({error}); HERMES.md: {kept}", file=sys.stderr)
         return
     print(f"plow-init: wrote {HERMES_MD} from Latch's instructions", file=sys.stderr)
 

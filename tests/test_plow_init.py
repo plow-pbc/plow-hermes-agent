@@ -273,26 +273,29 @@ def test_stage_two_neither_exits_nor_deadlines():
     assert "ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0" in dockerfile
 
 
-def chat(uid, status="active", roles=("owner",), agents=("self",)):
-    participants = [{"type": "agent", "relationship": rel} for rel in agents]
+def chat(uid, status="active", roles=("owner",), agents=("self",), line="ln_own"):
+    participants = [{"type": "agent", "relationship": rel, "line": {"uid": line}} for rel in agents]
     participants += [{"type": "member", "uid": f"m{n}", "role": r} for n, r in enumerate(roles)]
     return {"uid": uid, "status": status, "participants": participants}
 
 
 def identity(*chats, mcp_url=None):
-    return plow_init.Identity.model_validate({"chats": list(chats), "mcp_url": mcp_url})
+    return plow_init.Identity.model_validate({"line": {"uid": "ln_own"}, "chats": list(chats), "mcp_url": mcp_url})
 
 
-@pytest.mark.parametrize("missing", ["chats", "mcp_url"])
+@pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
 def test_an_answer_missing_a_key_is_not_an_identity(missing):
-    body = {"chats": [], "mcp_url": None}
+    body = {"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}
     del body[missing]
     with pytest.raises(Exception, match="[Vv]alidation"):
         plow_init.Identity.model_validate(body)
 
 
-def test_the_home_chat_is_the_owner_alone_with_this_agent():
-    assert plow_init.home_chat(identity(chat("cht_home"), chat("cht_group", roles=("owner", "member")))).uid == "cht_home"
+def test_the_home_chat_is_the_owner_alone_with_this_agent_on_its_own_line():
+    """A mailbox carrying this agent's persona is another line the credential
+    opens, and the owner alone with it reads as owner-plus-self too."""
+    chats = (chat("cht_home"), chat("cht_group", roles=("owner", "member")), chat("cht_mail", line="ln_mailbox"))
+    assert plow_init.home_chat(identity(*chats)).uid == "cht_home"
 
 
 @pytest.mark.parametrize(
@@ -304,6 +307,7 @@ def test_the_home_chat_is_the_owner_alone_with_this_agent():
         (chat("a"), chat("b")),                         # two candidates
         (chat("a", roles=("member",)),),                # nobody is the owner
         (chat("a", agents=("self", "peer")),),          # another assistant is here too
+        (chat("a", line="ln_mailbox"),),                # only the persona's mailbox, not this line
     ],
 )
 def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats, parking):

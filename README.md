@@ -144,9 +144,10 @@ regenerated on every boot.
 Every key is always present and a nullable one is null rather than omitted,
 which is not how Plow's general chat and line endpoints serialize — so the
 image requires all three and treats a body missing any of them as not an
-identity. `line` is this agent's own line; the image does not read it, and
-carries it only because it is part of that answer. `mcp_url` is the relay
-endpoint, or null when the tenant has none.
+identity. `line` is this agent's own line, and the home chat has to be on it:
+a mailbox carrying the agent's persona is another line the credential opens,
+and an owner alone with it looks like the home chat otherwise. `mcp_url` is
+the relay endpoint, or null when the tenant has none.
 
 Getting a token in the first place is `plow-agents`. First time on an account:
 

@@ -433,6 +433,10 @@ def write_latch_instructions(identity: Identity, token: str) -> None:
             except OSError:
                 pass
         print(f"plow-init: {HERMES_MD} not written ({_loggable(error)})", file=sys.stderr)
+        # Fail to absent, not stale: a prior HERMES.md left active would boot
+        # Hermes with stale Mac-routing. Absent is safe -- the plugin's manifest
+        # section is the primary routing lever -- and not worth panicking a VM.
+        _remove_hermes_md("the earlier write failed")
         return
     print(f"plow-init: wrote {HERMES_MD} from Latch's instructions", file=sys.stderr)
 

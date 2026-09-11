@@ -549,11 +549,15 @@ def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, ans
         assert stat.S_IMODE((home / "HERMES.md").stat().st_mode) == 0o644
 
 
-def test_a_hermes_md_write_that_fails_leaves_no_staged_file(tmp_path, monkeypatch):
-    """A write that fails after mkstemp leaves neither a staged temp nor a
-    half-written HERMES.md."""
+@pytest.mark.parametrize("before", [None, PRIOR], ids=["no-prior-file", "prior-file-removed"])
+def test_a_write_that_fails_leaves_no_hermes_md(tmp_path, monkeypatch, capsys, before):
+    """A write that fails after a successful fetch leaves neither a staged temp
+    nor a HERMES.md: a prior file is removed rather than left active with stale
+    Mac-routing, and the failure is logged whether or not a prior file existed."""
     home = _seed(tmp_path, monkeypatch)
     monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    if before is not None:
+        (home / "HERMES.md").write_text(before)
     monkeypatch.setattr(plow_init._no_redirect_opener, "open",
                         lambda request, timeout: contextlib.nullcontext(
                             types.SimpleNamespace(read=lambda: json.dumps(INSTRUCTIONS).encode())))
@@ -563,8 +567,9 @@ def test_a_hermes_md_write_that_fails_leaves_no_staged_file(tmp_path, monkeypatc
 
     monkeypatch.setattr(plow_init.os, "replace", replace)
     plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
-    assert not (home / "HERMES.md").exists()
+    assert not (home / "HERMES.md").exists()  # fell to absent, not a stale prior file
     assert not list(home.glob(".HERMES.md.*"))
+    assert "not written" in capsys.readouterr().err  # the failure is logged either way
 
 
 class _Relay302(urllib.request.BaseHandler):

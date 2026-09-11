@@ -14,6 +14,7 @@ will not answer for, or no answer at all, and nothing starts.
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import secrets
@@ -58,6 +59,10 @@ SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 SEED_SOUL = "/opt/hermes/plow-seed/SOUL.md"
 SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
 HOST_CREDENTIALS = f"{CREDENTIALS}.host"
+# Latch's `initialize.instructions`, which Hermes drops on connect, written
+# where it reads them instead: the context tier, via `terminal.cwd` (#72).
+HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
+INSTRUCTIONS_TIMEOUT_S = 5
 
 
 def park(reason: str) -> typing.NoReturn:
@@ -337,6 +342,49 @@ def ask_plow(credentials: Credentials) -> Identity:
     park(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
 
 
+def fetch_latch_instructions(url: str, token: str) -> str:
+    """One JSON-RPC `initialize` through the stateless relay, answered as
+    JSON or one SSE frame. Raises on anything but instructions."""
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "plow-init", "version": "0"}},
+    }).encode()
+    request = urllib.request.Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    })
+    with urllib.request.urlopen(request, timeout=INSTRUCTIONS_TIMEOUT_S) as response:
+        raw = response.read().decode()
+    if raw.lstrip().startswith(("event:", "data:")) or "\ndata:" in raw:
+        raw = "\n".join(line[5:].strip() for line in raw.splitlines() if line.startswith("data:"))
+    instructions = json.loads(raw)["result"].get("instructions")
+    if not instructions:
+        raise ValueError("initialize answered without instructions")
+    return instructions
+
+
+def write_latch_instructions(identity: Identity, token: str) -> None:
+    """Write $HOME/HERMES.md from Latch's instructions, root-owned like SOUL.md.
+    A Mac that is off is ordinary: the previous file stays, or none is
+    written, and the boot goes on either way."""
+    if identity.mcp_url is None:
+        return
+    try:
+        instructions = fetch_latch_instructions(identity.mcp_url, token)
+        descriptor, staged = tempfile.mkstemp(prefix=".HERMES.md.", dir=HOME_DIR)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchown(handle.fileno(), 0, 0)
+            os.fchmod(handle.fileno(), 0o644)
+            handle.write(f"# Your owner's Mac, in Latch's own words\n\n{instructions}\n")
+        os.replace(staged, HERMES_MD)
+    except Exception as error:  # noqa: BLE001 -- nothing here is worth not booting over
+        kept = "the previous one stays" if os.path.exists(HERMES_MD) else "none written"
+        print(f"plow-init: Latch's instructions not fetched ({error}); HERMES.md: {kept}", file=sys.stderr)
+        return
+    print(f"plow-init: wrote {HERMES_MD} from Latch's instructions", file=sys.stderr)
+
+
 def export(values: dict[str, str]) -> None:
     """Publish the tenant's values the way s6 reads them: one file per name.
 
@@ -359,7 +407,7 @@ def configure(identity: Identity, seed: dict) -> None:
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
     image knows how to guess. The provider entry, the display section, the
-    retry budget and the tool_search switch are the seed's on every boot:
+    retry budget, the tool_search switch and the working directory are the seed's on every boot:
     cont-init seeds only an absent config.yaml, so a home that predates a seed
     change would otherwise keep the old shape for good.
     """
@@ -377,6 +425,7 @@ def configure(identity: Identity, seed: dict) -> None:
         ("cron", "model_drift_guard"): seed["cron"]["model_drift_guard"],
         ("display",): seed["display"],
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
+        ("terminal", "cwd"): seed["terminal"]["cwd"],
     }
     # Prompt caching, declared here and nowhere else.
     #
@@ -654,6 +703,7 @@ def main() -> None:
     credentials = read_credentials()
     identity = ask_plow(credentials)
     home = home_chat(identity)
+    write_latch_instructions(identity, credentials.plow_agent_token)
     values = {
         "PLOW_API_BASE": credentials.plow_api_base,
         "PLOW_AGENT_TOKEN": credentials.plow_agent_token,

@@ -7,7 +7,9 @@ credential files it will read, what it does with each answer from Plow, and
 which settings it writes into the agent's config.
 """
 
+import contextlib
 import importlib.util
+import json
 import os
 import pathlib
 import stat
@@ -492,6 +494,52 @@ def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, mo
     assert "could not be composed" in parking.read_text()
 
 
+INSTRUCTIONS = {"jsonrpc": "2.0", "id": 1, "result": {"instructions": "Use these.", "protocolVersion": "2025-06-18"}}
+WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
+
+
+@pytest.mark.parametrize(
+    "mcp_url, answer, before, after",
+    [
+        ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), None, WRITTEN),
+        ("https://relay.invalid/mcp", f"event: message\ndata: {json.dumps(INSTRUCTIONS)}\n\n", "stale\n", WRITTEN),
+        ("https://relay.invalid/mcp", OSError("Mac is off"), "stale\n", "stale\n"),
+        ("https://relay.invalid/mcp", OSError("Mac is off"), None, None),
+        ("https://relay.invalid/mcp", json.dumps({"result": {}}), None, None),
+        (None, json.dumps(INSTRUCTIONS), None, None),
+    ],
+    ids=["json", "sse-replaces-stale", "off-keeps-previous", "off-writes-nothing", "no-instructions", "no-mac"],
+)
+def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, answer, before, after):
+    """Latch's `initialize.instructions` is the routing rule Hermes drops on
+    connect (#72). One request per boot, root-owned like SOUL.md; a Mac that
+    is off keeps whatever the last boot wrote and never stops the boot."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        if isinstance(answer, Exception):
+            raise answer
+        return contextlib.nullcontext(types.SimpleNamespace(read=lambda: answer.encode()))
+
+    monkeypatch.setattr(plow_init.urllib.request, "urlopen", urlopen)
+    if before is not None:
+        (home / "HERMES.md").write_text(before)
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=mcp_url), "tok")
+    written = (home / "HERMES.md").read_text() if (home / "HERMES.md").exists() else None
+    assert written == after
+    assert not list(home.glob(".HERMES.md.*"))
+    if mcp_url is None:
+        assert requests == []
+    else:
+        assert json.loads(requests[0].data)["method"] == "initialize"
+        assert requests[0].get_header("Authorization") == "Bearer tok"
+    if after == WRITTEN:
+        assert stat.S_IMODE((home / "HERMES.md").stat().st_mode) == 0o644
+
+
 SEED = {
     "model": {"provider": "plow", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
@@ -506,6 +554,7 @@ SEED = {
     "cron": {"model_drift_guard": False},
     "display": {"busy_ack_enabled": False, "platforms": {"plow_chat": {"tool_progress": "off"}}},
     "tools": {"tool_search": {"enabled": "off"}},
+    "terminal": {"backend": "local", "cwd": "/var/lib/hermes"},
 }
 
 
@@ -552,6 +601,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
     assert after["cron"]["model_drift_guard"] is False
+    assert after["terminal"]["cwd"] == "/var/lib/hermes"
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
     # the agent dials -- an entry carrying it is one the match cannot find.

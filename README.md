@@ -304,6 +304,17 @@ skill is the same — the runtime records that deletion and honours it.
 refuses starts nothing — better a box that visibly never came up than one
 answering with half its configuration.
 
+## Latch's instructions
+
+When the account has a Mac, `plow-init` asks the relay for its MCP `initialize`
+result once per boot and writes its `instructions` to `$HERMES_HOME/HERMES.md`,
+root-owned 0644 like `SOUL.md`. Hermes reads that file from `terminal.cwd` (the
+seed points it at the home) into the prompt's context tier, above every plugin
+section — where Latch's own routing rule has to sit for a fresh agent to read
+the owner's Mac instead of reporting its own empty stores
+([#72](https://github.com/plow-pbc/plow-hermes-agent/issues/72)). A Mac that is
+off keeps the previous file, or none; the fetch never stops the boot.
+
 ## Building a variant image
 
 A variant is a persona plus skills — a separate repository whose Dockerfile

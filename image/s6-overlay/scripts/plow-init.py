@@ -866,7 +866,8 @@ def own_session_reset() -> None:
 
     Everything else in the file is somebody else's. Another type's policy
     included: an operator who has said something about groups has said it on
-    purpose, and this merges beside it rather than through it.
+    purpose, and this merges beside it rather than through it. A
+    `reset_by_type` that is not a mapping raises rather than being replaced.
     """
     try:
         with open(GATEWAY_JSON) as handle:
@@ -878,12 +879,10 @@ def own_session_reset() -> None:
     if not isinstance(gateway, dict):
         park(f"{GATEWAY_JSON} holds {type(gateway).__name__}, not a JSON object")
 
-    by_type = gateway.get("reset_by_type")
-    if not isinstance(by_type, dict):
-        by_type = {}
+    by_type = gateway.setdefault("reset_by_type", {})
     if by_type.get(SESSION_RESET_CHAT_TYPE) == SESSION_RESET_POLICY:
         return
-    gateway["reset_by_type"] = {**by_type, SESSION_RESET_CHAT_TYPE: SESSION_RESET_POLICY}
+    by_type[SESSION_RESET_CHAT_TYPE] = SESSION_RESET_POLICY
 
     # A sibling then a rename, as `configure` writes config.yaml: a boot
     # interrupted mid-dump must not leave a half-written file behind, since

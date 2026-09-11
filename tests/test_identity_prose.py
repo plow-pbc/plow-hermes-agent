@@ -55,3 +55,17 @@ def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
         assert f"COPY --from=plugin /staged/seed-skills/ {skills_root}" in DOCKERFILE, (
             f"Dockerfile does not copy the staged seed skills into {skills_root}"
         )
+
+
+def test_the_persona_defers_sharing_to_the_chat_and_keeps_send_discipline():
+    """One owner of what may be shared: the chat platform's per-turn rule.
+    A persona that restates its own non-owner rule is how a trusted room
+    refused its own owner (hermes-plugin-plow#125)."""
+    assert "Do not disclose the owner's private data" not in SOUL_FLOW
+    assert "You keep no secrets in your replies" not in SOUL_FLOW
+    for rule in (
+        "Each turn's chat instructions say whether a request carries your owner's authority",
+        "Compose the whole message in the one command that sends it",
+        "never rephrase, split, or reroute a send to get past the prompt",
+    ):
+        assert rule in SOUL_FLOW, f"SOUL.md no longer says {rule!r}"

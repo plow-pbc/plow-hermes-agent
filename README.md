@@ -30,7 +30,7 @@ change if this fact changed?** One owner, one place.
 | [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) | the runtime: gateway, tool schema, sessions, MCP client | anything Plow-shaped |
 | [`srosro/hermes-agent`](https://github.com/srosro/hermes-agent) | staging for changes going upstream — upstream-fit only; a generic fix or feature Hermes itself would take | anything only Plow needs; that is the plugin or the base |
 | this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
-| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the two seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
+| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | minting, rotating and retiring the credential that runs any of these images on a machine of your own | the compose file each image repo ships; an agent's persona or skills; a second copy of a plow CLI command |
@@ -144,9 +144,10 @@ regenerated on every boot.
 Every key is always present and a nullable one is null rather than omitted,
 which is not how Plow's general chat and line endpoints serialize — so the
 image requires all three and treats a body missing any of them as not an
-identity. `line` is this agent's own line; the image does not read it, and
-carries it only because it is part of that answer. `mcp_url` is the relay
-endpoint, or null when the tenant has none.
+identity. `line` is this agent's own line, and the home chat has to be on it:
+a mailbox carrying the agent's persona is another line the credential opens,
+and an owner alone with it looks like the home chat otherwise. `mcp_url` is
+the relay endpoint, or null when the tenant has none.
 
 Getting a token in the first place is `plow-agents`. First time on an account:
 

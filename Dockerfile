@@ -8,7 +8,7 @@ FROM nousresearch/hermes-agent@sha256:8f4e8677281eca188bc9d2fda90806646ba19941fc
 # repository vendors no copy, it pins one commit. Moving the plugin is a
 # one-line change to the default below. The repository is public, so the fetch
 # needs no credential.
-ARG PLOW_CHAT_PLUGIN_SHA=2aea0c0c596f14d91fb97785e643fdbbf4e26dc2
+ARG PLOW_CHAT_PLUGIN_SHA=76c8500f83976c8e659ee967f6410462ee9a2c9b
 
 # Fetched in its own stage off the same pinned base — curl and tar are already
 # there, so this costs no extra upstream image and the fetch tooling never
@@ -30,9 +30,11 @@ RUN set -eu; \
     tar -xzf /tmp/plugin.tgz -C /staged/plow_chat --strip-components=2 "$top/plow-chat-platform"; \
     test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml; \
     tar -xzf /tmp/plugin.tgz -C /staged/seed-skills --strip-components=2 \
-      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace"; \
+      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace" \
+      "$top/seed-skills/productivity/owners-mac"; \
     test -f /staged/seed-skills/growth/plow-invite/SKILL.md \
-      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md
+      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md \
+      -a -f /staged/seed-skills/productivity/owners-mac/SKILL.md
 
 FROM base
 

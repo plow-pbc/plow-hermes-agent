@@ -37,10 +37,10 @@ def test_the_persona_separates_its_own_lines_from_the_owners_accounts():
 
 
 def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
-    """growth/plow-invite and productivity/google-workspace are the plugin's
-    own; a tracked copy here is a second place for them to drift out of sync
-    with the plugin they describe. The Dockerfile stages both from the same
-    tarball the plugin is built from, so a pin bump moves both together."""
+    """growth/plow-invite, productivity/google-workspace and productivity/owners-mac
+    are the plugin's own; a tracked copy here is a second place for them to drift
+    out of sync with the plugin they describe. The Dockerfile stages all three from
+    the same tarball the plugin is built from, so a pin bump moves them together."""
     for tracked in (
         ROOT / "image" / "seed" / "skills" / "growth" / "plow-invite",
         ROOT / "image" / "seed" / "skills" / "productivity" / "google-workspace",

@@ -14,6 +14,7 @@ will not answer for, or no answer at all, and nothing starts.
 
 from __future__ import annotations
 
+import json
 import os
 import pwd
 import secrets
@@ -58,6 +59,28 @@ SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 SEED_SOUL = "/opt/hermes/plow-seed/SOUL.md"
 SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
 HOST_CREDENTIALS = f"{CREDENTIALS}.host"
+# Latch's `initialize.instructions`, which Hermes drops on connect, written
+# where it reads them instead: the context tier, via `terminal.cwd` (#72).
+HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
+INSTRUCTIONS_TIMEOUT_S = 5
+
+
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse any 3xx on the authenticated initialize request. The relay is
+    transparent to the owner's Mac, so a compromised Mac answering with a
+    cross-host redirect would otherwise have urllib re-send the agent's
+    line-scoped bearer token to the redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        # A fixed message: newurl is Mac-controlled and can carry terminal-control
+        # bytes, and this exception ends up in the boot log verbatim.
+        raise urllib.error.HTTPError(req.full_url, code, "refusing redirect", headers, fp)
+
+
+# Latch's server never redirects, so refusing costs nothing and closes the
+# token-forwarding path. The plow_chat plugin's own relay client refuses the
+# same way; the two clients are kept in step by hand, not shared -- see the PR.
+_no_redirect_opener = urllib.request.build_opener(_RefuseRedirects)
 
 
 def park(reason: str) -> typing.NoReturn:
@@ -337,6 +360,87 @@ def ask_plow(credentials: Credentials) -> Identity:
     park(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
 
 
+def fetch_latch_instructions(url: str, token: str) -> str:
+    """One JSON-RPC `initialize` through the stateless relay, answered as
+    JSON or one SSE frame. Raises on anything but instructions."""
+    body = json.dumps({
+        "jsonrpc": "2.0", "id": 1, "method": "initialize",
+        "params": {"protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "plow-init", "version": "0"}},
+    }).encode()
+    request = urllib.request.Request(url, data=body, method="POST", headers={
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    })
+    with _no_redirect_opener.open(request, timeout=INSTRUCTIONS_TIMEOUT_S) as response:
+        raw = response.read().decode()
+    if raw.lstrip().startswith(("event:", "data:")) or "\ndata:" in raw:
+        raw = "\n".join(line[5:].strip() for line in raw.splitlines() if line.startswith("data:"))
+    instructions = json.loads(raw)["result"].get("instructions")
+    if not instructions:
+        raise ValueError("initialize answered without instructions")
+    return instructions
+
+
+def _loggable(text: object) -> str:
+    """A control-character-free rendering of relay-controlled text for the boot
+    log. An HTTP error's reason phrase (or a redirect's Location) is chosen by
+    the same untrusted party the relay reaches, so newlines and terminal-control
+    bytes in it must not forge or mutate log lines."""
+    return "".join(c if c.isprintable() else " " for c in str(text))
+
+
+def _remove_hermes_md(why: str) -> None:
+    """Remove HERMES.md so a boot without a Mac leaves no stale routing behind.
+    Non-fatal, like every step here."""
+    try:
+        os.unlink(HERMES_MD)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        print(f"plow-init: could not remove {HERMES_MD} ({_loggable(error)})", file=sys.stderr)
+        return
+    print(f"plow-init: removed {HERMES_MD} -- {why}", file=sys.stderr)
+
+
+def write_latch_instructions(identity: Identity, token: str) -> None:
+    """Write $HOME/HERMES.md from Latch's instructions, whole every boot -- a
+    plow-init-managed file, the way compose_identity() writes SOUL.md, not the
+    agent's to author. exe.dev unpacks a fresh rootfs per agent, so there is no
+    prior tenant's file to preserve; agents keep their own notes in MEMORY.md.
+    No Mac, or a fetch that fails, removes it so no stale routing survives. The
+    boot goes on either way."""
+    if identity.mcp_url is None:
+        _remove_hermes_md("the account has no Mac")
+        return
+    try:
+        instructions = fetch_latch_instructions(identity.mcp_url, token)
+    except Exception as error:  # noqa: BLE001 -- a Mac that is off is the ordinary case
+        _remove_hermes_md(f"the fetch failed ({_loggable(error)})")
+        return
+    staged = None
+    try:
+        descriptor, staged = tempfile.mkstemp(prefix=".HERMES.md.", dir=HOME_DIR)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchown(handle.fileno(), 0, 0)
+            os.fchmod(handle.fileno(), 0o644)
+            handle.write(f"# Your owner's Mac, in Latch's own words\n\n{instructions}\n")
+        os.replace(staged, HERMES_MD)
+    except (OSError, UnicodeError) as error:  # a surrogate in the fetched text encodes no better than a full disk
+        if staged is not None:
+            try:
+                os.unlink(staged)
+            except OSError:
+                pass
+        print(f"plow-init: {HERMES_MD} not written ({_loggable(error)})", file=sys.stderr)
+        # Fail to absent, not stale: a prior HERMES.md left active would boot
+        # Hermes with stale Mac-routing. Absent is safe -- the plugin's manifest
+        # section is the primary routing lever -- and not worth panicking a VM.
+        _remove_hermes_md("the earlier write failed")
+        return
+    print(f"plow-init: wrote {HERMES_MD} from Latch's instructions", file=sys.stderr)
+
+
 def export(values: dict[str, str]) -> None:
     """Publish the tenant's values the way s6 reads them: one file per name.
 
@@ -359,7 +463,7 @@ def configure(identity: Identity, seed: dict) -> None:
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
     image knows how to guess. The provider entry, the display section, the
-    retry budget and the tool_search switch are the seed's on every boot:
+    retry budget, the tool_search switch and the working directory are the seed's on every boot:
     cont-init seeds only an absent config.yaml, so a home that predates a seed
     change would otherwise keep the old shape for good.
     """
@@ -377,6 +481,7 @@ def configure(identity: Identity, seed: dict) -> None:
         ("cron", "model_drift_guard"): seed["cron"]["model_drift_guard"],
         ("display",): seed["display"],
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
+        ("terminal", "cwd"): seed["terminal"]["cwd"],
     }
     # Prompt caching, declared here and nowhere else.
     #
@@ -654,6 +759,7 @@ def main() -> None:
     credentials = read_credentials()
     identity = ask_plow(credentials)
     home = home_chat(identity)
+    write_latch_instructions(identity, credentials.plow_agent_token)
     values = {
         "PLOW_API_BASE": credentials.plow_api_base,
         "PLOW_AGENT_TOKEN": credentials.plow_agent_token,

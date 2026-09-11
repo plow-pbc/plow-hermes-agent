@@ -166,6 +166,9 @@ platforms:
 # on the box to hand a terminal to.
 terminal:
   backend: local
+  # Where Hermes looks for HERMES.md (plow-init writes it from Latch's
+  # instructions, #72); unset, it falls back to /opt/hermes and skips that.
+  cwd: /var/lib/hermes
 group_sessions_per_user: false
 onboarding:
   profile_build: "off"

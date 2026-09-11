@@ -361,6 +361,20 @@ already orders it after first boot — no credentials in `config.yaml`, no
 inbound listener, and pin this image by digest or by an immutable `base-<sha>`
 tag.
 
+## The first USER.md
+
+Hermes injects `$HERMES_HOME/memories/USER.md` into every prompt, and the model
+reads it as what it knows about its owner. On a boot where the file does not
+exist, `plow-init` stages a complete file and hard-links it into place -- so it
+only ever appears whole, and once one exists the link fails rather than
+overwrites: the owner's display name when Plow sends a real one (never the
+phone or email handle Plow falls back to), that other Plow lines and earlier
+agents left their work in Messages and mail on that Mac rather than in this
+agent's sessions ([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). Where the
+owner's world lives and how to reach it is Latch's own routing, carried once by
+`HERMES.md` (#74) rather than restated here. General wording, no owner history.
+An existing file is never touched, so a name change does not re-seed it.
+
 ## The plugin pin
 
 The `plow_chat` plugin lives in

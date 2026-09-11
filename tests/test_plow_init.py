@@ -273,9 +273,10 @@ def test_stage_two_neither_exits_nor_deadlines():
     assert "ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0" in dockerfile
 
 
-def chat(uid, status="active", roles=("owner",), agents=("self",), line="ln_own"):
+def chat(uid, status="active", roles=("owner",), agents=("self",), display_name=None, provider_key=None, line="ln_own"):
     participants = [{"type": "agent", "relationship": rel, "line": {"uid": line}} for rel in agents]
-    participants += [{"type": "member", "uid": f"m{n}", "role": r} for n, r in enumerate(roles)]
+    participants += [{"type": "member", "uid": f"m{n}", "role": r, "display_name": display_name,
+                      "provider_key": provider_key} for n, r in enumerate(roles)]
     return {"uid": uid, "status": status, "participants": participants}
 
 
@@ -503,6 +504,63 @@ def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, mo
     assert "could not be composed" in parking.read_text()
 
 
+@pytest.mark.parametrize(
+    "before, display_name, provider_key, name_line",
+    [
+        (None, "Ada", "+15555550123", "The owner is Ada."),
+        (None, None, "+15555550123", None),
+        (None, "+15555550123", "+15555550123", None),          # Plow's handle fallback is not a name
+        (None, "Ada\n§\nBob", "m0", "The owner is Ada § Bob."),  # a name cannot spell the delimiter
+        ("what the agent made of it", "Ada", "m0", None),      # an edited file is left alone
+    ],
+    ids=["named", "no-name", "handle-fallback-is-not-a-name", "name-cannot-spell-the-delimiter", "edited-since"],
+)
+def test_the_first_user_profile_carries_the_owners_own_facts(tmp_path, monkeypatch, before, display_name, provider_key, name_line):
+    """A fresh agent's USER.md is read as its own knowledge on every turn
+    (#73): the owner's real name (never the phone/email handle Plow falls back
+    to), that this server holds only its own work, and that other lines and
+    earlier agents left theirs on the Mac. Written
+    in the store's own shape, and never over one that exists. Where the world
+    lives is HERMES.md's job (#74), not restated here."""
+    home = _seed(tmp_path, monkeypatch)
+    user_md = home / "memories" / "USER.md"
+    if before is not None:
+        user_md.parent.mkdir()
+        user_md.write_text(before)
+    owner_chat = chat("cht_home", display_name=display_name, provider_key=provider_key)
+    plow_init.seed_user_profile(plow_init.home_chat(identity(owner_chat)))
+    text = user_md.read_text()
+    if before is not None:
+        assert text == before  # untouched
+        return
+    entries = text.split("\n§\n")
+    assert text == "\n§\n".join(e.strip() for e in entries)  # the store's own round-trip, or it backs the file up as drift
+    assert len(text) <= 1375  # user_char_limit is over the whole file
+    for fact in ("This server holds only", "other Plow lines", "Messages and mail", "Mac"):
+        assert fact in text
+    if name_line:
+        assert entries[0] == name_line
+        assert len(entries) == 2
+    else:
+        assert "The owner is" not in text
+        assert len(entries) == 1
+    assert provider_key not in text  # the handle never reaches the prompt
+
+
+def test_a_failed_user_profile_write_leaves_no_file(tmp_path, monkeypatch):
+    """The profile is published by hard-link only once its contents are
+    written, so a failure mid-publish leaves no partial USER.md a later boot
+    would then preserve."""
+    home = _seed(tmp_path, monkeypatch)
+
+    def disk_full(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(plow_init.os, "link", disk_full)
+    with pytest.raises(OSError):
+        plow_init.seed_user_profile(plow_init.home_chat(identity(chat("cht_home", display_name="Ada"))))
+    assert not (home / "memories" / "USER.md").exists()
+    assert not list((home / "memories").glob(".USER.md.*"))
 INSTRUCTIONS = {"jsonrpc": "2.0", "id": 1, "result": {"instructions": "Use these.", "protocolVersion": "2025-06-18"}}
 WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
 PRIOR = "whatever a prior boot left here\n"  # HERMES.md is plow-init's, like SOUL.md; a prior file is overwritten

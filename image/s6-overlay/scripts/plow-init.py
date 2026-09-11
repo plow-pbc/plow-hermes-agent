@@ -157,11 +157,16 @@ class Credentials(BaseSettings):
         return (dotenv_settings,)
 
 
+class LineRef(BaseModel):
+    uid: str
+
+
 class AgentParticipant(BaseModel):
     """One of Plow's own lines in a chat. Exactly one is this agent."""
 
     type: Literal["agent"]
     relationship: Literal["self", "peer"]
+    line: LineRef
 
 
 class MemberParticipant(BaseModel):
@@ -194,6 +199,7 @@ class Identity(BaseModel):
     new without being rebuilt first.
     """
 
+    line: LineRef
     chats: list[Chat]
     mcp_url: str | None
 
@@ -202,10 +208,13 @@ def home_chat(identity: Identity) -> Chat:
     """The one chat that is this agent talking to the person it belongs to.
 
     Plow does not name it, so the image picks it, by the same rule Plow uses:
-    an active chat holding exactly one member -- the owner -- and this agent.
-    Anything else in a chat makes it a group, or somebody else's. Zero matches
-    or several is not a thing to guess at: the home channel is where the agent
-    answers, and the wrong one is an agent talking to the wrong people.
+    an active chat on this agent's own line holding exactly one member -- the
+    owner -- and this agent. Anything else in a chat makes it a group, or
+    somebody else's. The line check is load-bearing: a mailbox carrying this
+    agent's persona is another line whose threads the credential also opens,
+    and an owner alone with the mailbox reads as owner-plus-self too. Zero
+    matches or several is not a thing to guess at: the home channel is where
+    the agent answers, and the wrong one is an agent talking to the wrong people.
     """
     def is_home(chat: Chat) -> bool:
         members = [p for p in chat.participants if isinstance(p, MemberParticipant)]
@@ -217,6 +226,7 @@ def home_chat(identity: Identity) -> Chat:
             chat.status == "active"
             and len(agents) == 1
             and agents[0].relationship == "self"
+            and agents[0].line.uid == identity.line.uid
             and len(members) == 1
             and members[0].role == "owner"
         )
@@ -226,7 +236,7 @@ def home_chat(identity: Identity) -> Chat:
         seen = "; ".join(
             f"{chat.uid} status={chat.status} "
             + ",".join(
-                p.relationship if isinstance(p, AgentParticipant) else p.role
+                f"{p.relationship}@{p.line.uid}" if isinstance(p, AgentParticipant) else p.role
                 for p in chat.participants
             )
             for chat in identity.chats

@@ -851,6 +851,57 @@ def test_an_unchanged_config_is_not_rewritten(tmp_path):
     assert config.stat().st_mtime_ns == before
 
 
+def session_reset(tmp_path, existing=None):
+    path = tmp_path / "gateway.json"
+    if existing is not None:
+        path.write_text(json.dumps(existing))
+    plow_init.GATEWAY_JSON = str(path)
+    plow_init.own_session_reset()
+    return json.loads(path.read_text())
+
+
+def test_a_dm_stops_carrying_last_months_instructions(tmp_path):
+    """A session that never ends reads its own history as current fact -- a
+    42-day-old DM re-ran an August credential recipe and reported the 401 to
+    its owner as a revoked token. DMs alone: the whole dict is asserted, so a
+    policy leaking onto groups (whose pending drafts a reset would strand)
+    fails here rather than in somebody's approval thread.
+    """
+    assert session_reset(tmp_path) == {"reset_by_type": {"dm": {"mode": "idle", "idle_minutes": 1440}}}
+
+
+def test_what_an_operator_put_in_that_file_survives_the_boot(tmp_path):
+    """Only the one chat type is this image's. A policy an operator wrote for
+    groups is a decision, not drift -- merged beside, never through."""
+    after = session_reset(tmp_path, {"max_concurrent_sessions": 4,
+                                     "reset_by_type": {"group": {"mode": "daily", "at_hour": 4}}})
+    assert after["max_concurrent_sessions"] == 4
+    assert after["reset_by_type"]["group"] == {"mode": "daily", "at_hour": 4}
+    assert after["reset_by_type"]["dm"] == plow_init.SESSION_RESET_POLICY
+
+
+def test_an_unchanged_policy_is_not_rewritten(tmp_path):
+    """Published by rename, like config.yaml: an interrupted dump must not
+    leave a half-written file the gateway then reads as its base layer."""
+    session_reset(tmp_path)
+    path = tmp_path / "gateway.json"
+    before = path.stat().st_mtime_ns
+    plow_init.own_session_reset()
+    assert path.stat().st_mtime_ns == before
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert not list(tmp_path.glob(".plow-gateway.*"))
+
+
+def test_a_gateway_json_this_image_cannot_read_parks(tmp_path, parking):
+    """Rewriting a file whose shape we cannot parse would drop whatever it
+    holds. Parking leaves it for a human with a shell."""
+    (tmp_path / "gateway.json").write_text("{ not json")
+    plow_init.GATEWAY_JSON = str(tmp_path / "gateway.json")
+    with pytest.raises(Parked):
+        plow_init.own_session_reset()
+    assert "not a file this image can rewrite" in parking.read_text()
+
+
 def test_upstream_main_hermes_waits_for_plow_init():
     dependency = SOURCE.parents[1] / "s6-rc.d/main-hermes/dependencies.d/plow-init"
     assert dependency.is_file()

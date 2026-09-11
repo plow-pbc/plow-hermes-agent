@@ -50,6 +50,11 @@ TIMEOUT_S = 10
 RELAY_SERVER = "plow"
 HOME_DIR = "/var/lib/hermes"
 HOME_DOTENV = "/var/lib/hermes/.env"
+# Where a per-chat-type reset policy can be said at all. The gateway reads
+# `reset_by_type` from this legacy file only -- config.yaml's `session_reset`
+# sets the single default for every session -- so the scoping below has no
+# expression in the seed, and this is the file that carries it.
+GATEWAY_JSON = "/var/lib/hermes/gateway.json"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 # The identity, composed on every boot: the base persona this image ships,
 # then the variant's own, if it ships one. Composed rather than COPYed into the
@@ -825,6 +830,78 @@ def harden_home() -> None:
     os.close(descriptor)
 
 
+# One chat type, one policy. A DM resets after a day with nothing said in it;
+# every other type keeps the gateway's own default of never.
+SESSION_RESET_CHAT_TYPE = "dm"
+SESSION_RESET_POLICY = {"mode": "idle", "idle_minutes": 1440}
+
+
+def own_session_reset() -> None:
+    """Stop a DM from carrying last month's instructions into this month.
+
+    Upstream stopped auto-resetting sessions in July 2026 because people
+    expected a conversation to persist. Persistence is right; unbounded
+    persistence is not. A chat that never ends keeps every recipe it ever
+    derived in front of the model while the environment underneath it moves,
+    and the model reads its own history as fact. Observed 2026-09-11 on a
+    42-day-old DM: asked a routine question, the agent re-ran a credential
+    recipe from August against the PLOW_CHAT_TOKEN alias this script has
+    stripped since #56, got a 401 for sending an empty bearer, and told its
+    owner the token was "still unauthorized" -- while the PLOW_AGENT_TOKEN
+    published two functions up answered the same call 200. Nothing was broken
+    except what the session remembered.
+
+    DMs only, and that scoping is the whole reason this is written here rather
+    than declared in the seed. A group carries work that outlives a quiet day:
+    the STR agent's owners' thread holds guest-reply drafts whose approval has
+    to send the mirrored wording unchanged, and drafts have no expiry, so a
+    reset between a draft and its approval strands it. `reset_by_type` says
+    "DMs only" in one line; the seed's `session_reset` cannot say it at all,
+    because the gateway reads per-type policy from this file alone.
+
+    Re-asserted every boot, like `configure`'s settings and for the same
+    reason: cont-init seeds only an ABSENT config.yaml, so a default shipped
+    in the seed reaches new homes and never the ones already running -- which
+    are exactly the homes with a months-old session in them.
+
+    Everything else in the file is somebody else's. Another type's policy
+    included: an operator who has said something about groups has said it on
+    purpose, and this merges beside it rather than through it. A
+    `reset_by_type` that is not a mapping raises rather than being replaced.
+    """
+    try:
+        with open(GATEWAY_JSON) as handle:
+            gateway = json.load(handle)
+    except FileNotFoundError:
+        gateway = {}
+    except (OSError, ValueError) as error:
+        park(f"{GATEWAY_JSON} is not a file this image can rewrite: {error}")
+    if not isinstance(gateway, dict):
+        park(f"{GATEWAY_JSON} holds {type(gateway).__name__}, not a JSON object")
+
+    by_type = gateway.setdefault("reset_by_type", {})
+    if by_type.get(SESSION_RESET_CHAT_TYPE) == SESSION_RESET_POLICY:
+        return
+    by_type[SESSION_RESET_CHAT_TYPE] = SESSION_RESET_POLICY
+
+    # A sibling then a rename, as `configure` writes config.yaml: a boot
+    # interrupted mid-dump must not leave a half-written file behind, since
+    # the gateway reads this one as the layer under config.yaml.
+    descriptor, temporary = tempfile.mkstemp(dir=os.path.dirname(GATEWAY_JSON), prefix=".plow-gateway.")
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            os.fchmod(handle.fileno(), 0o640)
+            json.dump(gateway, handle, indent=2)
+            handle.write("\n")
+        os.replace(temporary, GATEWAY_JSON)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
 def main() -> None:
     # The host's own setup hook, if this provider has one. Removed once run,
     # so a reboot cannot replay it.
@@ -873,6 +950,7 @@ def main() -> None:
     os.setuid(hermes.pw_uid)
     seed_user_profile(home)
     configure(identity, seed)
+    own_session_reset()
     print(f"plow-init: configured from {CREDENTIALS} as {home.uid}", file=sys.stderr)
 
 

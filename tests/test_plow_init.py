@@ -7,12 +7,19 @@ credential files it will read, what it does with each answer from Plow, and
 which settings it writes into the agent's config.
 """
 
+import contextlib
+import http.client
 import importlib.util
+import io
+import json
 import os
 import pathlib
 import stat
 import sys
 import types
+import urllib.error
+import urllib.request
+import urllib.response
 
 import pytest
 import yaml
@@ -492,6 +499,164 @@ def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, mo
     assert "could not be composed" in parking.read_text()
 
 
+INSTRUCTIONS = {"jsonrpc": "2.0", "id": 1, "result": {"instructions": "Use these.", "protocolVersion": "2025-06-18"}}
+WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
+PRIOR = "whatever a prior boot left here\n"  # HERMES.md is plow-init's, like SOUL.md; a prior file is overwritten
+
+
+@pytest.mark.parametrize(
+    "mcp_url, answer, before, after",
+    [
+        ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), None, WRITTEN),
+        ("https://relay.invalid/mcp", f"event: message\ndata: {json.dumps(INSTRUCTIONS)}\n\n", PRIOR, WRITTEN),
+        ("https://relay.invalid/mcp", OSError("Mac is off"), PRIOR, None),
+        ("https://relay.invalid/mcp", OSError("Mac is off"), None, None),
+        ("https://relay.invalid/mcp", json.dumps({"result": {}}), PRIOR, None),
+        (None, json.dumps(INSTRUCTIONS), PRIOR, None),
+        (None, json.dumps(INSTRUCTIONS), None, None),
+    ],
+    ids=["writes-whole", "overwrites-any-prior", "failed-fetch-removes", "offline-first-boot",
+         "no-instructions-removes", "no-mac-removes", "no-mac-nothing"],
+)
+def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, answer, before, after):
+    """Latch's `initialize.instructions` is the routing rule Hermes drops on
+    connect (#72). HERMES.md is plow-init's, like SOUL.md: a Mac writes it whole
+    (overwriting any prior file), and no Mac or a failed fetch removes it so no
+    stale routing survives. The boot never stops."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    requests = []
+
+    def urlopen(request, timeout):
+        requests.append(request)
+        if isinstance(answer, Exception):
+            raise answer
+        return contextlib.nullcontext(types.SimpleNamespace(read=lambda: answer.encode()))
+
+    monkeypatch.setattr(plow_init._no_redirect_opener, "open", urlopen)
+    if before is not None:
+        (home / "HERMES.md").write_text(before)
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=mcp_url), "tok")
+    written = (home / "HERMES.md").read_text() if (home / "HERMES.md").exists() else None
+    assert written == after
+    assert not list(home.glob(".HERMES.md.*"))
+    if mcp_url is None:
+        assert requests == []
+    else:
+        assert json.loads(requests[0].data)["method"] == "initialize"
+        assert requests[0].get_header("Authorization") == "Bearer tok"
+    if after == WRITTEN:
+        assert stat.S_IMODE((home / "HERMES.md").stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("before", [None, PRIOR], ids=["no-prior-file", "prior-file-removed"])
+def test_a_write_that_fails_leaves_no_hermes_md(tmp_path, monkeypatch, capsys, before):
+    """A write that fails after a successful fetch leaves neither a staged temp
+    nor a HERMES.md: a prior file is removed rather than left active with stale
+    Mac-routing, and the failure is logged whether or not a prior file existed."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    if before is not None:
+        (home / "HERMES.md").write_text(before)
+    monkeypatch.setattr(plow_init._no_redirect_opener, "open",
+                        lambda request, timeout: contextlib.nullcontext(
+                            types.SimpleNamespace(read=lambda: json.dumps(INSTRUCTIONS).encode())))
+
+    def replace(*_):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(plow_init.os, "replace", replace)
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
+    assert not (home / "HERMES.md").exists()  # fell to absent, not a stale prior file
+    assert not list(home.glob(".HERMES.md.*"))
+    assert "not written" in capsys.readouterr().err  # the failure is logged either way
+
+
+class _Relay302(urllib.request.BaseHandler):
+    """A relay that answers the POST with a cross-host 302, and records every
+    URL it is asked for -- so a test can prove the redirect target was never
+    requested (which is where the bearer token would have gone)."""
+
+    handler_order = 100  # ahead of the real HTTP(S) handlers, so no socket opens
+
+    def __init__(self):
+        self.requested = []
+
+    def _answer(self, req):
+        self.requested.append(req.full_url)
+        headers = http.client.HTTPMessage()
+        headers["Location"] = "https://attacker.invalid/steal"
+        response = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+        response.msg = "Found"
+        return response
+
+    http_open = https_open = _answer
+
+
+def test_a_stale_hermes_md_that_cannot_be_removed_does_not_stop_the_boot(tmp_path, monkeypatch, capsys):
+    """The no-Mac cleanup is non-fatal: an unlink that fails (a permission
+    error, not merely an absent file) logs and lets the boot continue."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    (home / "HERMES.md").write_text(PRIOR)
+
+    def denied(*_):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(plow_init.os, "unlink", denied)
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=None), "tok")
+    assert "could not remove" in capsys.readouterr().err
+    assert (home / "HERMES.md").read_text() == PRIOR  # unlink failed -> file untouched
+
+
+def test_instructions_with_an_unpaired_surrogate_do_not_stop_the_boot(tmp_path, monkeypatch):
+    """A lone surrogate in the fetched instructions cannot be written to a
+    UTF-8 file; that is a non-fatal write failure, not a boot crash."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    answer = '{"result": {"instructions": "\\ud800 lone surrogate"}}'  # json escapes it; loads to a real one
+    monkeypatch.setattr(plow_init._no_redirect_opener, "open",
+                        lambda request, timeout: contextlib.nullcontext(
+                            types.SimpleNamespace(read=lambda: answer.encode())))
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
+    assert not (home / "HERMES.md").exists()
+    assert not list(home.glob(".HERMES.md.*"))
+
+
+def test_a_relay_error_reason_phrase_cannot_forge_the_boot_log(tmp_path, monkeypatch, capsys):
+    """A hostile relay's HTTP error reason phrase reaches the fetch-failure log
+    line; terminal-control bytes in it must be stripped before they do."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    (home / "HERMES.md").write_text(PRIOR)
+    esc, reason = chr(27), "boom" + chr(27) + "[2J" + chr(10) + "forged log line"  # ESC + embedded newline
+    crafted = plow_init.urllib.error.HTTPError(
+        "https://relay.invalid/mcp", 500, reason, http.client.HTTPMessage(), None)
+
+    def raise_crafted(request, timeout):
+        raise crafted
+
+    monkeypatch.setattr(plow_init._no_redirect_opener, "open", raise_crafted)
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
+    err = capsys.readouterr().err
+    assert "the fetch failed" in err and "forged log line" in err  # the text survives, sanitized
+    assert esc not in err                # the real ESC byte was stripped
+    assert err.count(chr(10)) == 1       # one log line -- the embedded newline did not forge a second
+    assert not (home / "HERMES.md").exists()  # the stale managed file was still removed
+
+
+def test_a_relay_redirect_never_forwards_the_bearer_token(monkeypatch):
+    """A compromised Mac answering the transparent relay with a 302 must not
+    make plow-init re-send the line-scoped token to the redirect target."""
+    relay = _Relay302()
+    monkeypatch.setattr(plow_init, "_no_redirect_opener",
+                        urllib.request.build_opener(plow_init._RefuseRedirects, relay))
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        plow_init.fetch_latch_instructions("https://relay.invalid/mcp", "line-token")
+    assert relay.requested == ["https://relay.invalid/mcp"]
+    assert "attacker.invalid" not in str(excinfo.value)  # the Mac-controlled Location never reaches the log
+
+
 SEED = {
     "model": {"provider": "plow", "default": "seeded/model",
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
@@ -506,6 +671,7 @@ SEED = {
     "cron": {"model_drift_guard": False},
     "display": {"busy_ack_enabled": False, "platforms": {"plow_chat": {"tool_progress": "off"}}},
     "tools": {"tool_search": {"enabled": "off"}},
+    "terminal": {"backend": "local", "cwd": "/var/lib/hermes"},
 }
 
 
@@ -552,6 +718,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
     assert after["cron"]["model_drift_guard"] is False
+    assert after["terminal"]["cwd"] == "/var/lib/hermes"
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
     # the agent dials -- an entry carrying it is one the match cannot find.

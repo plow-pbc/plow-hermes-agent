@@ -294,7 +294,7 @@ rewrite it — so the agent can delete it or put something else in its place, an
 copy — cont-init writes one when the home has none, which is what stops the
 runtime seeding a default with no chat platform in it. A **damaged** one is not
 repaired: `plow-init` reads it only to re-assert what the image owns — Plow's
-endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch, the `tool_search` switch, and every
+endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch, the `tool_search` switch, the `terminal.cwd`, and every
 seeded `display` value — on
 every boot, and touches nothing else, so whatever else the agent leaves at that
 path is its own to answer for. A deleted
@@ -303,6 +303,19 @@ skill is the same — the runtime records that deletion and honours it.
 `plow-init` is a oneshot and every service depends on it, so anything it
 refuses starts nothing — better a box that visibly never came up than one
 answering with half its configuration.
+
+## Latch's instructions
+
+When the account has a Mac, `plow-init` asks the relay for its MCP `initialize`
+result once per boot and writes its `instructions` whole to
+`$HERMES_HOME/HERMES.md`, root-owned 0644 — a plow-init-managed file, the way
+`SOUL.md` is written every boot, not the agent's to author. Hermes reads it from
+`terminal.cwd` (the seed points it at the home) into the prompt's context tier,
+above every plugin section — where Latch's own routing rule has to sit for a
+fresh agent to read the owner's Mac instead of reporting its own empty stores
+([#72](https://github.com/plow-pbc/plow-hermes-agent/issues/72)). No Mac, or a
+fetch that fails, removes the file so no stale routing survives; the fetch never
+stops the boot.
 
 ## Building a variant image
 

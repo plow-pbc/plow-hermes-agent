@@ -518,8 +518,8 @@ def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, mo
 def test_the_first_user_profile_carries_the_owners_own_facts(tmp_path, monkeypatch, before, display_name, provider_key, name_line):
     """A fresh agent's USER.md is read as its own knowledge on every turn
     (#73): the owner's real name (never the phone/email handle Plow falls back
-    to), that this server holds only its own work, that other lines and earlier
-    agents left theirs on the Mac, and when this agent's record starts. Written
+    to), that this server holds only its own work, and that other lines and
+    earlier agents left theirs on the Mac. Written
     in the store's own shape, and never over one that exists. Where the world
     lives is HERMES.md's job (#74), not restated here."""
     home = _seed(tmp_path, monkeypatch)

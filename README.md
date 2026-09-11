@@ -370,8 +370,7 @@ only ever appears whole, and once one exists the link fails rather than
 overwrites: the owner's display name when Plow sends a real one (never the
 phone or email handle Plow falls back to), that other Plow lines and earlier
 agents left their work in Messages and mail on that Mac rather than in this
-agent's sessions, and the date this agent's own record begins
-([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). Where the
+agent's sessions ([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). Where the
 owner's world lives and how to reach it is Latch's own routing, carried once by
 `HERMES.md` (#74) rather than restated here. General wording, no owner history.
 An existing file is never touched, so a name change does not re-seed it.

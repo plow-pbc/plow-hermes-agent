@@ -169,6 +169,26 @@ terminal:
   # Where Hermes looks for HERMES.md (plow-init writes it from Latch's
   # instructions, #72); unset, it falls back to /opt/hermes and skips that.
   cwd: /var/lib/hermes
+# Upstream stopped auto-resetting sessions in July 2026 (mode "none"), because
+# users expected a conversation to persist. Persistence is right; unbounded
+# persistence is not. A chat that never ends keeps every operational recipe it
+# ever derived in front of the model, and the environment underneath it moves:
+# on 2026-09-11 an agent on a 42-day-old DM answered a question by re-running a
+# credential recipe from August — $PLOW_CHAT_TOKEN, the alias plow-init has
+# stripped since #56 — and told its owner the token was "still unauthorized",
+# while the PLOW_AGENT_TOKEN this image publishes answered the same call 200.
+#
+# A day of silence is the cheapest boundary that keeps the first property and
+# drops the second: a conversation resumed the same day is untouched, and no
+# group's pending work is cut off mid-thread the way a fixed 4am reset would cut
+# it. What survives is the durable half — memories/, SOUL.md, skills, and
+# session_search over the old transcript, which stays readable.
+#
+# New homes only. plow-init seeds config.yaml when it is ABSENT, so an agent
+# provisioned before this ships keeps mode "none" until its own config sets this.
+session_reset:
+  mode: idle
+  idle_minutes: 1440
 group_sessions_per_user: false
 onboarding:
   profile_build: "off"

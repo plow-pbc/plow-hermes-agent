@@ -65,6 +65,22 @@ HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
 INSTRUCTIONS_TIMEOUT_S = 5
 
 
+class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
+    """Refuse any 3xx on the authenticated initialize request. The relay is
+    transparent to the owner's Mac, so a compromised Mac answering with a
+    cross-host redirect would otherwise have urllib re-send the agent's
+    line-scoped bearer token to the redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"refusing redirect to {newurl}", headers, fp)
+
+
+# Latch's server never redirects, so refusing costs nothing and closes the
+# token-forwarding path. The plow_chat plugin's own relay client refuses the
+# same way; the two clients are kept in step by hand, not shared -- see the PR.
+_no_redirect_opener = urllib.request.build_opener(_RefuseRedirects)
+
+
 def park(reason: str) -> typing.NoReturn:
     """Refuse, loudly, without letting PID 1 exit.
 
@@ -354,7 +370,7 @@ def fetch_latch_instructions(url: str, token: str) -> str:
         "Content-Type": "application/json",
         "Accept": "application/json, text/event-stream",
     })
-    with urllib.request.urlopen(request, timeout=INSTRUCTIONS_TIMEOUT_S) as response:
+    with _no_redirect_opener.open(request, timeout=INSTRUCTIONS_TIMEOUT_S) as response:
         raw = response.read().decode()
     if raw.lstrip().startswith(("event:", "data:")) or "\ndata:" in raw:
         raw = "\n".join(line[5:].strip() for line in raw.splitlines() if line.startswith("data:"))
@@ -364,11 +380,26 @@ def fetch_latch_instructions(url: str, token: str) -> str:
     return instructions
 
 
+def _clear_hermes_md() -> None:
+    """Remove a root-managed HERMES.md a previous boot wrote, so a Mac that has
+    since been disconnected cannot leave stale routing behind a disabled relay.
+    Non-fatal: a home without one, or one this image cannot remove, just logs."""
+    try:
+        os.unlink(HERMES_MD)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        print(f"plow-init: could not remove stale {HERMES_MD}: {error}", file=sys.stderr)
+        return
+    print(f"plow-init: removed stale {HERMES_MD} -- the account has no Mac", file=sys.stderr)
+
+
 def write_latch_instructions(identity: Identity, token: str) -> None:
     """Write $HOME/HERMES.md from Latch's instructions, root-owned like SOUL.md.
-    A Mac that is off is ordinary: the previous file stays, or none is
-    written, and the boot goes on either way."""
+    No Mac on the account clears any stale file; a Mac that is merely off keeps
+    the previous file, or writes none. The boot goes on either way."""
     if identity.mcp_url is None:
+        _clear_hermes_md()
         return
     staged = None
     try:

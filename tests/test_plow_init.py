@@ -8,13 +8,18 @@ which settings it writes into the agent's config.
 """
 
 import contextlib
+import http.client
 import importlib.util
+import io
 import json
 import os
 import pathlib
 import stat
 import sys
 import types
+import urllib.error
+import urllib.request
+import urllib.response
 
 import pytest
 import yaml
@@ -508,8 +513,10 @@ WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
         ("https://relay.invalid/mcp", json.dumps({"result": {}}), None, None),
         ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), "unwritable", "unwritable"),
         (None, json.dumps(INSTRUCTIONS), None, None),
+        (None, json.dumps(INSTRUCTIONS), "stale\n", None),
     ],
-    ids=["json", "sse-replaces-stale", "off-keeps-previous", "off-writes-nothing", "no-instructions", "write-fails", "no-mac"],
+    ids=["json", "sse-replaces-stale", "off-keeps-previous", "offline-first-boot", "no-instructions",
+         "write-fails", "no-mac-nothing", "no-mac-removes-stale"],
 )
 def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, answer, before, after):
     """Latch's `initialize.instructions` is the routing rule Hermes drops on
@@ -525,7 +532,7 @@ def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, ans
             raise answer
         return contextlib.nullcontext(types.SimpleNamespace(read=lambda: answer.encode()))
 
-    monkeypatch.setattr(plow_init.urllib.request, "urlopen", urlopen)
+    monkeypatch.setattr(plow_init._no_redirect_opener, "open", urlopen)
     if before == "unwritable":
         def replace(*_):
             raise OSError("disk full")
@@ -544,6 +551,53 @@ def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, ans
         assert requests[0].get_header("Authorization") == "Bearer tok"
     if after == WRITTEN:
         assert stat.S_IMODE((home / "HERMES.md").stat().st_mode) == 0o644
+
+
+class _Relay302(urllib.request.BaseHandler):
+    """A relay that answers the POST with a cross-host 302, and records every
+    URL it is asked for -- so a test can prove the redirect target was never
+    requested (which is where the bearer token would have gone)."""
+
+    handler_order = 100  # ahead of the real HTTP(S) handlers, so no socket opens
+
+    def __init__(self):
+        self.requested = []
+
+    def _answer(self, req):
+        self.requested.append(req.full_url)
+        headers = http.client.HTTPMessage()
+        headers["Location"] = "https://attacker.invalid/steal"
+        response = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+        response.msg = "Found"
+        return response
+
+    http_open = https_open = _answer
+
+
+def test_a_stale_hermes_md_that_cannot_be_removed_does_not_stop_the_boot(tmp_path, monkeypatch, capsys):
+    """The no-Mac cleanup is non-fatal: an unlink that fails (a permission
+    error, not merely an absent file) logs and lets the boot continue."""
+    home = _seed(tmp_path, monkeypatch)
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
+    (home / "HERMES.md").write_text("stale\n")
+
+    def denied(*_):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(plow_init.os, "unlink", denied)
+    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=None), "tok")
+    assert "could not remove stale" in capsys.readouterr().err
+
+
+def test_a_relay_redirect_never_forwards_the_bearer_token(monkeypatch):
+    """A compromised Mac answering the transparent relay with a 302 must not
+    make plow-init re-send the line-scoped token to the redirect target."""
+    relay = _Relay302()
+    monkeypatch.setattr(plow_init, "_no_redirect_opener",
+                        urllib.request.build_opener(plow_init._RefuseRedirects, relay))
+    with pytest.raises(urllib.error.HTTPError):
+        plow_init.fetch_latch_instructions("https://relay.invalid/mcp", "line-token")
+    assert relay.requested == ["https://relay.invalid/mcp"]
 
 
 SEED = {

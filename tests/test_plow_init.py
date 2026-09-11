@@ -12,6 +12,7 @@ import os
 import pathlib
 import stat
 import sys
+import time
 import types
 
 import pytest
@@ -266,9 +267,9 @@ def test_stage_two_neither_exits_nor_deadlines():
     assert "ENV S6_CMD_WAIT_FOR_SERVICES_MAXTIME=0" in dockerfile
 
 
-def chat(uid, status="active", roles=("owner",), agents=("self",)):
+def chat(uid, status="active", roles=("owner",), agents=("self",), display_name=None):
     participants = [{"type": "agent", "relationship": rel} for rel in agents]
-    participants += [{"type": "member", "uid": f"m{n}", "role": r} for n, r in enumerate(roles)]
+    participants += [{"type": "member", "uid": f"m{n}", "role": r, "display_name": display_name} for n, r in enumerate(roles)]
     return {"uid": uid, "status": status, "participants": participants}
 
 
@@ -490,6 +491,37 @@ def test_a_persona_this_image_cannot_read_parks_rather_than_raising(tmp_path, mo
     with pytest.raises(Parked):
         plow_init.harden_home()
     assert "could not be composed" in parking.read_text()
+
+
+@pytest.mark.parametrize(
+    "before, display_name, opening",
+    [(None, "Ada", "The owner is Ada. Their world"), (None, None, "The owner's world"),
+     (None, "Ada\n§\nBob", "The owner is Ada § Bob. Their world"), ("what the agent made of it", "Ada", None)],
+    ids=["fresh-home", "fresh-home-unnamed", "name-cannot-spell-the-delimiter", "edited-since"],
+)
+def test_the_first_user_profile_says_where_the_owners_world_is(tmp_path, monkeypatch, before, display_name, opening):
+    """A fresh agent's USER.md is read as its own knowledge on every turn
+    (#73): the owner, that their world is on the Mac behind Latch, that other
+    lines and earlier agents left their work there, and when this agent's own
+    record starts. Written in the store's own shape, and never over the
+    store's."""
+    home = _seed(tmp_path, monkeypatch)
+    user_md = home / "memories" / "USER.md"
+    if before is not None:
+        user_md.parent.mkdir()
+        user_md.write_text(before)
+    plow_init.seed_user_profile(plow_init.home_chat(identity(chat("cht_home", display_name=display_name))))
+    text = user_md.read_text()
+    if before is not None:
+        assert text == before
+        return
+    assert text.startswith(opening)
+    entries = text.split("\n§\n")
+    assert len(entries) == 3
+    assert text == "\n§\n".join(e.strip() for e in entries)  # the store's own round-trip, or it backs the file up as drift
+    assert len(text) <= 1375  # user_char_limit is over the whole file
+    for fact in ("Mac", "plow_", "other Plow lines", "Messages and mail", time.strftime("%Y-%m-%d")):
+        assert fact in text
 
 
 SEED = {

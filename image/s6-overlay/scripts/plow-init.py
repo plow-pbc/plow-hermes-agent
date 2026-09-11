@@ -58,6 +58,19 @@ SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 SEED_SOUL = "/opt/hermes/plow-seed/SOUL.md"
 SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
 HOST_CREDENTIALS = f"{CREDENTIALS}.host"
+# The agent's first USER.md (#73). Hermes injects memories/USER.md into every
+# prompt and the model reads it as its own knowledge, so this is where a fresh
+# agent learns that "nothing in my stores" is not "nothing in the owner's
+# world". Entries in the memory store's own on-disk shape (hermes-agent
+# tools/memory_tool_store.py: ENTRY_DELIMITER "\n§\n", user_char_limit 1375
+# over the whole file), well under budget. General to every Plow agent.
+USER_PROFILE = (
+    "{whose} world -- messages, mail, calendar, contacts, files, browser -- lives on their Mac, reached through "
+    "Latch's plow_ tools. This server holds only this agent's own work.",
+    "The owner may have other Plow lines and earlier agents. What those did is in Messages and mail on the "
+    "owner's Mac, not in this agent's sessions or memory.",
+    "This agent's own sessions begin {today}; nothing earlier is in session_search.",
+)
 
 
 def park(reason: str) -> typing.NoReturn:
@@ -147,6 +160,7 @@ class MemberParticipant(BaseModel):
     type: Literal["member"]
     uid: str
     role: Literal["owner", "member"]
+    display_name: str | None = None
 
 
 # `Union[...]` rather than `A | B`: this is evaluated at import, and the
@@ -592,6 +606,26 @@ def compose_identity() -> None:
         park(f"the identity could not be composed from {SEED_SOUL} + {SEED_PERSONA}: {error}")
 
 
+def seed_user_profile(home: Chat) -> None:
+    """Write the first memories/USER.md, as the agent; never one that exists.
+    O_EXCL is the whole not-overwriting rule: the store is the agent's from
+    the first turn on, and a later boot leaves whatever it has made of it."""
+    owner = next(p for p in home.participants if isinstance(p, MemberParticipant))
+    # One line: a name is interpolated into an entry, and a newline in it could spell the delimiter.
+    name = " ".join((owner.display_name or "").split())
+    whose = f"The owner is {name}. Their" if name else "The owner's"
+    entries = (USER_PROFILE[0].format(whose=whose), USER_PROFILE[1], USER_PROFILE[2].format(today=time.strftime("%Y-%m-%d")))
+    memories = os.path.join(HOME_DIR, "memories")
+    os.makedirs(memories, exist_ok=True)
+    try:
+        descriptor = os.open(os.path.join(memories, "USER.md"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        return
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write("\n§\n".join(entries))
+    print("plow-init: seeded memories/USER.md", file=sys.stderr)
+
+
 def harden_home() -> None:
     """Put the home's ownership back, after the runtime has taken it.
 
@@ -687,6 +721,7 @@ def main() -> None:
     os.setgroups([])
     os.setgid(hermes.pw_gid)
     os.setuid(hermes.pw_uid)
+    seed_user_profile(home)
     configure(identity, seed)
     print(f"plow-init: configured from {CREDENTIALS} as {home.uid}", file=sys.stderr)
 

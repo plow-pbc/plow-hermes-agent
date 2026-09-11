@@ -44,11 +44,13 @@ def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
     for tracked in (
         ROOT / "image" / "seed" / "skills" / "growth" / "plow-invite",
         ROOT / "image" / "seed" / "skills" / "productivity" / "google-workspace",
+        ROOT / "image" / "seed" / "skills" / "productivity" / "owners-mac",
     ):
         assert not tracked.exists(), f"{tracked} is tracked; it should be staged from the plugin tarball instead"
     for staged in (
         "$top/seed-skills/growth/plow-invite",
         "$top/seed-skills/productivity/google-workspace",
+        "$top/seed-skills/productivity/owners-mac",
     ):
         assert staged in DOCKERFILE, f"Dockerfile does not stage {staged} from the plugin archive"
     for skills_root in ("/var/lib/hermes/skills/", "/opt/hermes/skills/"):

@@ -61,14 +61,15 @@ HOST_CREDENTIALS = f"{CREDENTIALS}.host"
 # The agent's first USER.md (#73). Hermes injects memories/USER.md into every
 # prompt and the model reads it as its own knowledge, so this is where a fresh
 # agent learns that "nothing in my stores" is not "nothing in the owner's
-# world". Entries in the memory store's own on-disk shape (hermes-agent
-# tools/memory_tool_store.py: ENTRY_DELIMITER "\n§\n", user_char_limit 1375
-# over the whole file), well under budget. General to every Plow agent.
+# world". WHERE the owner's world lives and how to reach it is Latch's own
+# routing, carried once by HERMES.md (#74); this file carries only the owner's
+# own facts, so the two do not restate each other. Entries in the memory
+# store's own on-disk shape (hermes-agent tools/memory_tool_store.py:
+# ENTRY_DELIMITER "\n§\n", user_char_limit 1375 over the whole file), well
+# under budget. General to every Plow agent.
 USER_PROFILE = (
-    "{whose} world -- messages, mail, calendar, contacts, files, browser -- lives on their Mac, reached through "
-    "Latch's plow_ tools. This server holds only this agent's own work.",
-    "The owner may have other Plow lines and earlier agents. What those did is in Messages and mail on the "
-    "owner's Mac, not in this agent's sessions or memory.",
+    "This server holds only this agent's own work. The owner may have other Plow lines and earlier "
+    "agents, whose work is in Messages and mail on their Mac, not in this agent's sessions or memory.",
     "This agent's own sessions begin {today}; nothing earlier is in session_search.",
 )
 
@@ -161,6 +162,10 @@ class MemberParticipant(BaseModel):
     uid: str
     role: Literal["owner", "member"]
     display_name: str | None = None
+    # Plow fills display_name with this handle (the phone number / email) when
+    # the account carries no name, so the two are compared to tell a real name
+    # from the fallback -- a handle must never be written into every prompt.
+    provider_key: str | None = None
 
 
 # `Union[...]` rather than `A | B`: this is evaluated at import, and the
@@ -606,24 +611,49 @@ def compose_identity() -> None:
         park(f"the identity could not be composed from {SEED_SOUL} + {SEED_PERSONA}: {error}")
 
 
+def _owner_display_name(owner: "MemberParticipant") -> str | None:
+    """The owner's real name, or None. Collapsed to one line so it cannot spell
+    the entry delimiter; dropped when it is only Plow's provider_key fallback
+    (the phone number / email handle), which is not a name."""
+    name = " ".join((owner.display_name or "").split())
+    if not name or name == " ".join((owner.provider_key or "").split()):
+        return None
+    return name
+
+
 def seed_user_profile(home: Chat) -> None:
     """Write the first memories/USER.md, as the agent; never one that exists.
-    O_EXCL is the whole not-overwriting rule: the store is the agent's from
-    the first turn on, and a later boot leaves whatever it has made of it."""
+    The complete file is staged and hard-linked into place, so it only ever
+    appears whole -- a crash mid-write leaves the staged temp, not a truncated
+    profile -- and the link fails rather than overwrites once one exists: the
+    store is the agent's from its first turn on, and a later boot leaves
+    whatever it has made of it."""
     owner = next(p for p in home.participants if isinstance(p, MemberParticipant))
-    # One line: a name is interpolated into an entry, and a newline in it could spell the delimiter.
-    name = " ".join((owner.display_name or "").split())
-    whose = f"The owner is {name}. Their" if name else "The owner's"
-    entries = (USER_PROFILE[0].format(whose=whose), USER_PROFILE[1], USER_PROFILE[2].format(today=time.strftime("%Y-%m-%d")))
+    name = _owner_display_name(owner)
+    entries = [f"The owner is {name}."] if name else []
+    entries += [USER_PROFILE[0], USER_PROFILE[1].format(today=time.strftime("%Y-%m-%d"))]
+    content = "\n§\n".join(entries)
+
     memories = os.path.join(HOME_DIR, "memories")
     os.makedirs(memories, exist_ok=True)
+    descriptor, staged = tempfile.mkstemp(prefix=".USER.md.", dir=memories)
+    linked = False
     try:
-        descriptor = os.open(os.path.join(memories, "USER.md"), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
-    except FileExistsError:
-        return
-    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-        handle.write("\n§\n".join(entries))
-    print("plow-init: seeded memories/USER.md", file=sys.stderr)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            os.fchmod(handle.fileno(), 0o644)
+            handle.write(content)
+        try:
+            os.link(staged, os.path.join(memories, "USER.md"))
+            linked = True
+        except FileExistsError:
+            pass
+    finally:
+        try:
+            os.unlink(staged)
+        except OSError:
+            pass
+    if linked:
+        print("plow-init: seeded memories/USER.md", file=sys.stderr)
 
 
 def harden_home() -> None:

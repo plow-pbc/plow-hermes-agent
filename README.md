@@ -351,15 +351,16 @@ tag.
 
 Hermes injects `$HERMES_HOME/memories/USER.md` into every prompt, and the model
 reads it as what it knows about its owner. On a boot where the file does not
-exist, `plow-init` writes one, as the agent, from what it already holds: the
-owner's display name when Plow sends one, that the owner's world (messages,
-mail, calendar, contacts, files, browser) is on their Mac behind Latch's `plow_`
-tools, that other Plow lines and earlier agents left their work in Messages
-and mail on that Mac rather than in this agent's sessions, and the date this
-agent's own record begins
-([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). General
-wording, no owner history. An existing file is never touched, so a name
-change on the account does not re-seed it.
+exist, `plow-init` stages a complete file and hard-links it into place -- so it
+only ever appears whole, and once one exists the link fails rather than
+overwrites: the owner's display name when Plow sends a real one (never the
+phone or email handle Plow falls back to), that other Plow lines and earlier
+agents left their work in Messages and mail on that Mac rather than in this
+agent's sessions, and the date this agent's own record begins
+([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). Where the
+owner's world lives and how to reach it is Latch's own routing, carried once by
+`HERMES.md` (#74) rather than restated here. General wording, no owner history.
+An existing file is never touched, so a name change does not re-seed it.
 
 ## The plugin pin
 

@@ -913,15 +913,12 @@ class Slept(Exception):
 
 def test_the_home_guard_puts_a_chmodded_home_back_and_says_what_it_found(image_user, monkeypatch, capsys):
     """A root `docker exec` running Hermes code chmods the home 0700 (2026-09-15).
-    The gateway ran on, unable to enter its own home, and missed an owner's
-    message an hour later. The guard restores the mode on its next pass and says
-    what it found; a healthy home passes without a word."""
+    The guard restores it on its next pass and says what it found; a healthy home passes without a word."""
     home = pathlib.Path(plow_init.HOME_DIR)
     (home / "skills").mkdir()
     for path in (home, home / "skills"):
         path.chmod(0o700)
     real_fstat = os.fstat
-    # Not root: the mode is real, only the owner is pretended (as `owned_by_root` does).
     monkeypatch.setattr(plow_init.os, "fstat", lambda fd: types.SimpleNamespace(
         st_mode=real_fstat(fd).st_mode, st_uid=0, st_gid=1000))
     monkeypatch.setattr(plow_init.os, "fchown", lambda fd, uid, gid: None)

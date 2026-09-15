@@ -798,10 +798,7 @@ def _hold(path: str, flags: int) -> int:
 
 
 def restore_home_mode() -> list[str]:
-    """Put the home and its skills back to root:hermes 3770, and say what differed.
-
-    One implementation for boot and for the guard, so the mode has a single owner.
-    """
+    """Put the home and its skills back to root:hermes 3770 through a descriptor -- a path-based `os.chmod` follows a symlink on Linux -- and say what differed."""
     hermes = pwd.getpwnam("hermes")
     drifted = []
     for path in (HOME_DIR, os.path.join(HOME_DIR, "skills")):
@@ -819,21 +816,15 @@ def restore_home_mode() -> list[str]:
 def guard_home() -> None:
     """Keep the home's mode for the container's whole life, loudly.
 
-    Boot sets it once, but anything that later runs Hermes code as root -- a
-    `docker exec` without `-u hermes` is enough -- chmods the root-owned home
-    0700, and the gateway runs on unable to enter it: cron fails, and the chat
-    socket's next reconnect never comes back (2026-09-15). Only root can put
-    it back, so this loop stays root. It prints what it found before it
-    repairs anything, because a silent repair would erase the evidence of
-    whatever ran.
+    Only root can put it back, so this loop stays root. It prints what it
+    found before it repairs anything, so the evidence survives the repair.
     """
     while True:
         drifted = restore_home_mode()
         if drifted:
             print(f"plow-init: home-guard restored root:hermes 3770 -- {'; '.join(drifted)}. "
                   "Something ran as root in this container (Hermes code under `docker exec` "
-                  "without `-u hermes` chmods the home 0700), and until now the gateway "
-                  "could not enter its own home.", file=sys.stderr, flush=True)
+                  "without `-u hermes` is enough).", file=sys.stderr, flush=True)
         time.sleep(HOME_GUARD_INTERVAL_S)
 
 
@@ -851,8 +842,6 @@ def harden_home() -> None:
     follows is asserting root's own file rather than repairing the agent's.
     """
     compose_identity()
-    # The runtime's own bootstrap is expected drift on the very first boot; the
-    # return value only matters to the guard, which runs after this is settled.
     restore_home_mode()
     soul = os.path.join(HOME_DIR, "SOUL.md")
     descriptor = _hold(soul, 0)
@@ -991,17 +980,17 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        if sys.argv[1:] == ["guard-home"]:
-            guard_home()
-        else:
+    if sys.argv[1:] == ["guard-home"]:
+        guard_home()
+    else:
+        try:
             main()
-    except Exception:  # noqa: BLE001 -- see below; this is the last stop before PID 1
-        # Every *anticipated* failure calls park() itself, with a reason worth
-        # reading. This catches the rest -- a bug here, a disk that filled, an
-        # OSError nobody predicted -- because an uncaught exception exits this
-        # script, exits /init, and panics the VM. On this platform a crash and
-        # a refusal have to end the same way; only the message differs, so the
-        # traceback goes to the log where it is useful.
-        traceback.print_exc()
-        park("plow-init raised an unhandled exception -- see the traceback above")
+        except Exception:  # noqa: BLE001 -- see below; this is the last stop before PID 1
+            # Every *anticipated* failure calls park() itself, with a reason worth
+            # reading. This catches the rest -- a bug here, a disk that filled, an
+            # OSError nobody predicted -- because an uncaught exception exits this
+            # script, exits /init, and panics the VM. On this platform a crash and
+            # a refusal have to end the same way; only the message differs, so the
+            # traceback goes to the log where it is useful.
+            traceback.print_exc()
+            park("plow-init raised an unhandled exception -- see the traceback above")

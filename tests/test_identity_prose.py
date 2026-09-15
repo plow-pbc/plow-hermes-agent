@@ -18,7 +18,7 @@ DOCKERFILE = (ROOT / "Dockerfile").read_text()
 def test_the_persona_does_not_claim_to_run_on_the_owners_machine():
     for false_claim in ("own private machine", "one agent on one machine"):
         assert false_claim not in SOUL, f"SOUL.md still says {false_claim!r}"
-    assert "Plow Latch on their Mac" in SOUL
+    assert "Plow Latch is how you reach your owner's Mac" in SOUL
 
 
 def test_the_persona_separates_its_own_lines_from_the_owners_accounts():

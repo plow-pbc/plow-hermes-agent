@@ -67,18 +67,18 @@ def no_host_file(monkeypatch, tmp_path):
     monkeypatch.setattr(plow_init, "CREDENTIALS_WAIT_S", 1)
 
 
-def test_behind_the_integration_the_placeholder_is_presented(monkeypatch, bearer_sent, no_host_file):
-    """exe.dev hands /exe.dev/etc/env to the CMD with no token; its proxy adds one."""
-    monkeypatch.setenv("PLOW_API_BASE", "https://plow-agt.int.exe.xyz")
-    monkeypatch.delenv("PLOW_AGENT_TOKEN", raising=False)
-    assert bearer_sent() == ["Bearer proxied"]
-
-
-def test_a_token_in_the_environment_is_never_replaced_by_the_placeholder(monkeypatch, bearer_sent, no_host_file):
-    """A developer's compose, pointed straight at Plow."""
+@pytest.mark.parametrize("token, bearer", [(None, "Bearer proxied"), ("sk-real", "Bearer sk-real")])
+def test_the_environment_token_is_used_and_only_an_absent_one_is_the_placeholder(
+    monkeypatch, bearer_sent, no_host_file, token, bearer
+):
+    """exe.dev sets no token and its proxy adds one; a developer's compose sets
+    the real one, which the placeholder must never replace."""
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
-    monkeypatch.setenv("PLOW_AGENT_TOKEN", "sk-real")
-    assert bearer_sent() == ["Bearer sk-real"]
+    if token is None:
+        monkeypatch.delenv("PLOW_AGENT_TOKEN", raising=False)
+    else:
+        monkeypatch.setenv("PLOW_AGENT_TOKEN", token)
+    assert bearer_sent() == [bearer]
 
 
 def test_without_plow_api_base_the_pre_2007_file_is_read(monkeypatch, tmp_path, owned_by_root, bearer_sent):

@@ -7,16 +7,13 @@ supervised by [s6-overlay](https://github.com/just-containers/s6-overlay),
 reachable only through Plow Chat. One image serves two paths: exe.dev unpacks it
 into a VM rootfs and boots its `Cmd`, and `docker run` boots the same `Cmd` in a
 container — `/init` either way, so what the developer runs is what the tenant
-gets. The image is credential-free and tenant-free — two required keys and an optional `AGENT_ID` land at
-`/var/lib/plow/credentials` and the image does the rest. It adds one package
+gets. The image is credential-free and tenant-free — the host sets
+`PLOW_API_BASE` (and optionally `AGENT_ID`, and `PLOW_AGENT_TOKEN` where no
+proxy injects it) in the container's environment and the image does the rest. It adds one package
 to the runtime's environment (`pydantic-settings`, pinned, `--no-deps`) and no
 code of its own beyond the init below.
-There is no local mode: a developer's machine writes that same file and gets
+There is no local mode: a developer's machine sets the same variables and gets
 the same boot, which is what makes the one path worth checking.
-
-Running one is `compose.yml` here and a credential from
-[`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents): `plow-agents
-mint <line>`, then `docker compose up --build -d`.
 
 ## The repos
 
@@ -77,28 +74,37 @@ carry `amd64` alone.
 | `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned, composed at boot), `skills/` |
 | `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into the home, so the agent's phone line does not live in a directory the agent can write |
 | `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway seeds them into a home that lacks them and updates the ones the agent has not customised. A skill the agent deleted stays deleted — the runtime records that and honours it |
-| `/var/lib/plow/credentials` | not shipped — the host's drop-in, if there is one; see below |
-| `/var/lib/plow/credentials.host` | not shipped either — the same file bind-mounted from a developer's machine, promoted into the one above at cont-init |
-| `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads the credential, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
-| `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none, and promotes a bind-mounted credential into the path below |
+| `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads `PLOW_API_BASE`, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
+| `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as `hermes`, depending on `plow-init` |
 | `/etc/s6-overlay/s6-rc.d/home-guard/` | longrun, as root, depending on `plow-init`: every 10s puts `/var/lib/hermes` and `skills/` back to `3770 root:hermes`, and logs what it found whenever something else changed them |
 
-## The credential drop-in
+## The environment, and the bearer
 
-Provisioning's whole involvement with a tenant's VM is one file, `root:root`
-`0600` (`0400` is accepted too; nothing looser is):
+Provisioning's whole involvement with a tenant's VM is its environment. exe.dev
+writes it to `/exe.dev/etc/env` and hands it to the image's CMD; s6-overlay
+imports it into `/run/s6/container_environment`, and `plow-init` runs under
+`with-contenv`, so it reads the values straight from its process environment:
 
 ```
-PLOW_API_BASE=https://api.plow.dev
-PLOW_AGENT_TOKEN=<the agent's own credential>
+PLOW_API_BASE=https://plow-<agent_uid>.int.exe.xyz
 AGENT_ID=life # optional: the registered Agent Index id
 ```
 
-The provisioner sets `AGENT_ID` from the selected cloud variant when the image
-reports usage; local hosts set it to the registered Agent Index id. It is
-optional, but every unknown key is still refused. `plow-init` reads the file as
-data — never sourced — and then asks Plow the rest with that credential:
+`PLOW_API_BASE` is an exe.dev **integration**: an HTTP proxy in front of Plow
+that replaces the `Authorization` header of every request with the agent's own
+credential. The image never sees that credential, so there is none to leak,
+rotate or persist inside the VM. Where a bearer has to be present anyway — the
+`plow_chat` plugin requires `PLOW_AGENT_TOKEN`, and the inference provider names
+its key by variable (`HERMES_CUSTOM_PLOW_API_KEY`) — `plow-init` publishes the
+fixed placeholder `proxied`, which the proxy overwrites and Plow never sees.
+A host with no such proxy — a developer's compose — sets `PLOW_AGENT_TOKEN`
+beside `PLOW_API_BASE`, and that token is used everywhere instead; the
+placeholder only ever fills an absent token, never replaces a real one.
+`AGENT_ID` is the provisioner's, set from the selected cloud variant; the
+image passes it through untouched for a variant's index reporter.
+
+With that, `plow-init` asks Plow who this agent is:
 `GET $PLOW_API_BASE/v1/agents/cloud/me` answers with this agent's line, the
 chats it is in, and a relay endpoint. Plow does not name a home channel, so the
 image picks one: the active chat holding exactly this agent and exactly one
@@ -107,22 +113,22 @@ roster it saw — the home channel is where the agent answers, and the wrong one
 is an agent talking to the wrong people. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every
-service inherits — deriving the inference key alias from the credential and
-generating a fresh `API_SERVER_KEY` on every boot.
+service inherits — adding the placeholder bearer and generating a fresh
+`API_SERVER_KEY` on every boot.
 
-The tenant's credential is never written to disk inside the container. The
-loopback `API_SERVER_KEY` is the one exception, and only because it has to be:
+The loopback `API_SERVER_KEY` is the one value written to disk, and only
+because it has to be:
 the runtime writes a key of its own into `$HERMES_HOME/.env` during cont-init
 and loads that file over its process environment, so `plow-init` sets that one
 name to the key it just published, `root:hermes 0640`. Every other name this
-boot publishes — the tenant's credential, its endpoint, its home channel, its
-relay URL — is dropped from the file rather than carried across, since a
+boot publishes — its endpoint, its home channel, its relay URL — is dropped
+from the file rather than carried across, since a
 persisted copy of any of them would be a stale shadow that wins the same
-precedence fight: an old credential outliving its rotation, or a reused fleet
+precedence fight: a reused fleet
 home answering as the tenant before it. Two names this boot does *not* publish
-go with them — `PLOW_CHAT_TOKEN` and `PLOW_CHAT_BASE_URL`, the legacy spellings
-of that same credential and endpoint — because a rotation leaves the old value
-readable there under a name nothing reads on purpose, which is how an agent
+go with them — `PLOW_CHAT_TOKEN` and `PLOW_CHAT_BASE_URL`, legacy spellings
+of the credential and endpoint — because an old value left
+readable there under a name nothing reads on purpose is how an agent
 came to authenticate with a revoked token. The other `PLOW_CHAT_*` names are
 chat-directory data with live consumers, and stay. Everything else in the file
 — a bind-mounted fleet home's own configuration — is left exactly as it was
@@ -150,24 +156,7 @@ a mailbox carrying the agent's persona is another line the credential opens,
 and an owner alone with it looks like the home chat otherwise. `mcp_url` is
 the relay endpoint, or null when the tenant has none.
 
-Getting a token in the first place is `plow-agents`. First time on an account:
-
-```sh
-plow-agents login --new-line   # provisions the line and stores the account token
-plow-agents mint <line-uid>    # the agent's own credential, scoped to that line
-```
-
-`login` is once per account; `mint` once per agent.
-
-`plow-init` waits up to 60 seconds for that file to appear before giving up,
-so a host may write it into a container that is already running; a file present
-at boot costs nothing, because the first look finds it.
-
-The file is the only source: a settings model would otherwise read the process
-environment first, letting `docker run -e PLOW_AGENT_TOKEN=…` outrank the
-credential the image was given, so every source but that file is switched off.
-It is left in place, and a rotation rewrites the required keys and optional id,
-then restarts, with no shell into the agent. The identity is re-asked on every boot,
+The identity is re-asked on every boot,
 so a home channel or a relay that moved moves with it — and a relay that went
 away is switched off rather than left behind.
 
@@ -181,9 +170,8 @@ previous one's chat. Plow **answering** that the credential is not this
 agent's — a 401, 403 or 404 — or answering with something that is not an
 identity, fails immediately without the retries.
 
-The same goes for the credential itself: no file, a file that is not a
-root-owned regular file at 0600 or 0400, or one naming anything but the two
-required keys plus optional `AGENT_ID`, and nothing starts. `plow-init` is a oneshot every service depends on.
+The same goes for the environment itself: no `PLOW_API_BASE` (and no
+transition file, below), and nothing starts. `plow-init` is a oneshot every service depends on.
 
 ### How it refuses: the container parks
 
@@ -200,47 +188,19 @@ same reason, and wrapping PID 1 to catch the exit is not open either:
 s6-overlay's `/init` refuses to run unless it is pid 1.
 
 That makes `plow-init` the boot's one gate. It verifies what the gateway needs
-rather than trusting an earlier step — that the agent account exists, a
-bind-mounted credential actually promoted rather than left beside a stale one, a
-home that is a directory — and parks with a precise reason otherwise. A
+rather than trusting an earlier step — that the agent account exists and the
+home is a directory — and parks with a precise reason otherwise. A
 cont-init failure it does not depend on stays a warning; nothing that step
 touched can serve anyone.
 
-Plow's warm-pool VMs reach this by design: created with no credential, they
+Plow's warm-pool VMs reach this by design: created with no environment, they
 exist only to hold the image in the host's cache, and a parked container is
 their healthy steady state.
 
-### From a developer's machine
-
-The same file, and the same rules — but a bind mount carries its host's
-ownership and mode into the container, which on a Linux host is never
-`root:root 0600`. Relaxing the gate for that would be relaxing it for the VM
-too, so the mount lands beside the drop-in instead, at
-`/var/lib/plow/credentials.host`, and `00-plow-sanitize` copies it as root into
-`/var/lib/plow/credentials` at `0600` before anything reads either. The mount
-itself is never written; a rotation is a rewrite of it and a restart, which
-the next boot copies into place.
-
-`compose.yml` here is the mount that does this; `plow-agents mint <line>`
-writes the two required keys and the `# plow-agent-uid:` comment into
-`./plow-credentials`, never `AGENT_ID`. This image reads that one from the
-credential file alone; a variant's index reporter takes it from the compose
-`environment` instead.
-
-### The host's own hook
-
-If `/exe.dev/setup` exists and is executable, `plow-init` runs it as root
-before it reads the credential, then deletes it so a reboot cannot replay it.
-It is how a VM host does whatever it must do to a fresh machine — it is placed
-by whoever built that machine, not by this image, and nothing puts one there on
-a developer's own. An image that finds one runs it, so a host that can write
-that path already owns the container.
-
 ## The two environment knobs
 
-Everything about the tenant comes from the drop-in and from Plow's answer.
-`HERMES_PROVIDER` and `HERMES_MODEL` are the exception, and are read from the
-container environment rather than from that file: they choose where inference
+Everything about the tenant comes from `PLOW_API_BASE` and from Plow's answer.
+`HERMES_PROVIDER` and `HERMES_MODEL` are the exception: they choose where inference
 goes, which is an operator's decision about this container, not a fact about
 the agent's identity. `plow-init` writes `model.provider` from the first.
 
@@ -251,9 +211,6 @@ with `HERMES_PROVIDER=plow` and no `HERMES_MODEL`, the model is restored from
 the image's own seed, along with the endpoint and key that describe Plow. That
 is what keeps a switch back from being an edit — you do not have to remember
 the model you were on before you left.
-
-A credential file naming either is refused: the allowlist for a drop-in is
-`PLOW_API_BASE`, `PLOW_AGENT_TOKEN`, and optional `AGENT_ID`, and nothing else.
 
 ## Prompt caching
 
@@ -421,30 +378,34 @@ curl -fsSL -H "Authorization: Bearer $token" \
   https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
 ```
 
+### Transition: the credential file
+
+Until plow#2007 is live, a VM provisioned the old way gets no `PLOW_API_BASE`
+in its environment. For that VM only — `PLOW_API_BASE` absent — `plow-init`
+falls back to the old path: it runs `/exe.dev/setup` as root if it is
+executable (and deletes it, so a reboot cannot replay it), then reads
+`/var/lib/plow/credentials`, a `root:root` `0600` or `0400` file holding
+`PLOW_API_BASE`, `PLOW_AGENT_TOKEN` and optional `AGENT_ID` and nothing else.
+The file is its only source; the environment cannot outrank it. The fallback
+is marked `TRANSITION` in `plow-init` and goes once plow#2007 is live and every
+such VM has been re-provisioned.
+
 ## Try it
 
-Any credential works: the image asks Plow who holds it, so point it at a Plow
-that will answer.
+[`plow-agents`](https://github.com/plow-pbc/plow-agents) writes
+`./plow-credentials`, a `KEY=VALUE` file with `PLOW_API_BASE` and
+`PLOW_AGENT_TOKEN`, and `compose.yml` loads it as the container's environment
+(`env_file`), pointed straight at Plow:
 
 ```sh
-plow-agents mint <line>
-docker compose up --build -d
-```
-
-Anywhere but production, write the file yourself — or mint against that Plow
-with `plow-agents --api-base https://plow.example mint <line>`, where the flag
-sits before the verb, adding `--agent-api-base` after it when the container
-reaches that Plow at an address you do not:
-
-```sh
-printf 'PLOW_API_BASE=https://plow.example\nPLOW_AGENT_TOKEN=<token>\n' > plow-credentials
-chmod 600 plow-credentials
+plow-agents login --new-line   # once per account
+plow-agents mint <line-uid>    # writes ./plow-credentials
 docker compose up --build -d
 ```
 
 ## Tests
 
-`plow-init` decides which credentials it will read, what it does with each
+`plow-init` decides where it reads Plow's endpoint from, what it does with each
 answer from Plow, and what it writes into the agent's config. Those decisions
 are checked without booting anything:
 

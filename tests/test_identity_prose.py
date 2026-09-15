@@ -37,20 +37,23 @@ def test_the_persona_separates_its_own_lines_from_the_owners_accounts():
 
 
 def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
-    """growth/plow-invite, productivity/google-workspace and productivity/owners-mac
-    are the plugin's own; a tracked copy here is a second place for them to drift
-    out of sync with the plugin they describe. The Dockerfile stages all three from
+    """The plugin owns its seed skills; a tracked copy here is a second place
+    for them to drift out of sync with the plugin they describe. Stage them from
     the same tarball the plugin is built from, so a pin bump moves them together."""
     for tracked in (
         ROOT / "image" / "seed" / "skills" / "growth" / "plow-invite",
         ROOT / "image" / "seed" / "skills" / "productivity" / "google-workspace",
         ROOT / "image" / "seed" / "skills" / "productivity" / "owners-mac",
+        ROOT / "image" / "seed" / "skills" / "productivity" / "plow-latch",
+        ROOT / "image" / "seed" / "skills" / "productivity" / "plow-dashboard",
     ):
         assert not tracked.exists(), f"{tracked} is tracked; it should be staged from the plugin tarball instead"
     for staged in (
         "$top/seed-skills/growth/plow-invite",
         "$top/seed-skills/productivity/google-workspace",
         "$top/seed-skills/productivity/owners-mac",
+        "$top/seed-skills/productivity/plow-latch",
+        "$top/seed-skills/productivity/plow-dashboard",
     ):
         assert staged in DOCKERFILE, f"Dockerfile does not stage {staged} from the plugin archive"
     for skills_root in ("/var/lib/hermes/skills/", "/opt/hermes/skills/"):

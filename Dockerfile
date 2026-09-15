@@ -14,7 +14,7 @@ ARG PLOW_CHAT_PLUGIN_SHA=c6987ab5ab8b2ca40c6a1beaaabe1d751674be0e
 # there, so this costs no extra upstream image and the fetch tooling never
 # reaches the shipped filesystem.
 #
-# Two of the seed skills come out of this same tarball rather than a tracked
+# The plugin's seed skills come out of this same tarball rather than a tracked
 # copy: skill text and the plugin it describes then always come from one
 # commit, and a pin bump moves both together instead of drifting apart.
 FROM base AS plugin
@@ -31,10 +31,13 @@ RUN set -eu; \
     test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml; \
     tar -xzf /tmp/plugin.tgz -C /staged/seed-skills --strip-components=2 \
       "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace" \
-      "$top/seed-skills/productivity/owners-mac"; \
+      "$top/seed-skills/productivity/owners-mac" \
+      "$top/seed-skills/productivity/plow-latch" "$top/seed-skills/productivity/plow-dashboard"; \
     test -f /staged/seed-skills/growth/plow-invite/SKILL.md \
       -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md \
-      -a -f /staged/seed-skills/productivity/owners-mac/SKILL.md
+      -a -f /staged/seed-skills/productivity/owners-mac/SKILL.md \
+      -a -f /staged/seed-skills/productivity/plow-latch/SKILL.md \
+      -a -f /staged/seed-skills/productivity/plow-dashboard/SKILL.md
 
 FROM base
 
@@ -69,7 +72,7 @@ COPY image/seed/skills/ /var/lib/hermes/skills/
 
 # Staged from the plugin tarball, not tracked here — see the `plugin` stage.
 # Merges into the tree above rather than replacing it, so the tracked
-# plow-connectors skill survives alongside these two. Landed before the
+# plow-connectors skill survives alongside the plugin's skills. Landed before the
 # chown -R below so they get the same ownership as everything else under
 # the home.
 COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/

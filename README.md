@@ -82,6 +82,7 @@ carry `amd64` alone.
 | `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads the credential, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
 | `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none, and promotes a bind-mounted credential into the path below |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as `hermes`, depending on `plow-init` |
+| `/etc/s6-overlay/s6-rc.d/home-guard/` | longrun, as root, depending on `plow-init`: every 10s puts `/var/lib/hermes` and `skills/` back to `3770 root:hermes`, and logs what it found whenever something else changed them |
 
 ## The credential drop-in
 

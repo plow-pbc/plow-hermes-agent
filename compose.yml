@@ -6,11 +6,12 @@ services:
     # on it is a stale `docker login` rather than an entitlement -- `docker
     # logout` and build again.
     build: .
-    # Where Plow is, as exe.dev would hand it to the VM. The image sends no
-    # credential of its own, so this has to be something that injects the
-    # agent's bearer into each request -- see the README's "Try it".
+    # Where Plow is and the agent's own token, from `plow-agents mint <line>`.
+    # exe.dev sets the first alone and injects the token at its proxy; here
+    # nothing sits in between, so the token comes along.
     environment:
-      PLOW_API_BASE: ${PLOW_API_BASE:?set PLOW_API_BASE to a Plow endpoint that injects the agent bearer}
+      PLOW_API_BASE: ${PLOW_API_BASE:?set PLOW_API_BASE}
+      PLOW_AGENT_TOKEN: ${PLOW_AGENT_TOKEN:?set PLOW_AGENT_TOKEN}
     volumes:
       # The agent's home, kept across `up`/`down` for its sessions and setup.
       # `docker compose down -v` starts this agent fresh. An edit to SOUL.md

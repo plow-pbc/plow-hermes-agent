@@ -31,17 +31,25 @@ sys.modules["plow_init"] = plow_init
 spec.loader.exec_module(plow_init)
 
 
-def test_where_plow_is_comes_from_the_environment(monkeypatch):
-    """exe.dev hands /exe.dev/etc/env to the CMD, and with-contenv hands it on."""
-    monkeypatch.setenv("PLOW_API_BASE", "https://plow-agt.int.exe.xyz")
-    assert plow_init.read_credentials().plow_api_base == "https://plow-agt.int.exe.xyz"
+@pytest.fixture
+def owned_by_root(monkeypatch):
+    """These tests do not run as root, and the file they write is theirs.
+
+    The mode is real; only the owner is pretended, so the mode check still
+    exercises the code that reads it.
+    """
+
+    class RootOwned:
+        def __init__(self, info):
+            self.st_mode, self.st_uid, self.st_gid = info.st_mode, 0, 0
+
+    real = os.lstat
+    monkeypatch.setattr(plow_init.os, "lstat", lambda path: RootOwned(real(path)))
 
 
-def test_a_token_in_the_environment_is_never_what_plow_init_presents(monkeypatch):
-    """The integration owns the bearer. Whatever else sits in the environment,
-    plow-init sends the placeholder and publishes the placeholder."""
-    monkeypatch.setenv("PLOW_AGENT_TOKEN", "sk-left-over")
-    monkeypatch.setenv("PLOW_API_BASE", "https://plow-agt.int.exe.xyz")
+@pytest.fixture
+def bearer_sent(monkeypatch):
+    """What `ask_plow` puts in the Authorization header."""
     sent = []
 
     def answer(request, timeout):
@@ -49,8 +57,40 @@ def test_a_token_in_the_environment_is_never_what_plow_init_presents(monkeypatch
         return io.BytesIO(json.dumps({"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}).encode())
 
     monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
-    plow_init.ask_plow(plow_init.read_credentials())
-    assert sent == ["Bearer proxied"]
+    return lambda: (plow_init.ask_plow(plow_init.read_credentials()), sent)[1]
+
+
+@pytest.fixture
+def no_host_file(monkeypatch, tmp_path):
+    monkeypatch.setattr(plow_init, "HOST_SETUP", str(tmp_path / "no-setup"))
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "no-credentials"))
+    monkeypatch.setattr(plow_init, "CREDENTIALS_WAIT_S", 1)
+
+
+def test_behind_the_integration_the_placeholder_is_presented(monkeypatch, bearer_sent, no_host_file):
+    """exe.dev hands /exe.dev/etc/env to the CMD with no token; its proxy adds one."""
+    monkeypatch.setenv("PLOW_API_BASE", "https://plow-agt.int.exe.xyz")
+    monkeypatch.delenv("PLOW_AGENT_TOKEN", raising=False)
+    assert bearer_sent() == ["Bearer proxied"]
+
+
+def test_a_token_in_the_environment_is_never_replaced_by_the_placeholder(monkeypatch, bearer_sent, no_host_file):
+    """A developer's compose, pointed straight at Plow."""
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
+    monkeypatch.setenv("PLOW_AGENT_TOKEN", "sk-real")
+    assert bearer_sent() == ["Bearer sk-real"]
+
+
+def test_without_plow_api_base_the_pre_2007_file_is_read(monkeypatch, tmp_path, owned_by_root, bearer_sent):
+    monkeypatch.delenv("PLOW_API_BASE", raising=False)
+    monkeypatch.setenv("PLOW_AGENT_TOKEN", "sk-env-not-the-file")
+    monkeypatch.setattr(plow_init, "HOST_SETUP", str(tmp_path / "no-setup"))
+    path = tmp_path / "credentials"
+    path.write_text("PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN=sk-file\nAGENT_ID=life\n")
+    path.chmod(0o600)
+    monkeypatch.setattr(plow_init, "CREDENTIALS", str(path))
+    assert plow_init.read_credentials().agent_id == "life"
+    assert bearer_sent() == ["Bearer sk-file"]
 
 
 class Parked(Exception):
@@ -72,7 +112,7 @@ def parking(monkeypatch, tmp_path):
     return marker
 
 
-def test_no_plow_api_base_parks_rather_than_exiting(monkeypatch, parking):
+def test_no_plow_api_base_and_no_file_parks_rather_than_exiting(monkeypatch, parking, no_host_file):
     """The warm pool's normal life, and the path that started all this.
 
     Exiting here is what panics the microVM: plow-init's non-zero exit takes
@@ -81,14 +121,14 @@ def test_no_plow_api_base_parks_rather_than_exiting(monkeypatch, parking):
     monkeypatch.delenv("PLOW_API_BASE", raising=False)
     with pytest.raises(Parked):
         plow_init.read_credentials()
-    assert "the environment does not name where Plow is" in parking.read_text()
+    assert "no PLOW_API_BASE in the environment" in parking.read_text()
 
 
 def test_parking_says_why_on_stderr_as_well_as_in_the_marker(parking, capsys):
     with pytest.raises(Parked):
-        plow_init.park("the environment does not name where Plow is")
-    assert "does not name where Plow is" in capsys.readouterr().err
-    assert parking.read_text() == "the environment does not name where Plow is\n"
+        plow_init.park("no PLOW_API_BASE in the environment")
+    assert "no PLOW_API_BASE" in capsys.readouterr().err
+    assert parking.read_text() == "no PLOW_API_BASE in the environment\n"
 
 
 def test_an_unwritable_marker_still_parks(monkeypatch, tmp_path, capsys):

@@ -7,12 +7,13 @@ probe, and cannot be reached by the person it belongs to. So a refusal here
 parks rather than exits, and the completion never comes.
 
 A host tells this image where Plow is, and optionally which Agent Index id it
-reports as, in the process environment. The host also owns the bearer: exe.dev
-fronts PLOW_API_BASE with an integration that injects the agent's credential
-into every request, so no token ever reaches this image. The rest of the
-agent's identity is asked of Plow through that endpoint. Nothing falls back --
-no endpoint, an agent Plow will not answer for, or no answer at all, and
-nothing starts.
+reports as, in the process environment. On exe.dev the host also owns the
+bearer: it fronts PLOW_API_BASE with an integration that injects the agent's
+credential into every request, so no token reaches this image. A host without
+one -- a developer's compose -- sets PLOW_AGENT_TOKEN beside it. The rest of
+the agent's identity is asked of Plow through that endpoint. Nothing falls
+back -- no endpoint, an agent Plow will not answer for, or no answer at all,
+and nothing starts.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ import pwd
 import secrets
 import signal
 import stat
+import subprocess
 import sys
 import traceback
 import tempfile
@@ -35,9 +37,16 @@ import yaml
 from dotenv.parser import parse_stream
 from pydantic import BaseModel, Field, ValidationError
 from typing import Annotated, Literal, Union
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 CONFIG = "/var/lib/hermes/config.yaml"
+# TRANSITION: the credential file and the setup hook that writes it are how a
+# VM provisioned before plow#2007 is told where Plow is. Remove both, with
+# read_file_credentials(), once plow#2007 is live and every such VM has been
+# re-provisioned.
+CREDENTIALS = "/var/lib/plow/credentials"
+HOST_SETUP = "/exe.dev/setup"
+CREDENTIALS_WAIT_S = 60
 CONTAINER_ENV = "/run/s6/container_environment"
 PARK_MARKER = "/run/plow-init.parked"
 
@@ -69,9 +78,9 @@ SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
 HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
 INSTRUCTIONS_TIMEOUT_S = 5
 # What goes wherever a bearer has to be present -- the plugin requires
-# PLOW_AGENT_TOKEN, the config names the inference key by variable -- but is
-# never what Plow sees: the integration in front of PLOW_API_BASE replaces the
-# Authorization header with the agent's real credential.
+# PLOW_AGENT_TOKEN, the config names the inference key by variable -- when the
+# host gave no token: the integration in front of PLOW_API_BASE replaces the
+# Authorization header with the agent's real credential, so Plow never sees it.
 TOKEN_PLACEHOLDER = "proxied"
 
 
@@ -154,7 +163,7 @@ def park(reason: str) -> typing.NoReturn:
 
 
 class Credentials(BaseSettings):
-    """Where Plow is, as the host set it.
+    """Where Plow is, and the token to present if the host has one.
 
     The process environment is the ONLY source: with-contenv hands plow-init
     what the host gave the container's CMD, which on exe.dev is
@@ -162,6 +171,13 @@ class Credentials(BaseSettings):
     """
 
     plow_api_base: str
+    plow_agent_token: str | None = None
+    agent_id: str | None = None
+
+    @property
+    def bearer(self) -> str:
+        # A real token is never replaced; the placeholder only fills a gap.
+        return self.plow_agent_token or TOKEN_PLACEHOLDER
 
     @classmethod
     def settings_customise_sources(
@@ -298,12 +314,71 @@ def verify_boot_preconditions() -> None:
         park(f"{HOME_DIR} is not a directory -- the agent has no home to start in")
 
 
+class FileCredentials(Credentials):
+    """TRANSITION (remove once plow#2007 is live): the file a pre-#2007 host
+    writes. `extra="forbid"` refuses a provisioner that has drifted ahead of
+    this image, and the file is its only source."""
+
+    model_config = SettingsConfigDict(extra="forbid")
+
+    plow_agent_token: str
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (dotenv_settings,)
+
+
 def read_credentials() -> Credentials:
-    """Read the host's values from the environment, or park saying which is missing."""
+    """The environment when it names PLOW_API_BASE; the pre-#2007 file otherwise."""
+    if "PLOW_API_BASE" not in os.environ:
+        return read_file_credentials()
     try:
         return Credentials()
     except ValidationError as error:
+        # `include_input=False`: the default rendering quotes the input back,
+        # which here is the token.
         park(f"the environment does not name where Plow is:\n{error.errors(include_input=False)}")
+
+
+def read_file_credentials() -> FileCredentials:
+    """TRANSITION (remove once plow#2007 is live): run the host's setup hook,
+    then judge the file it wrote before parsing it.
+
+    It decides where the agent's own bearer token is sent, so anyone else
+    owning or reading it chooses both. Two exact modes rather than a rule about
+    bits: one merely forbidding the write bits would admit 0644, which hands
+    the credential to every account in the container.
+    """
+    # Removed once run, so a reboot cannot replay it.
+    if os.access(HOST_SETUP, os.X_OK):
+        subprocess.run([HOST_SETUP], check=True)
+        os.unlink(HOST_SETUP)
+    # Waited for, not merely required: a host may write this file after the
+    # container is already running.
+    for _ in range(CREDENTIALS_WAIT_S):
+        if os.path.lexists(CREDENTIALS):
+            break
+        time.sleep(1)
+    try:
+        info = os.lstat(CREDENTIALS)
+    except OSError:
+        park(f"no PLOW_API_BASE in the environment and no credential at {CREDENTIALS} after {CREDENTIALS_WAIT_S}s")
+    mode = stat.S_IMODE(info.st_mode)
+    if not stat.S_ISREG(info.st_mode):
+        park(f"{CREDENTIALS} is not a regular file")
+    if (info.st_uid, info.st_gid) != (0, 0) or mode not in (0o600, 0o400):
+        park(f"{CREDENTIALS} is {info.st_uid}:{info.st_gid} mode {mode:04o} -- expected root:root at 600 or 400")
+    try:
+        return FileCredentials(_env_file=CREDENTIALS)
+    except ValidationError as error:
+        park(f"{CREDENTIALS} does not contain only the documented keys:\n{error.errors(include_input=False)}")
 
 
 def ask_plow(credentials: Credentials) -> Identity:
@@ -317,16 +392,15 @@ def ask_plow(credentials: Credentials) -> Identity:
     url = credentials.plow_api_base.rstrip("/") + "/v1/agents/cloud/me"
     request = urllib.request.Request(
         url,
-        headers={"Authorization": f"Bearer {TOKEN_PLACEHOLDER}", "Accept": "application/json"},
+        headers={"Authorization": f"Bearer {credentials.bearer}", "Accept": "application/json"},
     )
     for attempt in range(1, RETRIES + 1):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            # 401, 403 and 404 are Plow saying the credential the integration
-            # presented is not this agent's -- revoked, or naming an agent
-            # that is gone.
+            # 401, 403 and 404 are Plow saying this credential is not this
+            # agent's -- revoked, or naming an agent that is gone.
             if not (error.code == 429 or 500 <= error.code < 600):
                 park(f"{url} answered {error.code} -- Plow refused this credential")
             reason = f"answered {error.code}"
@@ -882,15 +956,22 @@ def main() -> None:
     credentials = read_credentials()
     identity = ask_plow(credentials)
     home = home_chat(identity)
-    write_latch_instructions(identity, TOKEN_PLACEHOLDER)
+    write_latch_instructions(identity, credentials.bearer)
     values = {
-        "PLOW_AGENT_TOKEN": TOKEN_PLACEHOLDER,
+        # Re-published even when the environment already holds it: the
+        # pre-#2007 file is the one source the services cannot inherit.
+        "PLOW_API_BASE": credentials.plow_api_base,
+        "PLOW_AGENT_TOKEN": credentials.bearer,
         "PLOW_HOME_CHANNEL": home.uid,
-        "HERMES_CUSTOM_PLOW_API_KEY": TOKEN_PLACEHOLDER,
+        # Chat and inference are the same credential; the config names the
+        # inference key by variable rather than holding a value.
+        "HERMES_CUSTOM_PLOW_API_KEY": credentials.bearer,
         # Fresh every boot. The gateway's loopback API server will not start
         # without one, and nothing reads it from a file.
         "API_SERVER_KEY": secrets.token_hex(32),
     }
+    if credentials.agent_id:
+        values["AGENT_ID"] = credentials.agent_id
     if identity.mcp_url:
         values["PLOW_MCP_URL"] = identity.mcp_url
     export(values)

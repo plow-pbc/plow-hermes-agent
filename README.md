@@ -8,11 +8,11 @@ reachable only through Plow Chat. One image serves two paths: exe.dev unpacks it
 into a VM rootfs and boots its `Cmd`, and `docker run` boots the same `Cmd` in a
 container — `/init` either way, so what the developer runs is what the tenant
 gets. The image is credential-free and tenant-free — the host sets
-`PLOW_API_BASE` (and optionally `AGENT_ID`) in the container's environment and
-the image does the rest. It adds one package
+`PLOW_API_BASE` (and optionally `AGENT_ID`, and `PLOW_AGENT_TOKEN` where no
+proxy injects it) in the container's environment and the image does the rest. It adds one package
 to the runtime's environment (`pydantic-settings`, pinned, `--no-deps`) and no
 code of its own beyond the init below.
-There is no local mode: a developer's machine sets the same variable and gets
+There is no local mode: a developer's machine sets the same variables and gets
 the same boot, which is what makes the one path worth checking.
 
 ## The repos
@@ -79,7 +79,7 @@ carry `amd64` alone.
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as `hermes`, depending on `plow-init` |
 | `/etc/s6-overlay/s6-rc.d/home-guard/` | longrun, as root, depending on `plow-init`: every 10s puts `/var/lib/hermes` and `skills/` back to `3770 root:hermes`, and logs what it found whenever something else changed them |
 
-## The environment, and the bearer the image never holds
+## The environment, and the bearer
 
 Provisioning's whole involvement with a tenant's VM is its environment. exe.dev
 writes it to `/exe.dev/etc/env` and hands it to the image's CMD; s6-overlay
@@ -98,6 +98,9 @@ rotate or persist inside the VM. Where a bearer has to be present anyway — the
 `plow_chat` plugin requires `PLOW_AGENT_TOKEN`, and the inference provider names
 its key by variable (`HERMES_CUSTOM_PLOW_API_KEY`) — `plow-init` publishes the
 fixed placeholder `proxied`, which the proxy overwrites and Plow never sees.
+A host with no such proxy — a developer's compose — sets `PLOW_AGENT_TOKEN`
+beside `PLOW_API_BASE`, and that token is used everywhere instead; the
+placeholder only ever fills an absent token, never replaces a real one.
 `AGENT_ID` is the provisioner's, set from the selected cloud variant; the
 image passes it through untouched for a variant's index reporter.
 
@@ -167,8 +170,8 @@ previous one's chat. Plow **answering** that the credential is not this
 agent's — a 401, 403 or 404 — or answering with something that is not an
 identity, fails immediately without the retries.
 
-The same goes for the environment itself: no `PLOW_API_BASE`, and nothing
-starts. `plow-init` is a oneshot every service depends on.
+The same goes for the environment itself: no `PLOW_API_BASE` (and no
+transition file, below), and nothing starts. `plow-init` is a oneshot every service depends on.
 
 ### How it refuses: the container parks
 
@@ -375,18 +378,27 @@ curl -fsSL -H "Authorization: Bearer $token" \
   https://public.ecr.aws/v2/e1h7x4a2/plow-cloud-agents/tags/list
 ```
 
+### Transition: the credential file
+
+Until plow#2007 is live, a VM provisioned the old way gets no `PLOW_API_BASE`
+in its environment. For that VM only — `PLOW_API_BASE` absent — `plow-init`
+falls back to the old path: it runs `/exe.dev/setup` as root if it is
+executable (and deletes it, so a reboot cannot replay it), then reads
+`/var/lib/plow/credentials`, a `root:root` `0600` or `0400` file holding
+`PLOW_API_BASE`, `PLOW_AGENT_TOKEN` and optional `AGENT_ID` and nothing else.
+The file is its only source; the environment cannot outrank it. The fallback
+is marked `TRANSITION` in `plow-init` and goes once plow#2007 is live and every
+such VM has been re-provisioned.
+
 ## Try it
 
-The image sends no credential, so point `PLOW_API_BASE` at something that
-injects the agent's bearer the way the exe.dev integration does — an HTTP
-proxy in front of a Plow that will answer for that agent — and then:
+Mint a credential with [`plow-agents`](https://github.com/plow-pbc/plow-agents)
+(`plow-agents mint <line>`; `login --new-line` first on a new account) and pass
+both values from the shell, pointed straight at Plow:
 
 ```sh
-PLOW_API_BASE=https://<your injecting proxy> docker compose up --build -d
+PLOW_API_BASE=https://api.plow.co PLOW_AGENT_TOKEN=<token> docker compose up --build -d
 ```
-
-Pointed straight at Plow, `/v1/agents/cloud/me` answers 401 to the placeholder
-and the container parks, which is itself a useful check of the refusal path.
 
 ## Tests
 

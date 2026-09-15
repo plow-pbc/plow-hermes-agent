@@ -783,7 +783,7 @@ def seed_user_profile(home: Chat) -> None:
 
 
 def _hold(path: str, flags: int) -> int:
-    """Open the path as the shape it is meant to be, or stop the boot.
+    """Open the path as the shape it is meant to be, or raise.
 
     Root is working inside a directory the agent can create entries in, so
     every path here is one the agent could have replaced. `O_NOFOLLOW`
@@ -791,10 +791,7 @@ def _hold(path: str, flags: int) -> int:
     `O_NONBLOCK` means a FIFO left in place fails rather than parking root
     on an open that never returns.
     """
-    try:
-        return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | flags)
-    except OSError as error:
-        park(f"{path} is not the file this image left there: {error}")
+    return os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | flags)
 
 
 def restore_home_mode() -> list[str]:

@@ -448,7 +448,7 @@ def test_a_skills_directory_the_agent_replaced_with_a_link_is_refused(tmp_path, 
     victim.mkdir(mode=0o700)
     (home / "skills").rmdir()
     (home / "skills").symlink_to(victim)
-    with pytest.raises(Parked):
+    with pytest.raises(OSError):
         plow_init.harden_home()
     assert victim.stat().st_mode & 0o7777 == 0o700
 

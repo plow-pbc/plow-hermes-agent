@@ -6,10 +6,12 @@ services:
     # on it is a stale `docker login` rather than an entitlement -- `docker
     # logout` and build again.
     build: .
+    # Where Plow is, as exe.dev would hand it to the VM. The image sends no
+    # credential of its own, so this has to be something that injects the
+    # agent's bearer into each request -- see the README's "Try it".
+    environment:
+      PLOW_API_BASE: ${PLOW_API_BASE:?set PLOW_API_BASE to a Plow endpoint that injects the agent bearer}
     volumes:
-      # `.host`, not the path the agent reads: a bind carries this machine's
-      # ownership in, and the image copies the file into place as root itself.
-      - ./plow-credentials:/var/lib/plow/credentials.host:ro
       # The agent's home, kept across `up`/`down` for its sessions and setup.
       # `docker compose down -v` starts this agent fresh. An edit to SOUL.md
       # does not need it -- plow-init composes the identity into the home on

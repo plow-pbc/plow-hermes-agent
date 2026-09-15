@@ -1,16 +1,11 @@
 #!/bin/sh
-# Two things, as root, before any service starts.
-#
-# 1. Seed the agent's config.yaml if it has none, so the runtime does not seed
-#    its own -- a generated default with no chat platform and no provider,
-#    which boots clean and answers nobody.
-# 2. Promote the credential a developer bind-mounted, so `plow-init` finds it
-#    at the path it reads.
+# As root, before any service starts: seed the agent's config.yaml if it has
+# none, so the runtime does not seed its own -- a generated default with no
+# chat platform and no provider, which boots clean and answers nobody.
 set -eu
 
 CONFIG=/var/lib/hermes/config.yaml
 SEED=/opt/hermes/plow-seed/config.yaml
-CREDENTIALS=/var/lib/plow/credentials
 
 # Never following an existing path: `cp` would write through a symlink the
 # agent left here, and this runs as root. Redirecting into a `set -C` create
@@ -40,18 +35,4 @@ if [ ! -e /var/lib/hermes/.env ]; then
   : > /var/lib/hermes/.env
   chown root:hermes /var/lib/hermes/.env
   chmod 0640 /var/lib/hermes/.env
-fi
-
-# A bind-mounted credential carries its host's ownership and mode, which on a
-# Linux host is never root's -- and `plow-init` reads that file as root to
-# decide where the agent's own bearer token is sent, so it will not accept one
-# anybody else can read or replace. Relaxing that rule for the mount would
-# relax it for a VM too. So the mount lands under a name of its own and is
-# copied here, contents only, into the file the rule then applies to unchanged.
-if [ -f "$CREDENTIALS.host" ] && [ ! -L "$CREDENTIALS.host" ]; then
-  umask 077
-  cat "$CREDENTIALS.host" > "$CREDENTIALS.tmp"
-  chown root:root "$CREDENTIALS.tmp"
-  chmod 0600 "$CREDENTIALS.tmp"
-  mv -f "$CREDENTIALS.tmp" "$CREDENTIALS"
 fi

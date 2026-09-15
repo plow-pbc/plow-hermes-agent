@@ -2,8 +2,8 @@
 
     uv run --with pydantic --with pydantic-settings --with python-dotenv --with pyyaml pytest
 
-Covers the three decisions the image cannot afford to get wrong: which
-credential files it will read, what it does with each answer from Plow, and
+Covers the three decisions the image cannot afford to get wrong: where it
+reads Plow's endpoint from, what it does with each answer from Plow, and
 which settings it writes into the agent's config.
 """
 
@@ -31,75 +31,26 @@ sys.modules["plow_init"] = plow_init
 spec.loader.exec_module(plow_init)
 
 
-@pytest.fixture
-def owned_by_root(monkeypatch):
-    """These tests do not run as root, and the file they write is theirs.
-
-    The mode is real; only the owner is pretended, so the mode table below
-    still exercises the code that reads it.
-    """
-
-    class RootOwned:
-        def __init__(self, info):
-            self.st_mode, self.st_uid, self.st_gid = info.st_mode, 0, 0
-
-    real = os.lstat
-    monkeypatch.setattr(plow_init.os, "lstat", lambda path: RootOwned(real(path)))
+def test_where_plow_is_comes_from_the_environment(monkeypatch):
+    """exe.dev hands /exe.dev/etc/env to the CMD, and with-contenv hands it on."""
+    monkeypatch.setenv("PLOW_API_BASE", "https://plow-agt.int.exe.xyz")
+    assert plow_init.read_credentials().plow_api_base == "https://plow-agt.int.exe.xyz"
 
 
-def credential(tmp_path, body="PLOW_API_BASE=https://api.plow.co\nPLOW_AGENT_TOKEN=t\n", mode=0o600):
-    path = tmp_path / "credentials"
-    path.write_text(body)
-    path.chmod(mode)
-    plow_init.CREDENTIALS = str(path)
-    return path
+def test_a_token_in_the_environment_is_never_what_plow_init_presents(monkeypatch):
+    """The integration owns the bearer. Whatever else sits in the environment,
+    plow-init sends the placeholder and publishes the placeholder."""
+    monkeypatch.setenv("PLOW_AGENT_TOKEN", "sk-left-over")
+    monkeypatch.setenv("PLOW_API_BASE", "https://plow-agt.int.exe.xyz")
+    sent = []
 
+    def answer(request, timeout):
+        sent.append(request.get_header("Authorization"))
+        return io.BytesIO(json.dumps({"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}).encode())
 
-def test_the_process_environment_cannot_outrank_the_file(tmp_path, owned_by_root, monkeypatch):
-    """A settings model reads the environment first unless told not to.
-
-    `docker run -e PLOW_AGENT_TOKEN=...` would otherwise outrank the credential
-    the image was given, which is a rotation silently not taking.
-    """
-    monkeypatch.setenv("PLOW_API_BASE", "https://elsewhere.invalid")
-    monkeypatch.setenv("PLOW_AGENT_TOKEN", "inherited-not-the-credential")
-    credential(tmp_path)
-    read = plow_init.read_credentials()
-    assert (read.plow_api_base, read.plow_agent_token) == ("https://api.plow.co", "t")
-
-
-@pytest.mark.parametrize("mode", [0o644, 0o620, 0o602, 0o666])
-def test_a_credential_anyone_else_can_reach_is_refused(tmp_path, owned_by_root, parking, mode):
-    credential(tmp_path, mode=mode)
-    with pytest.raises(Parked):
-        plow_init.read_credentials()
-    assert "expected root:root at 600 or 400" in parking.read_text()
-
-
-def test_a_refused_credential_does_not_print_the_token(tmp_path, owned_by_root, parking):
-    """This message goes to s6's stderr, which is the container's log.
-
-    Pydantic quotes the offending input by default, and for a missing key that
-    input is everything it did parse -- so the file's own token rides along.
-    """
-    credential(tmp_path, "PLOW_AGENT_TOKEN=sk-the-real-one\n")
-    with pytest.raises(Parked):
-        plow_init.read_credentials()
-    reason = parking.read_text()
-    assert "plow_api_base" in reason
-    assert "sk-the-real-one" not in reason
-
-
-def test_the_agent_id_third_key_is_read(tmp_path, owned_by_root):
-    credential(tmp_path, "PLOW_API_BASE=x\nPLOW_AGENT_TOKEN=t\nAGENT_ID=life\n")
-    assert plow_init.read_credentials().agent_id == "life"
-
-
-def test_an_unknown_third_key_is_refused(tmp_path, owned_by_root, parking):
-    credential(tmp_path, "PLOW_API_BASE=x\nPLOW_AGENT_TOKEN=t\nPLOW_HOME_CHANNEL=cht_host_says\n")
-    with pytest.raises(Parked):
-        plow_init.read_credentials()
-    assert "only the documented keys" in parking.read_text()
+    monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
+    plow_init.ask_plow(plow_init.read_credentials())
+    assert sent == ["Bearer proxied"]
 
 
 class Parked(Exception):
@@ -121,31 +72,30 @@ def parking(monkeypatch, tmp_path):
     return marker
 
 
-def test_a_missing_credential_parks_rather_than_exiting(tmp_path, parking):
+def test_no_plow_api_base_parks_rather_than_exiting(monkeypatch, parking):
     """The warm pool's normal life, and the path that started all this.
 
     Exiting here is what panics the microVM: plow-init's non-zero exit takes
     /init with it, and /init is PID 1.
     """
-    plow_init.CREDENTIALS = str(tmp_path / "absent")
-    plow_init.CREDENTIALS_WAIT_S = 1
+    monkeypatch.delenv("PLOW_API_BASE", raising=False)
     with pytest.raises(Parked):
         plow_init.read_credentials()
-    assert "no credential at" in parking.read_text()
+    assert "the environment does not name where Plow is" in parking.read_text()
 
 
 def test_parking_says_why_on_stderr_as_well_as_in_the_marker(parking, capsys):
     with pytest.raises(Parked):
-        plow_init.park("no credential at /var/lib/plow/credentials after 60s")
-    assert "no credential at" in capsys.readouterr().err
-    assert parking.read_text() == "no credential at /var/lib/plow/credentials after 60s\n"
+        plow_init.park("the environment does not name where Plow is")
+    assert "does not name where Plow is" in capsys.readouterr().err
+    assert parking.read_text() == "the environment does not name where Plow is\n"
 
 
 def test_an_unwritable_marker_still_parks(monkeypatch, tmp_path, capsys):
     """The marker is for a human with a shell. Parking is the behaviour."""
     monkeypatch.setattr(plow_init, "PARK_MARKER", str(tmp_path / "no-such-dir" / "parked"))
     with pytest.raises(Parked):
-        plow_init.park("no credential")
+        plow_init.park("no PLOW_API_BASE")
     assert "could not write" in capsys.readouterr().err
 
 
@@ -178,54 +128,6 @@ def image_user(request, monkeypatch, tmp_path):
     home = tmp_path / "hermes"
     home.mkdir()
     monkeypatch.setattr(plow_init, "HOME_DIR", str(home))
-
-
-def test_a_stale_credential_beside_an_unpromoted_one_parks(tmp_path, parking, monkeypatch, image_user):
-    """The rotation-not-taking case, and the reason this gate exists.
-
-    00-plow-sanitize promotes a bind-mounted credential into the path this
-    script reads. Under S6_BEHAVIOUR_IF_STAGE2_FAILS=1 a failed cont-init is
-    carried past, so an aborted promotion leaves the previous boot's
-    credential in place -- valid-looking, and belonging to someone else.
-    """
-    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
-    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
-    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=stale\n")
-    (tmp_path / "credentials.host").write_text("PLOW_AGENT_TOKEN=fresh\n")
-    with pytest.raises(Parked):
-        plow_init.verify_boot_preconditions()
-    assert "the promotion did not run, and this credential is stale" in parking.read_text()
-
-
-def test_a_host_credential_that_is_not_a_regular_file_parks(tmp_path, parking, monkeypatch, image_user):
-    """Docker makes a DIRECTORY at the mount point when the source is missing.
-
-    00-plow-sanitize's `-f` test skips that silently, so the boot most likely
-    to leave the previous tenant's credential in place is also the one that
-    looks like nothing happened.
-    """
-    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
-    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
-    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=stale\n")
-    (tmp_path / "credentials.host").mkdir()
-    with pytest.raises(Parked):
-        plow_init.verify_boot_preconditions()
-    assert "is not a regular file -- nothing was promoted" in parking.read_text()
-
-
-def test_a_promoted_credential_passes(tmp_path, parking, monkeypatch, image_user):
-    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
-    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "credentials.host"))
-    (tmp_path / "credentials").write_text("PLOW_AGENT_TOKEN=fresh\n")
-    (tmp_path / "credentials.host").write_text("PLOW_AGENT_TOKEN=fresh\n")
-    plow_init.verify_boot_preconditions()
-
-
-def test_no_host_credential_means_nothing_to_promote(tmp_path, parking, monkeypatch, image_user):
-    """A VM has no bind mount. Its absence is the normal case, not a failure."""
-    monkeypatch.setattr(plow_init, "CREDENTIALS", str(tmp_path / "credentials"))
-    monkeypatch.setattr(plow_init, "HOST_CREDENTIALS", str(tmp_path / "absent.host"))
-    plow_init.verify_boot_preconditions()
 
 
 def test_a_missing_agent_account_parks(parking, monkeypatch):

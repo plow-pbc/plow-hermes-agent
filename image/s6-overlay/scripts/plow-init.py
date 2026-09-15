@@ -1,4 +1,4 @@
-"""Configure this agent from its credential, then let the gateway start.
+"""Configure this agent from its environment, then let the gateway start.
 
 Runs once, as root, before any service. Everything downstream declares this as
 a dependency, and s6-rc starts none of it until this oneshot completes -- which
@@ -6,10 +6,13 @@ is the point: an agent whose setup half ran serves its local API, answers every
 probe, and cannot be reached by the person it belongs to. So a refusal here
 parks rather than exits, and the completion never comes.
 
-A host tells this image where Plow is, what to present to it, and optionally
-which Agent Index id it reports as, at /var/lib/plow/credentials. The rest of the agent's identity is asked of Plow
-with that credential. Nothing falls back -- no credential, a credential Plow
-will not answer for, or no answer at all, and nothing starts.
+A host tells this image where Plow is, and optionally which Agent Index id it
+reports as, in the process environment. The host also owns the bearer: exe.dev
+fronts PLOW_API_BASE with an integration that injects the agent's credential
+into every request, so no token ever reaches this image. The rest of the
+agent's identity is asked of Plow through that endpoint. Nothing falls back --
+no endpoint, an agent Plow will not answer for, or no answer at all, and
+nothing starts.
 """
 
 from __future__ import annotations
@@ -20,7 +23,6 @@ import pwd
 import secrets
 import signal
 import stat
-import subprocess
 import sys
 import traceback
 import tempfile
@@ -33,15 +35,12 @@ import yaml
 from dotenv.parser import parse_stream
 from pydantic import BaseModel, Field, ValidationError
 from typing import Annotated, Literal, Union
-from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
-CREDENTIALS = "/var/lib/plow/credentials"
 CONFIG = "/var/lib/hermes/config.yaml"
 CONTAINER_ENV = "/run/s6/container_environment"
-HOST_SETUP = "/exe.dev/setup"
 PARK_MARKER = "/run/plow-init.parked"
 
-CREDENTIALS_WAIT_S = 60
 RETRIES = 10
 RETRY_DELAY_S = 3
 TIMEOUT_S = 10
@@ -65,11 +64,15 @@ SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 # (plow-hermes-agent#66, life-assistant-hermes-agent#168).
 SEED_SOUL = "/opt/hermes/plow-seed/SOUL.md"
 SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
-HOST_CREDENTIALS = f"{CREDENTIALS}.host"
 # Latch's `initialize.instructions`, which Hermes drops on connect, written
 # where it reads them instead: the context tier, via `terminal.cwd` (#72).
 HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
 INSTRUCTIONS_TIMEOUT_S = 5
+# What goes wherever a bearer has to be present -- the plugin requires
+# PLOW_AGENT_TOKEN, the config names the inference key by variable -- but is
+# never what Plow sees: the integration in front of PLOW_API_BASE replaces the
+# Authorization header with the agent's real credential.
+TOKEN_PLACEHOLDER = "proxied"
 
 
 class _RefuseRedirects(urllib.request.HTTPRedirectHandler):
@@ -151,24 +154,14 @@ def park(reason: str) -> typing.NoReturn:
 
 
 class Credentials(BaseSettings):
-    """The two required lines and optional Agent Index id the host writes.
+    """Where Plow is, as the host set it.
 
-    `extra="forbid"` refuses a provisioner that has drifted ahead of this
-    image, rather than half-obeying it.
-
-    The file is the ONLY source. A settings model reads the process
-    environment first by default, which would let `docker run -e
-    PLOW_AGENT_TOKEN=...` outrank the credential the image was actually given
-    -- and since the token decides what is sent to Plow, that is a rotation
-    silently not taking, or an agent presenting somebody else's credential.
-    So every other source is dropped below.
+    The process environment is the ONLY source: with-contenv hands plow-init
+    what the host gave the container's CMD, which on exe.dev is
+    /exe.dev/etc/env. Every other source is dropped below.
     """
 
-    model_config = SettingsConfigDict(extra="forbid")
-
     plow_api_base: str
-    plow_agent_token: str
-    agent_id: str | None = None
 
     @classmethod
     def settings_customise_sources(
@@ -179,7 +172,7 @@ class Credentials(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        return (dotenv_settings,)
+        return (env_settings,)
 
 
 class LineRef(BaseModel):
@@ -293,74 +286,24 @@ def verify_boot_preconditions() -> None:
     it touched is in the path to serving anyone.
 
     Each check is a state a failed cont-init actually produces, not a
-    hypothetical: no agent account (the inherited uid remap did not run), a
-    bind-mounted credential still sitting unpromoted beside a stale one (the
-    promotion aborted -- the rotation-not-taking case), and a home that is not
-    a directory this image can work in.
+    hypothetical: no agent account (the inherited uid remap did not run), and a
+    home that is not a directory this image can work in.
     """
     try:
         pwd.getpwnam("hermes")
     except KeyError:
         park("no `hermes` account -- the image's user setup did not complete")
 
-    # The promotion is the one cont-init step whose failure is silent AND
-    # serves a tenant on the wrong credential: a stale file from an earlier
-    # boot is a valid-looking credential, so nothing downstream would notice.
-    # `lexists`, not `isfile`: presence is what says a promotion was owed, and
-    # the shape that matters most is not a regular file. Docker creates a
-    # DIRECTORY at the mount point when the host source is missing, and
-    # 00-plow-sanitize's `-f` test skips a directory silently -- so the boot
-    # most likely to leave a stale credential in place is also the one that
-    # looks like nothing happened. A symlink is refused for the same reason.
-    if os.path.lexists(HOST_CREDENTIALS):
-        if not stat.S_ISREG(os.lstat(HOST_CREDENTIALS).st_mode):
-            park(f"{HOST_CREDENTIALS} is not a regular file -- nothing was promoted, and {CREDENTIALS} cannot be trusted")
-        try:
-            with open(HOST_CREDENTIALS, "rb") as host, open(CREDENTIALS, "rb") as promoted:
-                same = host.read() == promoted.read()
-        except OSError as error:
-            park(f"{HOST_CREDENTIALS} was never promoted to {CREDENTIALS}: {error}")
-        if not same:
-            park(f"{CREDENTIALS} is not the {HOST_CREDENTIALS} beside it -- the promotion did not run, and this credential is stale")
-
     if not os.path.isdir(HOME_DIR) or os.path.islink(HOME_DIR):
         park(f"{HOME_DIR} is not a directory -- the agent has no home to start in")
 
 
 def read_credentials() -> Credentials:
-    """Judge the file before parsing it, on facts a parser cannot see.
-
-    It decides where the agent's own bearer token is sent, so anyone else
-    owning or reading it chooses both. Two exact modes rather than a rule about
-    bits: one merely forbidding the write bits would admit 0644, which hands
-    the credential to every account in the container.
-    """
-    # Waited for, not merely required: a host may write this file after the
-    # container is already running. Present at boot costs nothing -- the first
-    # look succeeds.
-    for _ in range(CREDENTIALS_WAIT_S):
-        if os.path.lexists(CREDENTIALS):
-            break
-        time.sleep(1)
+    """Read the host's values from the environment, or park saying which is missing."""
     try:
-        info = os.lstat(CREDENTIALS)
-    except OSError:
-        park(f"no credential at {CREDENTIALS} after {CREDENTIALS_WAIT_S}s")
-    mode = stat.S_IMODE(info.st_mode)
-    if not stat.S_ISREG(info.st_mode):
-        park(f"{CREDENTIALS} is not a regular file")
-    if (info.st_uid, info.st_gid) != (0, 0) or mode not in (0o600, 0o400):
-        park(f"{CREDENTIALS} is {info.st_uid}:{info.st_gid} mode {mode:04o} -- expected root:root at 600 or 400")
-    try:
-        # The path is passed rather than baked into the class, so this module
-        # names it once.
-        return Credentials(_env_file=CREDENTIALS)
+        return Credentials()
     except ValidationError as error:
-        # `include_input=False`: the default rendering quotes the offending
-        # input back, and for a missing key that input is the whole parsed
-        # file -- so a credential lacking PLOW_API_BASE would print the token
-        # it does have to s6's stderr, where every log reader can see it.
-        park(f"{CREDENTIALS} does not contain only the documented keys:\n{error.errors(include_input=False)}")
+        park(f"the environment does not name where Plow is:\n{error.errors(include_input=False)}")
 
 
 def ask_plow(credentials: Credentials) -> Identity:
@@ -374,15 +317,16 @@ def ask_plow(credentials: Credentials) -> Identity:
     url = credentials.plow_api_base.rstrip("/") + "/v1/agents/cloud/me"
     request = urllib.request.Request(
         url,
-        headers={"Authorization": f"Bearer {credentials.plow_agent_token}", "Accept": "application/json"},
+        headers={"Authorization": f"Bearer {TOKEN_PLACEHOLDER}", "Accept": "application/json"},
     )
     for attempt in range(1, RETRIES + 1):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            # 401, 403 and 404 are Plow saying this credential is not this
-            # agent's -- revoked, or naming an agent that is gone.
+            # 401, 403 and 404 are Plow saying the credential the integration
+            # presented is not this agent's -- revoked, or naming an agent
+            # that is gone.
             if not (error.code == 429 or 500 <= error.code < 600):
                 park(f"{url} answered {error.code} -- Plow refused this credential")
             reason = f"answered {error.code}"
@@ -932,31 +876,21 @@ def own_session_reset() -> None:
 
 
 def main() -> None:
-    # The host's own setup hook, if this provider has one. Removed once run,
-    # so a reboot cannot replay it.
-    if os.access(HOST_SETUP, os.X_OK):
-        subprocess.run([HOST_SETUP], check=True)
-        os.unlink(HOST_SETUP)
     verify_boot_preconditions()
     harden_home()
 
     credentials = read_credentials()
     identity = ask_plow(credentials)
     home = home_chat(identity)
-    write_latch_instructions(identity, credentials.plow_agent_token)
+    write_latch_instructions(identity, TOKEN_PLACEHOLDER)
     values = {
-        "PLOW_API_BASE": credentials.plow_api_base,
-        "PLOW_AGENT_TOKEN": credentials.plow_agent_token,
+        "PLOW_AGENT_TOKEN": TOKEN_PLACEHOLDER,
         "PLOW_HOME_CHANNEL": home.uid,
-        # Chat and inference are the same credential; the config names the
-        # inference key by variable rather than holding a value.
-        "HERMES_CUSTOM_PLOW_API_KEY": credentials.plow_agent_token,
+        "HERMES_CUSTOM_PLOW_API_KEY": TOKEN_PLACEHOLDER,
         # Fresh every boot. The gateway's loopback API server will not start
         # without one, and nothing reads it from a file.
         "API_SERVER_KEY": secrets.token_hex(32),
     }
-    if credentials.agent_id:
-        values["AGENT_ID"] = credentials.agent_id
     if identity.mcp_url:
         values["PLOW_MCP_URL"] = identity.mcp_url
     export(values)
@@ -980,7 +914,7 @@ def main() -> None:
     seed_user_profile(home)
     configure(identity, seed)
     own_session_reset()
-    print(f"plow-init: configured from {CREDENTIALS} as {home.uid}", file=sys.stderr)
+    print(f"plow-init: configured from {credentials.plow_api_base} as {home.uid}", file=sys.stderr)
 
 
 if __name__ == "__main__":

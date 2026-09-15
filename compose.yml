@@ -6,12 +6,11 @@ services:
     # on it is a stale `docker login` rather than an entitlement -- `docker
     # logout` and build again.
     build: .
-    # Where Plow is and the agent's own token, from `plow-agents mint <line>`.
-    # exe.dev sets the first alone and injects the token at its proxy; here
-    # nothing sits in between, so the token comes along.
-    environment:
-      PLOW_API_BASE: ${PLOW_API_BASE:?set PLOW_API_BASE}
-      PLOW_AGENT_TOKEN: ${PLOW_AGENT_TOKEN:?set PLOW_AGENT_TOKEN}
+    # Where Plow is and the agent's own token: the KEY=VALUE file
+    # `plow-agents mint <line>` writes, loaded as environment. exe.dev sets
+    # PLOW_API_BASE alone and injects the token at its proxy; here nothing
+    # sits in between, so the token comes along.
+    env_file: ./plow-credentials
     volumes:
       # The agent's home, kept across `up`/`down` for its sessions and setup.
       # `docker compose down -v` starts this agent fresh. An edit to SOUL.md

@@ -392,12 +392,15 @@ such VM has been re-provisioned.
 
 ## Try it
 
-Mint a credential with [`plow-agents`](https://github.com/plow-pbc/plow-agents)
-(`plow-agents mint <line>`; `login --new-line` first on a new account) and pass
-both values from the shell, pointed straight at Plow:
+[`plow-agents`](https://github.com/plow-pbc/plow-agents) writes
+`./plow-credentials`, a `KEY=VALUE` file with `PLOW_API_BASE` and
+`PLOW_AGENT_TOKEN`, and `compose.yml` loads it as the container's environment
+(`env_file`), pointed straight at Plow:
 
 ```sh
-PLOW_API_BASE=https://api.plow.co PLOW_AGENT_TOKEN=<token> docker compose up --build -d
+plow-agents login --new-line   # once per account
+plow-agents mint <line-uid>    # writes ./plow-credentials
+docker compose up --build -d
 ```
 
 ## Tests

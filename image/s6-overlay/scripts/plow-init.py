@@ -515,6 +515,13 @@ def configure(identity: Identity, seed: dict) -> None:
         # a home seeded before it carried `url`/`headers` dispatched to stdio.
         ("mcp_servers", RELAY_SERVER): {**seed["mcp_servers"][RELAY_SERVER], "enabled": identity.mcp_url is not None},
         ("model", "provider"): provider,
+        # A cron job pins the provider TYPE it resolved at creation, and a
+        # `providers:` entry resolves as the bare `custom`, which names no
+        # entry and falls through to an empty OpenRouter key: every ld-* job
+        # failed "No LLM provider configured" (Hermes 0.21.2,
+        # NousResearch/hermes-agent#109765). cron.model_provider outranks that
+        # snapshot and is re-read every tick, so it rescues existing jobs too.
+        ("cron", "model_provider"): provider,
         ("agent", "api_max_retries"): seed["agent"]["api_max_retries"],
         ("cron", "model_drift_guard"): seed["cron"]["model_drift_guard"],
         ("display",): seed["display"],

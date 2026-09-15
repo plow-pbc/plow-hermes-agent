@@ -752,6 +752,7 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
     after = configure(tmp_path, mcp_url="https://relay.invalid/mcp",
                       env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
     assert after["model"]["provider"] == "anthropic"
+    assert after["cron"]["model_provider"] == "anthropic"
     assert after["model"]["default"] == "claude-sonnet-4-5"
     assert after["mcp_servers"]["plow"] == {**SEED["mcp_servers"]["plow"], "enabled": True}
     # Somebody else's MCP server, and everything else, untouched.
@@ -780,6 +781,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert after["display"] == SEED["display"]
     assert after["tools"]["tool_search"]["enabled"] == "off"
     assert after["cron"]["model_drift_guard"] is False
+    assert after["cron"]["model_provider"] == after["model"]["provider"]
     assert after["terminal"]["cwd"] == "/var/lib/hermes"
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL

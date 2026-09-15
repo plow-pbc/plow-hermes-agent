@@ -448,7 +448,7 @@ def test_a_skills_directory_the_agent_replaced_with_a_link_is_refused(tmp_path, 
     victim.mkdir(mode=0o700)
     (home / "skills").rmdir()
     (home / "skills").symlink_to(victim)
-    with pytest.raises(Parked):
+    with pytest.raises(OSError):
         plow_init.harden_home()
     assert victim.stat().st_mode & 0o7777 == 0o700
 
@@ -905,3 +905,39 @@ def test_a_gateway_json_this_image_cannot_read_parks(tmp_path, parking):
 def test_upstream_main_hermes_waits_for_plow_init():
     dependency = SOURCE.parents[1] / "s6-rc.d/main-hermes/dependencies.d/plow-init"
     assert dependency.is_file()
+
+
+class Slept(Exception):
+    """Stands in for the guard's sleep, so a single pass can be observed."""
+
+
+def test_the_home_guard_puts_a_chmodded_home_back_and_says_what_it_found(image_user, monkeypatch, capsys):
+    """A root `docker exec` running Hermes code chmods the home 0700 (2026-09-15).
+    The guard restores it on its next pass and says what it found; a healthy home passes without a word."""
+    home = pathlib.Path(plow_init.HOME_DIR)
+    (home / "skills").mkdir()
+    for path in (home, home / "skills"):
+        path.chmod(0o700)
+    real_fstat = os.fstat
+    monkeypatch.setattr(plow_init.os, "fstat", lambda fd: types.SimpleNamespace(
+        st_mode=real_fstat(fd).st_mode, st_uid=0, st_gid=1000))
+    monkeypatch.setattr(plow_init.os, "fchown", lambda fd, uid, gid: None)
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: (_ for _ in ()).throw(Slept()))
+
+    with pytest.raises(Slept):
+        plow_init.guard_home()
+    for path in (home, home / "skills"):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o3770
+    assert f"{home} was 0:1000 700" in capsys.readouterr().err
+
+    with pytest.raises(Slept):
+        plow_init.guard_home()
+    assert capsys.readouterr().err == ""
+
+
+def test_the_home_guard_is_a_longrun_that_waits_for_plow_init():
+    service = SOURCE.parents[1] / "s6-rc.d/home-guard"
+    assert (service / "type").read_text().strip() == "longrun"
+    assert (service / "dependencies.d/plow-init").is_file()
+    assert (SOURCE.parents[1] / "s6-rc.d/user/contents.d/home-guard").is_file()
+    assert os.access(service / "run", os.X_OK)

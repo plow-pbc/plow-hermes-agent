@@ -1033,13 +1033,14 @@ def main() -> None:
     os.setgroups([])
     os.setgid(hermes.pw_gid)
     os.setuid(hermes.pw_uid)
-    # Exists + empty tells the plugin to backfill from the first message.
-    # Never reset an existing checkpoint: that would replay handled history.
-    try:
-        with open(os.path.join(os.environ.get("HERMES_HOME") or HOME_DIR, "plow_chat_last_uid"), "x"):
+    # Only a home observed after waiting gets an empty anchor. An immediate
+    # home may have history the plugin must newest-anchor rather than replay.
+    if waiting_line is not None:
+        try:
+            with open(os.path.join(os.environ.get("HERMES_HOME") or HOME_DIR, "plow_chat_last_uid"), "x"):
+                pass
+        except FileExistsError:
             pass
-    except FileExistsError:
-        pass
     seed_user_profile(home)
     configure(identity, seed)
     own_session_reset()

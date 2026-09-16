@@ -1015,6 +1015,20 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     assert all(b - a >= 3600 for a, b in zip(waiting_logs, waiting_logs[1:]))
 
 
+@pytest.mark.parametrize("existing", [None, "", "msg_already_handled\n"])
+def test_immediate_home_leaves_checkpoint_untouched(boot, monkeypatch, existing):
+    checkpoint, dropped, exported = boot
+    if existing is not None:
+        checkpoint.write_text(existing)
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("cht_home")))
+    plow_init.main()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    if existing is None:
+        assert not checkpoint.exists()
+    else:
+        assert checkpoint.read_text() == existing
+
+
 def test_boot_parks_on_ambiguous_home_before_publishing_or_seeding(boot, monkeypatch):
     checkpoint, dropped, exported = boot
     monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("a"), chat("b")))
@@ -1064,7 +1078,9 @@ def test_checkpoint_uses_the_plugins_hermes_home(boot, monkeypatch, tmp_path, ho
         monkeypatch.setenv("HERMES_HOME", str(home))
     else:
         monkeypatch.setenv("HERMES_HOME", "")
-    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("cht_home")))
+    answers = iter([identity(), identity(chat("cht_home"))])
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
     plow_init.main()
     assert checkpoint.read_bytes() == b""
     if home_override:

@@ -57,6 +57,8 @@ RETRY_DELAY_S = 3
 # and the restart that follows a rotation is exactly what lands inside that
 # window -- measured at about 50 seconds.
 AUTH_WAIT_S = 120
+HOME_POLL_INTERVAL_S = 30
+HOME_WAIT_LOG_INTERVAL_S = 3600
 TIMEOUT_S = 10
 # The one entry in `mcp_servers` this image manages. Any other belongs to
 # whoever added it and is left exactly as it is.
@@ -388,7 +390,7 @@ def read_file_credentials() -> FileCredentials:
         park(f"{CREDENTIALS} does not contain only the documented keys:\n{error.errors(include_input=False)}")
 
 
-def ask_plow(credentials: Credentials) -> Identity:
+def ask_plow(credentials: Credentials, *, waiting: bool = False) -> Identity | None:
     """Ask Plow who this agent is, retrying only what waiting could fix.
 
     A VM's network is not always up when its first service is: worth retrying,
@@ -400,6 +402,8 @@ def ask_plow(credentials: Credentials) -> Identity:
     changed is that "refused" now means refused for two minutes, because a
     credential that was just rotated answers 401 for around a minute first, and
     the boot after a rotation is the one that asks.
+    Once waiting for first contact, return transient failures to the outer
+    poll loop instead: that wait can outlast any bounded boot retry budget.
     """
     url = credentials.plow_api_base.rstrip("/") + "/v1/agents/cloud/me"
     request = urllib.request.Request(
@@ -434,6 +438,8 @@ def ask_plow(credentials: Credentials) -> Identity:
                 # Same reason as the credential above: the raw answer is a
                 # roster of real people.
                 park(f"{url} answered something that is not an identity:\n{error.errors(include_input=False)}")
+        if waiting:
+            return None
         attempts += 1
         if attempts >= RETRIES:
             park(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
@@ -978,16 +984,19 @@ def main() -> None:
 
     credentials = read_credentials()
     next_wait_log = time.monotonic()
+    waiting_line = None
     while True:
-        identity = ask_plow(credentials)
-        home = home_chat(identity)
+        identity = ask_plow(credentials, waiting=waiting_line is not None)
+        home = home_chat(identity) if identity is not None else None
         if home is not None:
             break
+        if identity is not None:
+            waiting_line = identity.line.uid
         now = time.monotonic()
         if now >= next_wait_log:
-            print(f"plow-init: waiting for a home chat on {identity.line.uid}", file=sys.stderr)
-            next_wait_log = now + 3600
-        time.sleep(30)
+            print(f"plow-init: waiting for a home chat on {waiting_line}", file=sys.stderr)
+            next_wait_log = now + HOME_WAIT_LOG_INTERVAL_S
+        time.sleep(HOME_POLL_INTERVAL_S)
     write_latch_instructions(identity, credentials.bearer)
     values = {
         # Re-published even when the environment already holds it: the

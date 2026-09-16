@@ -973,7 +973,7 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     elapsed = 0
     waiting_logs = []
 
-    def answer(credentials):
+    def answer(credentials, *, waiting=False):
         assert not dropped
         return identity(chat("cht_home")) if elapsed >= 7200 else identity()
 
@@ -1009,9 +1009,66 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
 
 def test_boot_parks_on_ambiguous_home_before_publishing_or_seeding(boot, monkeypatch):
     checkpoint, dropped, exported = boot
-    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials: identity(chat("a"), chat("b")))
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("a"), chat("b")))
     with pytest.raises(Parked):
         plow_init.main()
+    assert not checkpoint.exists()
+    assert not exported
+    assert not dropped
+
+
+@pytest.mark.parametrize("failure", [429, 503, "unreachable", "timeout"])
+def test_transient_outage_mid_wait_recovers_without_parking(boot, monkeypatch, parking, failure):
+    checkpoint, dropped, exported = boot
+    failures = 0
+    requests = 0
+
+    def answer(request, timeout):
+        nonlocal failures, requests
+        requests += 1
+        if requests == 1:
+            return io.BytesIO(identity().model_dump_json().encode())
+        if failures <= plow_init.RETRIES:
+            failures += 1
+            if failure == "unreachable":
+                raise urllib.error.URLError("offline")
+            if failure == "timeout":
+                raise TimeoutError("timed out")
+            raise urllib.error.HTTPError(request.full_url, failure, "unavailable", {}, None)
+        return io.BytesIO(identity(chat("cht_home")).model_dump_json().encode())
+
+    monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
+    plow_init.main()
+    assert failures > plow_init.RETRIES
+    assert not parking.exists()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert checkpoint.read_bytes() == b""
+
+
+@pytest.mark.parametrize("failure", [401, 403, 404, "malformed"])
+def test_permanent_failure_mid_wait_still_parks(boot, monkeypatch, parking, failure, unhurried):
+    checkpoint, dropped, exported = boot
+    requests = 0
+
+    def answer(request, timeout):
+        nonlocal requests
+        requests += 1
+        if requests == 1:
+            return io.BytesIO(identity().model_dump_json().encode())
+        if failure == "malformed":
+            return io.BytesIO(b"{}")
+        raise urllib.error.HTTPError(request.full_url, failure, "refused", {}, None)
+
+    monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
+    with pytest.raises(Parked):
+        plow_init.main()
+    if failure in (401, 403):
+        assert plow_init.time.monotonic() == plow_init.HOME_POLL_INTERVAL_S + plow_init.AUTH_WAIT_S
+        assert f"answered {failure} for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
+    else:
+        assert requests == 2
+    assert parking.exists()
     assert not checkpoint.exists()
     assert not exported
     assert not dropped

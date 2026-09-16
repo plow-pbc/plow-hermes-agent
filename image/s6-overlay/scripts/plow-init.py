@@ -52,6 +52,11 @@ PARK_MARKER = "/run/plow-init.parked"
 
 RETRIES = 10
 RETRY_DELAY_S = 3
+# How long a refused credential is waited out before it is believed. A rotated
+# bearer does not reach the endpoint this boot dials the instant it is issued,
+# and the restart that follows a rotation is exactly what lands inside that
+# window -- measured at about 50 seconds.
+AUTH_WAIT_S = 120
 TIMEOUT_S = 10
 # The one entry in `mcp_servers` this image manages. Any other belongs to
 # whoever added it and is left exactly as it is.
@@ -388,19 +393,33 @@ def ask_plow(credentials: Credentials) -> Identity:
     not worth surviving. An agent that cannot be told who it is must not come
     up as whoever it was last time -- a home volume outlives its tenant, and
     the failure that hides is a new tenant answering in the previous one's chat.
+
+    A refusal is waited out too, for AUTH_WAIT_S. It is still terminal -- what
+    changed is that "refused" now means refused for two minutes, because a
+    credential that was just rotated answers 401 for around a minute first, and
+    the boot after a rotation is the one that asks.
     """
     url = credentials.plow_api_base.rstrip("/") + "/v1/agents/cloud/me"
     request = urllib.request.Request(
         url,
         headers={"Authorization": f"Bearer {credentials.bearer}", "Accept": "application/json"},
     )
-    for attempt in range(1, RETRIES + 1):
+    attempts = 0
+    refused_until = time.monotonic() + AUTH_WAIT_S
+    while True:
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
                 raw = response.read()
         except urllib.error.HTTPError as error:
-            # 401, 403 and 404 are Plow saying this credential is not this
-            # agent's -- revoked, or naming an agent that is gone.
+            # 404 is Plow saying this agent is gone, and nothing else here is
+            # an answer about the credential at all.
+            if error.code in (401, 403):
+                if time.monotonic() >= refused_until:
+                    park(f"{url} answered {error.code} for {AUTH_WAIT_S}s -- Plow refused this credential")
+                print(f"plow-init: {url} answered {error.code}, waiting for the credential to take",
+                      file=sys.stderr)
+                time.sleep(RETRY_DELAY_S)
+                continue
             if not (error.code == 429 or 500 <= error.code < 600):
                 park(f"{url} answered {error.code} -- Plow refused this credential")
             reason = f"answered {error.code}"
@@ -413,9 +432,11 @@ def ask_plow(credentials: Credentials) -> Identity:
                 # Same reason as the credential above: the raw answer is a
                 # roster of real people.
                 park(f"{url} answered something that is not an identity:\n{error.errors(include_input=False)}")
-        print(f"plow-init: attempt {attempt} to reach Plow failed, retrying ({reason})", file=sys.stderr)
+        attempts += 1
+        if attempts >= RETRIES:
+            park(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
+        print(f"plow-init: attempt {attempts} to reach Plow failed, retrying ({reason})", file=sys.stderr)
         time.sleep(RETRY_DELAY_S)
-    park(f"gave up asking Plow who this agent is after {RETRIES} attempts -- refusing to start")
 
 
 def fetch_latch_instructions(url: str, token: str) -> str:

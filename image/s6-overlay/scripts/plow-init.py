@@ -248,7 +248,7 @@ class Identity(BaseModel):
     mcp_url: str | None
 
 
-def home_chat(identity: Identity) -> Chat:
+def home_chat(identity: Identity) -> Chat | None:
     """The one chat that is this agent talking to the person it belongs to.
 
     Plow does not name it, so the image picks it, by the same rule Plow uses:
@@ -257,8 +257,8 @@ def home_chat(identity: Identity) -> Chat:
     somebody else's. The line check is load-bearing: a mailbox carrying this
     agent's persona is another line whose threads the credential also opens,
     and an owner alone with the mailbox reads as owner-plus-self too. Zero
-    matches or several is not a thing to guess at: the home channel is where
-    the agent answers, and the wrong one is an agent talking to the wrong people.
+    matches means the owner has not made contact yet. Several still refuse:
+    the wrong home is an agent talking to the wrong people.
     """
     def is_home(chat: Chat) -> bool:
         members = [p for p in chat.participants if isinstance(p, MemberParticipant)]
@@ -276,7 +276,9 @@ def home_chat(identity: Identity) -> Chat:
         )
 
     matches = [chat for chat in identity.chats if is_home(chat)]
-    if len(matches) != 1:
+    if not matches:
+        return None
+    if len(matches) > 1:
         seen = "; ".join(
             f"{chat.uid} status={chat.status} "
             + ",".join(
@@ -975,8 +977,17 @@ def main() -> None:
     harden_home()
 
     credentials = read_credentials()
-    identity = ask_plow(credentials)
-    home = home_chat(identity)
+    next_wait_log = time.monotonic()
+    while True:
+        identity = ask_plow(credentials)
+        home = home_chat(identity)
+        if home is not None:
+            break
+        now = time.monotonic()
+        if now >= next_wait_log:
+            print(f"plow-init: waiting for a home chat on {identity.line.uid}", file=sys.stderr)
+            next_wait_log = now + 3600
+        time.sleep(30)
     write_latch_instructions(identity, credentials.bearer)
     values = {
         # Re-published even when the environment already holds it: the
@@ -1013,6 +1024,13 @@ def main() -> None:
     os.setgroups([])
     os.setgid(hermes.pw_gid)
     os.setuid(hermes.pw_uid)
+    # Exists + empty tells the plugin to backfill from the first message.
+    # Never reset an existing checkpoint: that would replay handled history.
+    try:
+        with open(os.path.join(HOME_DIR, "plow_chat_last_uid"), "x"):
+            pass
+    except FileExistsError:
+        pass
     seed_user_profile(home)
     configure(identity, seed)
     own_session_reset()

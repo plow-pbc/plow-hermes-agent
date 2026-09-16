@@ -299,15 +299,19 @@ def test_the_home_chat_is_the_owner_alone_with_this_agent_on_its_own_line():
         (),                                             # nothing at all
         (chat("a", roles=("owner", "member")),),        # a group
         (chat("a", status="pending"),),                 # not active yet
-        (chat("a"), chat("b")),                         # two candidates
         (chat("a", roles=("member",)),),                # nobody is the owner
         (chat("a", agents=("self", "peer")),),          # another assistant is here too
         (chat("a", line="ln_mailbox"),),                # only the persona's mailbox, not this line
     ],
 )
-def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats, parking):
+def test_without_a_qualifying_home_chat_returns_none(chats, parking):
+    assert plow_init.home_chat(identity(*chats)) is None
+    assert not parking.exists()
+
+
+def test_multiple_home_chats_park_and_say_what_they_saw(parking):
     with pytest.raises(Parked):
-        plow_init.home_chat(identity(*chats))
+        plow_init.home_chat(identity(chat("a"), chat("b")))
     assert "cannot tell which chat is home" in parking.read_text()
 
 
@@ -937,3 +941,77 @@ def test_the_home_guard_is_a_longrun_that_waits_for_plow_init():
     assert (service / "dependencies.d/plow-init").is_file()
     assert (SOURCE.parents[1] / "s6-rc.d/user/contents.d/home-guard").is_file()
     assert os.access(service / "run", os.X_OK)
+
+
+@pytest.fixture
+def boot(monkeypatch, tmp_path, image_user):
+    """Run main with real home selection and checkpoint IO, without root operations."""
+    for name in ("verify_boot_preconditions", "harden_home", "write_latch_instructions",
+                 "own_home_dotenv", "seed_user_profile", "configure", "own_session_reset"):
+        monkeypatch.setattr(plow_init, name, lambda *args: None)
+    for name in ("setgroups", "setgid"):
+        monkeypatch.setattr(plow_init.os, name, lambda value: None)
+    dropped = []
+    monkeypatch.setattr(plow_init.os, "setuid", dropped.append)
+    monkeypatch.setattr(plow_init, "read_credentials", lambda: types.SimpleNamespace(
+        plow_api_base="https://plow.invalid", bearer="test", agent_id=None))
+    monkeypatch.setattr(plow_init, "SEED_CONFIG", str(SOURCE.parents[2] / "seed/config.yaml"))
+    exported = {}
+    monkeypatch.setattr(plow_init, "export", exported.update)
+    # Keep main's environment publication local to this test.
+    monkeypatch.setattr(plow_init.os, "environ", dict(os.environ))
+    return pathlib.Path(plow_init.HOME_DIR) / "plow_chat_last_uid", dropped, exported
+
+
+@pytest.mark.parametrize("existing", [None, "", "msg_already_handled\n"])
+def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
+    boot, monkeypatch, capsys, parking, existing
+):
+    checkpoint, dropped, exported = boot
+    if existing is not None:
+        checkpoint.write_text(existing)
+    elapsed = 0
+    waiting_logs = []
+
+    def answer(credentials):
+        assert not dropped
+        return identity(chat("cht_home")) if elapsed >= 7200 else identity()
+
+    def sleep(seconds):
+        nonlocal elapsed
+        assert seconds > 0
+        assert not exported
+        assert not dropped
+        assert checkpoint.exists() == (existing is not None)
+        if capsys.readouterr().err:
+            waiting_logs.append(elapsed)
+        elapsed += seconds
+
+    real_open = open
+
+    def checked_open(path, *args, **kwargs):
+        if pathlib.Path(path) == checkpoint:
+            assert dropped, "checkpoint must be created after dropping privileges"
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(plow_init, "open", checked_open, raising=False)
+    monkeypatch.setattr(plow_init, "ask_plow", answer)
+    monkeypatch.setattr(plow_init.time, "sleep", sleep)
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: elapsed)
+    plow_init.main()
+    assert not parking.exists()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert checkpoint.read_text() == (existing or "")
+    assert waiting_logs[0] == 0
+    assert 1 < len(waiting_logs) <= 3
+    assert all(b - a >= 3600 for a, b in zip(waiting_logs, waiting_logs[1:]))
+
+
+def test_boot_parks_on_ambiguous_home_before_publishing_or_seeding(boot, monkeypatch):
+    checkpoint, dropped, exported = boot
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials: identity(chat("a"), chat("b")))
+    with pytest.raises(Parked):
+        plow_init.main()
+    assert not checkpoint.exists()
+    assert not exported
+    assert not dropped

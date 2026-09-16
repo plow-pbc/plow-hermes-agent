@@ -30,12 +30,13 @@ change if this fact changed?** One owner, one place.
 | [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
-| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to exe.dev directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
+| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to the cloud host directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
-deprecated Docker fleet runner; it still pins the plugin and seed skills by SHA
-until `plow-agents` can run a container.
+deprecated Docker fleet runner. `plow-agents deploy --local` now runs an image
+in a container with compose, so agent-mgr is not how a new agent gets run; the
+plugin and seed-skill SHAs it still pins describe its own fleet, not this image.
 
 Two habits keep this map true. A variant that needs something from the base
 opens a PR on the base, then bumps its digest; it does not carry the fix

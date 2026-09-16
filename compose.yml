@@ -9,8 +9,12 @@ services:
     # Where Plow is and the agent's own token: the KEY=VALUE file
     # `plow-agents mint <line>` writes, loaded as environment. exe.dev sets
     # PLOW_API_BASE alone and injects the token at its proxy; here nothing
-    # sits in between, so the token comes along.
-    env_file: ./plow-credentials
+    # sits in between, so the token comes along. `PLOW_CREDENTIALS` points
+    # env_file at a credential outside the checkout (a durable smoke keeps it
+    # there so `down -v` and re-export can't wipe it); unset, it is the
+    # in-checkout file. Local-compose only — exe.dev injects the environment
+    # itself and never reads this file, so the default is unchanged there.
+    env_file: ${PLOW_CREDENTIALS:-./plow-credentials}
     volumes:
       # The agent's home, kept across `up`/`down` for its sessions and setup.
       # `docker compose down -v` starts this agent fresh. An edit to SOUL.md

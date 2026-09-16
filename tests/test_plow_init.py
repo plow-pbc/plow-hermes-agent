@@ -960,6 +960,7 @@ def boot(monkeypatch, tmp_path, image_user):
     monkeypatch.setattr(plow_init, "export", exported.update)
     # Keep main's environment publication local to this test.
     monkeypatch.setattr(plow_init.os, "environ", dict(os.environ))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
     return pathlib.Path(plow_init.HOME_DIR) / "plow_chat_last_uid", dropped, exported
 
 
@@ -1072,3 +1073,20 @@ def test_permanent_failure_mid_wait_still_parks(boot, monkeypatch, parking, fail
     assert not checkpoint.exists()
     assert not exported
     assert not dropped
+
+
+@pytest.mark.parametrize("home_override", ["", "custom-home"])
+def test_checkpoint_uses_the_plugins_hermes_home(boot, monkeypatch, tmp_path, home_override):
+    checkpoint, dropped, exported = boot
+    if home_override:
+        home = tmp_path / home_override
+        home.mkdir()
+        checkpoint = home / "plow_chat_last_uid"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+    else:
+        monkeypatch.setenv("HERMES_HOME", "")
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("cht_home")))
+    plow_init.main()
+    assert checkpoint.read_bytes() == b""
+    if home_override:
+        assert not (pathlib.Path(plow_init.HOME_DIR) / "plow_chat_last_uid").exists()

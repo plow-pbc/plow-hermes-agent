@@ -1036,7 +1036,7 @@ def main() -> None:
     # Exists + empty tells the plugin to backfill from the first message.
     # Never reset an existing checkpoint: that would replay handled history.
     try:
-        with open(os.path.join(HOME_DIR, "plow_chat_last_uid"), "x"):
+        with open(os.path.join(os.environ.get("HERMES_HOME") or HOME_DIR, "plow_chat_last_uid"), "x"):
             pass
     except FileExistsError:
         pass

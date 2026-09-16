@@ -129,8 +129,9 @@ display:
   # A message that lands mid-run waits for the run to finish and gets its own
   # turn, instead of being injected into the running task as a "correction" —
   # in a group chat that was every bystander's aside. /stop stays the mid-run
-  # escape. Owner-only interruption needs the gateway to read the plugin's
-  # owner/member flag, which it does not yet; until then everyone queues.
+  # escape. The gateway picks this mode per profile, never per sender, so the
+  # plugin makes the one exception itself: the owner's own DM text interrupts
+  # the run (hermes-plugin-plow#198). This stays `queue` for everyone else.
   busy_input_mode: queue
   # Hermes quiets its own iMessage adapters (photon, bluebubbles are
   # display_config._TIER_LOW) but a plugin platform gets the global defaults:

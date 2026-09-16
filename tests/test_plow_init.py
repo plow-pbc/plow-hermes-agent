@@ -237,45 +237,52 @@ def unhurried(monkeypatch):
 
 def refusing(monkeypatch, answers):
     """Answer the identity call from `answers` -- an int is that HTTP status,
-    None is a healthy identity. The last entry repeats."""
+    None is a healthy identity, "malformed" is an invalid one. The last entry repeats."""
     def answer(request, timeout):
         code = answers.pop(0) if len(answers) > 1 else answers[0]
         if code is None:
             return io.BytesIO(json.dumps({"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}).encode())
+        if code == "malformed":
+            return io.BytesIO(b"{}")
         raise urllib.error.HTTPError(request.full_url, code, "refused", {}, None)
 
     monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
 
 
+@pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("code", [401, 403])
-def test_a_credential_that_has_not_taken_yet_is_waited_out(monkeypatch, unhurried, code, capsys):
+def test_a_credential_that_has_not_taken_yet_is_waited_out(monkeypatch, unhurried, code, capsys, waiting):
     """A rotated bearer is refused for about a minute before it answers, and
     the restart that follows a rotation is the boot that asks. Parking on the
     first 401 leaves that agent down until somebody notices."""
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
     refusing(monkeypatch, [code, code, None])
-    assert plow_init.ask_plow(plow_init.read_credentials()).line.uid == "ln_own"
+    assert plow_init.ask_plow(plow_init.read_credentials(), waiting=waiting).line.uid == "ln_own"
     assert capsys.readouterr().err.count("waiting for the credential to take") == 2
 
 
-def test_a_credential_refused_for_the_whole_window_still_parks(monkeypatch, unhurried, parking):
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("code", [401, 403])
+def test_a_credential_refused_for_the_whole_window_still_parks(monkeypatch, unhurried, parking, code, waiting):
     """Waited out, not believed: a revoked credential is still terminal, and an
     agent that cannot be told who it is must not come up as whoever it was."""
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
-    refusing(monkeypatch, [401])
+    refusing(monkeypatch, [code])
     with pytest.raises(Parked):
-        plow_init.ask_plow(plow_init.read_credentials())
-    assert f"answered 401 for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
+        plow_init.ask_plow(plow_init.read_credentials(), waiting=waiting)
+    assert plow_init.time.monotonic() == plow_init.AUTH_WAIT_S
+    assert f"answered {code} for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
 
 
-def test_an_agent_that_is_gone_is_not_waited_for(monkeypatch, unhurried, parking):
-    """404 says the agent named by this credential does not exist. No amount of
-    waiting makes one."""
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("code, reason", [(404, "answered 404"), ("malformed", "not an identity")])
+def test_a_missing_agent_or_malformed_identity_parks_immediately(monkeypatch, unhurried, parking, code, reason, waiting):
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
-    refusing(monkeypatch, [404])
+    refusing(monkeypatch, [code])
     with pytest.raises(Parked):
-        plow_init.ask_plow(plow_init.read_credentials())
-    assert "answered 404 -- Plow refused this credential" in parking.read_text()
+        plow_init.ask_plow(plow_init.read_credentials(), waiting=waiting)
+    assert plow_init.time.monotonic() == 0
+    assert reason in parking.read_text()
 
 
 @pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
@@ -1045,34 +1052,6 @@ def test_transient_outage_mid_wait_recovers_without_parking(boot, monkeypatch, p
     assert not parking.exists()
     assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
     assert checkpoint.read_bytes() == b""
-
-
-@pytest.mark.parametrize("failure", [401, 403, 404, "malformed"])
-def test_permanent_failure_mid_wait_still_parks(boot, monkeypatch, parking, failure, unhurried):
-    checkpoint, dropped, exported = boot
-    requests = 0
-
-    def answer(request, timeout):
-        nonlocal requests
-        requests += 1
-        if requests == 1:
-            return io.BytesIO(identity().model_dump_json().encode())
-        if failure == "malformed":
-            return io.BytesIO(b"{}")
-        raise urllib.error.HTTPError(request.full_url, failure, "refused", {}, None)
-
-    monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
-    with pytest.raises(Parked):
-        plow_init.main()
-    if failure in (401, 403):
-        assert plow_init.time.monotonic() == plow_init.HOME_POLL_INTERVAL_S + plow_init.AUTH_WAIT_S
-        assert f"answered {failure} for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
-    else:
-        assert requests == 2
-    assert parking.exists()
-    assert not checkpoint.exists()
-    assert not exported
-    assert not dropped
 
 
 @pytest.mark.parametrize("home_override", ["", "custom-home"])

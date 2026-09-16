@@ -34,8 +34,10 @@ change if this fact changed?** One owner, one place.
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
-deprecated Docker fleet runner; it still pins the plugin and seed skills by SHA
-until `plow-agents` can run a container.
+deprecated Docker fleet runner. `plow-agents deploy --local --line <line-uid>`
+now runs an image in a container with compose, so agent-mgr is not how a new
+agent gets run; the plugin and seed-skill SHAs it still pins describe its own
+fleet, not this image.
 
 Two habits keep this map true. A variant that needs something from the base
 opens a PR on the base, then bumps its digest; it does not carry the fix

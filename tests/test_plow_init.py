@@ -226,6 +226,58 @@ def identity(*chats, mcp_url=None):
     return plow_init.Identity.model_validate({"line": {"uid": "ln_own"}, "chats": list(chats), "mcp_url": mcp_url})
 
 
+@pytest.fixture
+def unhurried(monkeypatch):
+    """Let the boot's waiting run at no cost: every sleep moves the clock
+    ask_plow reads, so a 120s window is a few hundred iterations, not 120s."""
+    clock = [0.0]
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: clock.__setitem__(0, clock[0] + seconds))
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: clock[0])
+
+
+def refusing(monkeypatch, answers):
+    """Answer the identity call from `answers` -- an int is that HTTP status,
+    None is a healthy identity. The last entry repeats."""
+    def answer(request, timeout):
+        code = answers.pop(0) if len(answers) > 1 else answers[0]
+        if code is None:
+            return io.BytesIO(json.dumps({"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}).encode())
+        raise urllib.error.HTTPError(request.full_url, code, "refused", {}, None)
+
+    monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
+
+
+@pytest.mark.parametrize("code", [401, 403])
+def test_a_credential_that_has_not_taken_yet_is_waited_out(monkeypatch, unhurried, code, capsys):
+    """A rotated bearer is refused for about a minute before it answers, and
+    the restart that follows a rotation is the boot that asks. Parking on the
+    first 401 leaves that agent down until somebody notices."""
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
+    refusing(monkeypatch, [code, code, None])
+    assert plow_init.ask_plow(plow_init.read_credentials()).line.uid == "ln_own"
+    assert capsys.readouterr().err.count("waiting for the credential to take") == 2
+
+
+def test_a_credential_refused_for_the_whole_window_still_parks(monkeypatch, unhurried, parking):
+    """Waited out, not believed: a revoked credential is still terminal, and an
+    agent that cannot be told who it is must not come up as whoever it was."""
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
+    refusing(monkeypatch, [401])
+    with pytest.raises(Parked):
+        plow_init.ask_plow(plow_init.read_credentials())
+    assert f"answered 401 for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
+
+
+def test_an_agent_that_is_gone_is_not_waited_for(monkeypatch, unhurried, parking):
+    """404 says the agent named by this credential does not exist. No amount of
+    waiting makes one."""
+    monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
+    refusing(monkeypatch, [404])
+    with pytest.raises(Parked):
+        plow_init.ask_plow(plow_init.read_credentials())
+    assert "answered 404 -- Plow refused this credential" in parking.read_text()
+
+
 @pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
 def test_an_answer_missing_a_key_is_not_an_identity(missing):
     body = {"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}

@@ -73,8 +73,11 @@ tools:
   tool_search:
     enabled: "off"
 
+# The id is Plow's, not the upstream vendor's: this is the name its
+# /v1/chat/completions answers to, and it is what `providers.plow.models` has to
+# be keyed by for the prompt-caching match plow-init writes on every boot.
 model:
-  default: anthropic/claude-sonnet-5
+  default: moonshotai/kimi-k2.5
   provider: plow
   base_url: "${PLOW_API_BASE}/v1"
   key_env: HERMES_CUSTOM_PLOW_API_KEY
@@ -85,7 +88,7 @@ providers:
     key_env: HERMES_CUSTOM_PLOW_API_KEY
     stale_timeout_seconds: 55
     models:
-      anthropic/claude-sonnet-5: {}
+      moonshotai/kimi-k2.5: {}
 # Hermes announces every memory write, and that is noise to an owner who asked
 # one question over iMessage -- but the plow_chat plugin already drops that
 # announcement, and every other prefixed diagnostic, unless the owner's

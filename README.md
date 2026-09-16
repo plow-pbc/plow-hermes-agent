@@ -166,9 +166,12 @@ up when its first service is; it is not survived. An agent that cannot be told
 who it is refuses to start rather than start as whoever it was last time: a
 recorded identity belongs to the credential it was recorded under, and a home
 volume outlives its tenant, so reusing one is how a new tenant lands in the
-previous one's chat. Plow **answering** that the credential is not this
-agent's — a 401, 403 or 404 — or answering with something that is not an
-identity, fails immediately without the retries.
+previous one's chat. Plow **answering** that this agent is gone — a 404 — or
+answering with something that is not an identity, fails immediately without the
+retries. A 401 or 403 is the same answer about the credential, but a rotated one
+is refused for around a minute before it takes, and the restart after a rotation
+is the boot that asks — so those are retried for two minutes, logging each wait,
+and then park. Refused means refused for two minutes.
 
 The same goes for the environment itself: no `PLOW_API_BASE` (and no
 transition file, below), and nothing starts. `plow-init` is a oneshot every service depends on.

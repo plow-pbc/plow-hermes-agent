@@ -237,45 +237,52 @@ def unhurried(monkeypatch):
 
 def refusing(monkeypatch, answers):
     """Answer the identity call from `answers` -- an int is that HTTP status,
-    None is a healthy identity. The last entry repeats."""
+    None is a healthy identity, "malformed" is an invalid one. The last entry repeats."""
     def answer(request, timeout):
         code = answers.pop(0) if len(answers) > 1 else answers[0]
         if code is None:
             return io.BytesIO(json.dumps({"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}).encode())
+        if code == "malformed":
+            return io.BytesIO(b"{}")
         raise urllib.error.HTTPError(request.full_url, code, "refused", {}, None)
 
     monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
 
 
+@pytest.mark.parametrize("waiting", [False, True])
 @pytest.mark.parametrize("code", [401, 403])
-def test_a_credential_that_has_not_taken_yet_is_waited_out(monkeypatch, unhurried, code, capsys):
+def test_a_credential_that_has_not_taken_yet_is_waited_out(monkeypatch, unhurried, code, capsys, waiting):
     """A rotated bearer is refused for about a minute before it answers, and
     the restart that follows a rotation is the boot that asks. Parking on the
     first 401 leaves that agent down until somebody notices."""
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
     refusing(monkeypatch, [code, code, None])
-    assert plow_init.ask_plow(plow_init.read_credentials()).line.uid == "ln_own"
+    assert plow_init.ask_plow(plow_init.read_credentials(), waiting=waiting).line.uid == "ln_own"
     assert capsys.readouterr().err.count("waiting for the credential to take") == 2
 
 
-def test_a_credential_refused_for_the_whole_window_still_parks(monkeypatch, unhurried, parking):
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("code", [401, 403])
+def test_a_credential_refused_for_the_whole_window_still_parks(monkeypatch, unhurried, parking, code, waiting):
     """Waited out, not believed: a revoked credential is still terminal, and an
     agent that cannot be told who it is must not come up as whoever it was."""
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
-    refusing(monkeypatch, [401])
+    refusing(monkeypatch, [code])
     with pytest.raises(Parked):
-        plow_init.ask_plow(plow_init.read_credentials())
-    assert f"answered 401 for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
+        plow_init.ask_plow(plow_init.read_credentials(), waiting=waiting)
+    assert plow_init.time.monotonic() == plow_init.AUTH_WAIT_S
+    assert f"answered {code} for {plow_init.AUTH_WAIT_S}s" in parking.read_text()
 
 
-def test_an_agent_that_is_gone_is_not_waited_for(monkeypatch, unhurried, parking):
-    """404 says the agent named by this credential does not exist. No amount of
-    waiting makes one."""
+@pytest.mark.parametrize("waiting", [False, True])
+@pytest.mark.parametrize("code, reason", [(404, "answered 404"), ("malformed", "not an identity")])
+def test_a_missing_agent_or_malformed_identity_parks_immediately(monkeypatch, unhurried, parking, code, reason, waiting):
     monkeypatch.setenv("PLOW_API_BASE", "https://api.plow.co")
-    refusing(monkeypatch, [404])
+    refusing(monkeypatch, [code])
     with pytest.raises(Parked):
-        plow_init.ask_plow(plow_init.read_credentials())
-    assert "answered 404 -- Plow refused this credential" in parking.read_text()
+        plow_init.ask_plow(plow_init.read_credentials(), waiting=waiting)
+    assert plow_init.time.monotonic() == 0
+    assert reason in parking.read_text()
 
 
 @pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
@@ -299,15 +306,19 @@ def test_the_home_chat_is_the_owner_alone_with_this_agent_on_its_own_line():
         (),                                             # nothing at all
         (chat("a", roles=("owner", "member")),),        # a group
         (chat("a", status="pending"),),                 # not active yet
-        (chat("a"), chat("b")),                         # two candidates
         (chat("a", roles=("member",)),),                # nobody is the owner
         (chat("a", agents=("self", "peer")),),          # another assistant is here too
         (chat("a", line="ln_mailbox"),),                # only the persona's mailbox, not this line
     ],
 )
-def test_an_unclear_home_chat_refuses_and_says_what_it_saw(chats, parking):
+def test_without_a_qualifying_home_chat_returns_none(chats, parking):
+    assert plow_init.home_chat(identity(*chats)) is None
+    assert not parking.exists()
+
+
+def test_multiple_home_chats_park_and_say_what_they_saw(parking):
     with pytest.raises(Parked):
-        plow_init.home_chat(identity(*chats))
+        plow_init.home_chat(identity(chat("a"), chat("b")))
     assert "cannot tell which chat is home" in parking.read_text()
 
 
@@ -937,3 +948,140 @@ def test_the_home_guard_is_a_longrun_that_waits_for_plow_init():
     assert (service / "dependencies.d/plow-init").is_file()
     assert (SOURCE.parents[1] / "s6-rc.d/user/contents.d/home-guard").is_file()
     assert os.access(service / "run", os.X_OK)
+
+
+@pytest.fixture
+def boot(monkeypatch, tmp_path, image_user):
+    """Run main with real home selection and checkpoint IO, without root operations."""
+    for name in ("verify_boot_preconditions", "harden_home", "write_latch_instructions",
+                 "own_home_dotenv", "seed_user_profile", "configure", "own_session_reset"):
+        monkeypatch.setattr(plow_init, name, lambda *args: None)
+    for name in ("setgroups", "setgid"):
+        monkeypatch.setattr(plow_init.os, name, lambda value: None)
+    dropped = []
+    monkeypatch.setattr(plow_init.os, "setuid", dropped.append)
+    monkeypatch.setattr(plow_init, "read_credentials", lambda: types.SimpleNamespace(
+        plow_api_base="https://plow.invalid", bearer="test", agent_id=None))
+    monkeypatch.setattr(plow_init, "SEED_CONFIG", str(SOURCE.parents[2] / "seed/config.yaml"))
+    exported = {}
+    monkeypatch.setattr(plow_init, "export", exported.update)
+    # Keep main's environment publication local to this test.
+    monkeypatch.setattr(plow_init.os, "environ", dict(os.environ))
+    monkeypatch.delenv("HERMES_HOME", raising=False)
+    return pathlib.Path(plow_init.HOME_DIR) / "plow_chat_last_uid", dropped, exported
+
+
+@pytest.mark.parametrize("existing", [None, "", "msg_already_handled\n"])
+def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
+    boot, monkeypatch, capsys, parking, existing
+):
+    checkpoint, dropped, exported = boot
+    if existing is not None:
+        checkpoint.write_text(existing)
+    elapsed = 0
+    waiting_logs = []
+
+    def answer(credentials, *, waiting=False):
+        assert not dropped
+        return identity(chat("cht_home")) if elapsed >= 7200 else identity()
+
+    def sleep(seconds):
+        nonlocal elapsed
+        assert seconds > 0
+        assert not exported
+        assert not dropped
+        assert checkpoint.exists() == (existing is not None)
+        if capsys.readouterr().err:
+            waiting_logs.append(elapsed)
+        elapsed += seconds
+
+    real_open = open
+
+    def checked_open(path, *args, **kwargs):
+        if pathlib.Path(path) == checkpoint:
+            assert dropped, "checkpoint must be created after dropping privileges"
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(plow_init, "open", checked_open, raising=False)
+    monkeypatch.setattr(plow_init, "ask_plow", answer)
+    monkeypatch.setattr(plow_init.time, "sleep", sleep)
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: elapsed)
+    plow_init.main()
+    assert not parking.exists()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert checkpoint.read_text() == (existing or "")
+    assert waiting_logs[0] == 0
+    assert 1 < len(waiting_logs) <= 3
+    assert all(b - a >= 3600 for a, b in zip(waiting_logs, waiting_logs[1:]))
+
+
+@pytest.mark.parametrize("existing", [None, "", "msg_already_handled\n"])
+def test_immediate_home_leaves_checkpoint_untouched(boot, monkeypatch, existing):
+    checkpoint, dropped, exported = boot
+    if existing is not None:
+        checkpoint.write_text(existing)
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("cht_home")))
+    plow_init.main()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    if existing is None:
+        assert not checkpoint.exists()
+    else:
+        assert checkpoint.read_text() == existing
+
+
+def test_boot_parks_on_ambiguous_home_before_publishing_or_seeding(boot, monkeypatch):
+    checkpoint, dropped, exported = boot
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("a"), chat("b")))
+    with pytest.raises(Parked):
+        plow_init.main()
+    assert not checkpoint.exists()
+    assert not exported
+    assert not dropped
+
+
+@pytest.mark.parametrize("failure", [429, 503, "unreachable", "timeout"])
+def test_transient_outage_mid_wait_recovers_without_parking(boot, monkeypatch, parking, failure):
+    checkpoint, dropped, exported = boot
+    failures = 0
+    requests = 0
+
+    def answer(request, timeout):
+        nonlocal failures, requests
+        requests += 1
+        if requests == 1:
+            return io.BytesIO(identity().model_dump_json().encode())
+        if failures <= plow_init.RETRIES:
+            failures += 1
+            if failure == "unreachable":
+                raise urllib.error.URLError("offline")
+            if failure == "timeout":
+                raise TimeoutError("timed out")
+            raise urllib.error.HTTPError(request.full_url, failure, "unavailable", {}, None)
+        return io.BytesIO(identity(chat("cht_home")).model_dump_json().encode())
+
+    monkeypatch.setattr(plow_init.urllib.request, "urlopen", answer)
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
+    plow_init.main()
+    assert failures > plow_init.RETRIES
+    assert not parking.exists()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert checkpoint.read_bytes() == b""
+
+
+@pytest.mark.parametrize("home_override", ["", "custom-home"])
+def test_checkpoint_uses_the_plugins_hermes_home(boot, monkeypatch, tmp_path, home_override):
+    checkpoint, dropped, exported = boot
+    if home_override:
+        home = tmp_path / home_override
+        home.mkdir()
+        checkpoint = home / "plow_chat_last_uid"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+    else:
+        monkeypatch.setenv("HERMES_HOME", "")
+    answers = iter([identity(), identity(chat("cht_home"))])
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
+    plow_init.main()
+    assert checkpoint.read_bytes() == b""
+    if home_override:
+        assert not (pathlib.Path(plow_init.HOME_DIR) / "plow_chat_last_uid").exists()

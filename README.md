@@ -34,9 +34,10 @@ change if this fact changed?** One owner, one place.
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
-deprecated Docker fleet runner. `plow-agents deploy --local` now runs an image
-in a container with compose, so agent-mgr is not how a new agent gets run; the
-plugin and seed-skill SHAs it still pins describe its own fleet, not this image.
+deprecated Docker fleet runner. `plow-agents deploy --local --line <line-uid>`
+now runs an image in a container with compose, so agent-mgr is not how a new
+agent gets run; the plugin and seed-skill SHAs it still pins describe its own
+fleet, not this image.
 
 Two habits keep this map true. A variant that needs something from the base
 opens a PR on the base, then bumps its digest; it does not carry the fix
@@ -109,9 +110,9 @@ With that, `plow-init` asks Plow who this agent is:
 `GET $PLOW_API_BASE/v1/agents/cloud/me` answers with this agent's line, the
 chats it is in, and a relay endpoint. Plow does not name a home channel, so the
 image picks one: the active chat holding exactly this agent and exactly one
-member, who is the owner. Zero matches or several stops the boot, printing the
-roster it saw — the home channel is where the agent answers, and the wrong one
-is an agent talking to the wrong people. From that, the image publishes the
+member, who is the owner. Zero matches waits for first contact, polling every
+30 seconds until a home chat appears. Several matches still park, printing the
+roster it saw — the wrong home is an agent talking to the wrong people. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every
 service inherits — adding the placeholder bearer and generating a fresh
@@ -161,9 +162,10 @@ The identity is re-asked on every boot,
 so a home channel or a relay that moved moves with it — and a relay that went
 away is switched off rather than left behind.
 
-There is no fallback behind that fetch. Silence — no connection, no answer in
-time, a 429 or a 5xx — is retried briefly, because a VM's network is not always
-up when its first service is; it is not survived. An agent that cannot be told
+There is no fallback behind that fetch. Before identity is established, no
+connection, a timeout, a 429 or a 5xx gets bounded retries, then parks. Once
+waiting for first contact, those transient failures return to the poll loop
+indefinitely: an onboarding wait can outlast a boot retry budget. An agent that cannot be told
 who it is refuses to start rather than start as whoever it was last time: a
 recorded identity belongs to the credential it was recorded under, and a home
 volume outlives its tenant, so reusing one is how a new tenant lands in the

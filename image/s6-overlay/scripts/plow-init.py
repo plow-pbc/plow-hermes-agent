@@ -70,6 +70,9 @@ AUTH_WAIT_S = 120
 # VM that is otherwise idle, and the wait ends the moment the chat exists.
 HOME_POLL_INTERVAL_S = 3
 HOME_WAIT_LOG_INTERVAL_S = 3600
+# When the socket's own failure may next be said out loud. Module state, like
+# the wait log it borrows its cadence from: one boot, one running commentary.
+_next_socket_log = 0.0
 TIMEOUT_S = 10
 # The one entry in `mcp_servers` this image manages. Any other belongs to
 # whoever added it and is left exactly as it is.
@@ -1005,8 +1008,8 @@ def own_session_reset() -> None:
         raise
 
 
-async def _await_chat_frame(base: str, bearer: str) -> None:
-    """Return as soon as Plow says something happened on this credential's line.
+async def _await_chat_frame(base: str, bearer: str) -> bool:
+    """Whether Plow said something happened on this credential's line.
 
     A ticket, then the socket. The grant is a line grant, and the API's
     fan-out matches a granted-scope socket on the chat's line as well as its
@@ -1018,6 +1021,11 @@ async def _await_chat_frame(base: str, bearer: str) -> None:
     authority on whether a home chat exists; this only decides when to ask it
     again, so any frame but the handshake is reason enough. That keeps this
     function ignorant of the event vocabulary, which is the API's to change.
+
+    False means the socket ended without ever saying anything -- a clean close,
+    a revoked ticket, the server going away. That is not news, and the caller
+    must not read it as news: returning True there would drop the sleep and
+    spin the poll loop as fast as the server can close a socket.
     """
     # Imported here, not at module scope: this whole path is an optimisation
     # with a sleep behind it, and a boot script that will not even start
@@ -1041,7 +1049,8 @@ async def _await_chat_frame(base: str, bearer: str) -> None:
                         continue
                 except ValueError:
                     pass
-                return
+                return True
+    return False
 
 
 def wait_for_chat_event(credentials: Credentials, timeout: float) -> None:
@@ -1054,21 +1063,33 @@ def wait_for_chat_event(credentials: Credentials, timeout: float) -> None:
     actually decides. A boot must not hang on a transport that is merely
     faster when it works.
     """
+    global _next_socket_log
     started = time.monotonic()
     try:
-        asyncio.run(asyncio.wait_for(_await_chat_frame(credentials.plow_api_base.rstrip("/"), credentials.bearer), timeout))
+        heard = asyncio.run(asyncio.wait_for(_await_chat_frame(credentials.plow_api_base.rstrip("/"), credentials.bearer), timeout))
     except asyncio.TimeoutError:
         # The interval passed with the socket open and quiet: exactly the wait
         # the poll wanted, already spent. Ask again now.
         return
     except Exception as error:  # noqa: BLE001 - the poll is the fallback; a socket that will not open must not stop the boot
-        print(f"plow-init: chat socket unavailable, falling back to the poll ({type(error).__name__})", file=sys.stderr)
-        # Only here. A frame returns immediately -- sleeping off the rest of
-        # the interval after being told the chat exists would give back every
-        # second this function exists to save.
-        remaining = timeout - (time.monotonic() - started)
-        if remaining > 0:
-            time.sleep(remaining)
+        heard = False
+        # Once, then at the same hourly cadence as the wait itself. A line per
+        # interval is a boot that never stops talking about a Mac nobody has,
+        # and the one that matters is the first.
+        now = time.monotonic()
+        if now >= _next_socket_log:
+            print(f"plow-init: chat socket unavailable, falling back to the poll ({type(error).__name__})", file=sys.stderr)
+            _next_socket_log = now + HOME_WAIT_LOG_INTERVAL_S
+    if heard:
+        # A frame returns immediately -- sleeping off the rest of the interval
+        # after being told something happened would give back every second
+        # this function exists to save.
+        return
+    # Everything else owes the caller the wait it asked for: a failure, and a
+    # socket that closed with nothing to say.
+    remaining = timeout - (time.monotonic() - started)
+    if remaining > 0:
+        time.sleep(remaining)
 
 
 def main() -> None:

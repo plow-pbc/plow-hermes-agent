@@ -1152,8 +1152,12 @@ def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
     return after `timeout`, having said why once.
     """
     slept = []
+    # The throttle is module state, so say which side of it this test is on
+    # rather than inheriting whatever ran before it.
+    monkeypatch.setattr(plow_init, "_next_socket_log", 0.0, raising=False)
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: (coro.close(), coro)[1])
     monkeypatch.setattr(plow_init.asyncio, "run", _raise(RuntimeError("no socket")))
 
     plow_init.wait_for_chat_event(_credentials(), 3)
@@ -1162,11 +1166,57 @@ def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
     assert "falling back to the poll" in capsys.readouterr().err
 
 
+def _socket_says(monkeypatch, heard):
+    """Stand in for the socket, answering exactly what it heard."""
+    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: (coro.close(), coro)[1])
+    monkeypatch.setattr(plow_init.asyncio, "run", lambda _coro: heard)
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
+
+
 def test_chat_event_wait_returns_early_on_a_frame(monkeypatch):
     """A frame ends the wait immediately -- the point of the socket."""
     monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: pytest.fail("a frame must not be slept off"))
-    monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
-    monkeypatch.setattr(plow_init.asyncio, "run", lambda awaitable: awaitable.close())
-    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: coro)
+    _socket_says(monkeypatch, True)
 
     plow_init.wait_for_chat_event(_credentials(), 3)
+
+
+def test_a_closed_socket_is_not_a_frame(monkeypatch):
+    """A socket that ends without saying anything still owes the interval.
+
+    A clean close reads identically to a frame from the caller's side unless
+    the two are told apart -- and reading it as news drops the sleep and spins
+    the poll loop as fast as the server can close a socket.
+    """
+    slept = []
+    monkeypatch.setattr(plow_init.time, "sleep", slept.append)
+    _socket_says(monkeypatch, False)
+
+    plow_init.wait_for_chat_event(_credentials(), 3)
+
+    assert slept == [3]
+
+
+def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys):
+    """An agent whose owner has no Mac waits forever; it must not narrate it.
+
+    First failure speaks, the rest are silent until the wait log's own hourly
+    cadence comes round.
+    """
+    monkeypatch.setattr(plow_init, "_next_socket_log", 0.0, raising=False)
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
+    clock = [0.0]
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: (coro.close(), coro)[1])
+    monkeypatch.setattr(plow_init.asyncio, "run", _raise(RuntimeError("no socket")))
+
+    spoke = []
+    for _ in range(40):
+        plow_init.wait_for_chat_event(_credentials(), 3)
+        if capsys.readouterr().err:
+            spoke.append(clock[0])
+        clock[0] += 3
+
+    assert spoke[0] == 0
+    assert all(b - a >= plow_init.HOME_WAIT_LOG_INTERVAL_S for a, b in zip(spoke, spoke[1:]))
+    assert len(spoke) == 1, "two minutes of failures is one line, not forty"

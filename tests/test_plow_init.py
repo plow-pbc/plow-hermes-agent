@@ -739,6 +739,7 @@ SEED = {
     "display": {"busy_ack_enabled": False, "platforms": {"plow_chat": {"tool_progress": "off"}}},
     "tools": {"tool_search": {"enabled": "off"}},
     "terminal": {"backend": "local", "cwd": "/var/lib/hermes"},
+    "gateway": {"message_timestamps": {"enabled": True}},
 }
 
 
@@ -765,14 +766,45 @@ def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
     assert after["platforms"] == SEED["platforms"]
 
 
+def test_an_owners_message_timestamps_off_is_turned_back_on(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({**SEED, "gateway": {"message_timestamps": {"enabled": False}}}))
+    plow_init.CONFIG = str(config)
+    plow_init.configure(identity(), SEED)
+    assert yaml.safe_load(config.read_text())["gateway"]["message_timestamps"] == {"enabled": True}
+
+
+def zone_for_boot(monkeypatch, env):
+    monkeypatch.delenv("TZ", raising=False)
+    monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return plow_init.default_timezone()
+
+
+def test_an_agent_with_no_zone_anywhere_gets_the_pacific_default(monkeypatch):
+    assert zone_for_boot(monkeypatch, {}) == {"HERMES_TIMEZONE": "America/Los_Angeles"}
+
+
+@pytest.mark.parametrize("env", [
+    # A variant's explicit UTC, set before its owner has said where they live.
+    {"TZ": "UTC"},
+    {"TZ": "America/Chicago"},
+    {"HERMES_TIMEZONE": "Europe/Berlin"},
+])
+def test_a_zone_already_named_beats_the_default(monkeypatch, env):
+    assert zone_for_boot(monkeypatch, env) == {}
+
+
 def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path, monkeypatch):
     # cont-init seeds only an absent config.yaml, so an existing home carries
     # whatever it was seeded with -- a retry budget of 3, the gateway's noisy
-    # display defaults, and no tool_search switch, before 2026-09-03 -- until
-    # configure() reconciles it on boot.
+    # display defaults, and no tool_search switch, before 2026-09-03; no message
+    # timestamps before 2026-09-16 -- until configure() reconciles it on boot.
     monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
     config = tmp_path / "config.yaml"
-    stale = {**{k: v for k, v in SEED.items() if k not in ("tools", "cron")}, "agent": {"api_max_retries": 3},
+    stale = {**{k: v for k, v in SEED.items() if k not in ("tools", "cron", "gateway")},
+             "agent": {"api_max_retries": 3},
              "mcp_servers": {"plow": {"enabled": True}, "theirs": SEED["mcp_servers"]["theirs"]},
              "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
                                     "model": "seeded/model", "models": {SEED["model"]["default"]: {}}},
@@ -788,6 +820,8 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert after["cron"]["model_drift_guard"] is False
     assert after["cron"]["model_provider"] == after["model"]["provider"]
     assert after["terminal"]["cwd"] == "/var/lib/hermes"
+    assert after["gateway"]["message_timestamps"] == {"enabled": True}
+    assert "timezone" not in after
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL
     # the agent dials -- an entry carrying it is one the match cannot find.

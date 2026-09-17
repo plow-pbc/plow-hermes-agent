@@ -171,6 +171,17 @@ terminal:
   # instructions, #72); unset, it falls back to /opt/hermes and skips that.
   cwd: /var/lib/hermes
 group_sessions_per_user: false
+# A long-lived chat keeps the system prompt it was built with, and the only
+# date in that prompt is the day it was built -- so the day after, the model
+# still believes it is that day, and offers an owner's contact a slot that has
+# already passed (seen live 2026-09-16). Stamping each message with the time it
+# arrived puts today in front of the model on every turn. The stamp is rebuilt
+# from each stored message's own time, so the history bytes stay the same turn
+# to turn and the prompt cache holds. Key verified against hermes-agent
+# gateway/run.py `_message_timestamps_enabled`.
+gateway:
+  message_timestamps:
+    enabled: true
 onboarding:
   profile_build: "off"
 plugins:

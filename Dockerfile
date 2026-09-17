@@ -159,7 +159,7 @@ RUN chown -R 10000:10000 /var/lib/hermes \
 # against the interpreter its s6 oneshot runs under -- a boot that cannot
 # import these starts nothing, so it fails the build instead.
 RUN set -eu; \
-    /opt/hermes/.venv/bin/python -c 'import pydantic, dotenv.parser, yaml'; \
+    /opt/hermes/.venv/bin/python -c 'import aiohttp, pydantic, dotenv.parser, yaml'; \
     uv pip install --python /opt/hermes/.venv/bin/python --no-deps pydantic-settings==2.14.2; \
     /opt/hermes/.venv/bin/python -c 'import pydantic_settings'
 # A pristine config.yaml, out of the agent's reach: the copy cont-init seeds

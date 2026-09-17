@@ -18,6 +18,7 @@ and nothing starts.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import pwd
@@ -31,6 +32,7 @@ import tempfile
 import time
 import typing
 import urllib.error
+import urllib.parse
 import urllib.request
 
 import yaml
@@ -1003,6 +1005,72 @@ def own_session_reset() -> None:
         raise
 
 
+async def _await_chat_frame(base: str, bearer: str) -> None:
+    """Return as soon as Plow says something happened on this credential's line.
+
+    A ticket, then the socket. The grant is a line grant, and the API's
+    fan-out matches a granted-scope socket on the chat's line as well as its
+    frozen chat ids -- so a chat born after this connect is delivered here,
+    which is the whole point: the wait ends on the owner's first text rather
+    than on the next tick.
+
+    What the frame SAYS is deliberately not read. The identity endpoint is the
+    authority on whether a home chat exists; this only decides when to ask it
+    again, so any frame but the handshake is reason enough. That keeps this
+    function ignorant of the event vocabulary, which is the API's to change.
+    """
+    # Imported here, not at module scope: this whole path is an optimisation
+    # with a sleep behind it, and a boot script that will not even start
+    # because an optional accelerant is missing is a worse failure than the
+    # slower wait it was meant to avoid. The image asserts the import at build
+    # (see Dockerfile), so in the image it is always there.
+    import aiohttp
+
+    headers = {"Authorization": f"Bearer {bearer}"}
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as http:
+        async with http.post(f"{base}/v1/ws/ticket", json={}, headers=headers) as resp:
+            resp.raise_for_status()
+            ticket = (await resp.json(content_type=None))["ticket"]
+        url = f"{base.replace('http', 'ws', 1)}/v1/ws?ticket={urllib.parse.quote(ticket, safe='')}"
+        async with http.ws_connect(url, heartbeat=30) as socket:
+            async for frame in socket:
+                if frame.type is not aiohttp.WSMsgType.TEXT:
+                    continue
+                try:
+                    if frame.json().get("type") == "connected":
+                        continue
+                except ValueError:
+                    pass
+                return
+
+
+def wait_for_chat_event(credentials: Credentials, timeout: float) -> None:
+    """Sleep until Plow reports activity on this line, or `timeout` elapses.
+
+    The socket is an optimisation over the sleep it replaces, never a
+    requirement: every failure -- no ticket, a refused upgrade, a dropped
+    connection, an image whose venv has no aiohttp -- falls back to sleeping
+    out the rest of the interval, so the poll above remains the thing that
+    actually decides. A boot must not hang on a transport that is merely
+    faster when it works.
+    """
+    started = time.monotonic()
+    try:
+        asyncio.run(asyncio.wait_for(_await_chat_frame(credentials.plow_api_base.rstrip("/"), credentials.bearer), timeout))
+    except asyncio.TimeoutError:
+        # The interval passed with the socket open and quiet: exactly the wait
+        # the poll wanted, already spent. Ask again now.
+        return
+    except Exception as error:  # noqa: BLE001 - the poll is the fallback; a socket that will not open must not stop the boot
+        print(f"plow-init: chat socket unavailable, falling back to the poll ({type(error).__name__})", file=sys.stderr)
+        # Only here. A frame returns immediately -- sleeping off the rest of
+        # the interval after being told the chat exists would give back every
+        # second this function exists to save.
+        remaining = timeout - (time.monotonic() - started)
+        if remaining > 0:
+            time.sleep(remaining)
+
+
 def main() -> None:
     verify_boot_preconditions()
     harden_home()
@@ -1021,7 +1089,7 @@ def main() -> None:
         if now >= next_wait_log:
             print(f"plow-init: waiting for a home chat on {waiting_line}", file=sys.stderr)
             next_wait_log = now + HOME_WAIT_LOG_INTERVAL_S
-        time.sleep(HOME_POLL_INTERVAL_S)
+        wait_for_chat_event(credentials, HOME_POLL_INTERVAL_S)
     write_latch_instructions(identity, credentials.bearer)
     values = {
         # Re-published even when the environment already holds it: the

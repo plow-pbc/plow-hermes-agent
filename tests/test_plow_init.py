@@ -1039,6 +1039,10 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     monkeypatch.setattr(plow_init, "open", checked_open, raising=False)
     monkeypatch.setattr(plow_init, "ask_plow", answer)
     monkeypatch.setattr(plow_init.time, "sleep", sleep)
+    # The wait is a socket with a sleep behind it; this test is about the loop
+    # that surrounds both, so it stands in for the pair with the sleep alone.
+    # `test_chat_event_wait_falls_back_to_sleeping` covers the socket itself.
+    monkeypatch.setattr(plow_init, "wait_for_chat_event", lambda credentials, timeout: plow_init.time.sleep(timeout))
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: elapsed)
     plow_init.main()
     assert not parking.exists()
@@ -1119,3 +1123,50 @@ def test_checkpoint_uses_the_plugins_hermes_home(boot, monkeypatch, tmp_path, ho
     assert checkpoint.read_bytes() == b""
     if home_override:
         assert not (pathlib.Path(plow_init.HOME_DIR) / "plow_chat_last_uid").exists()
+
+
+class _Creds:
+    """The two fields the wait reads. `Credentials` is a settings model that
+    validates against the process environment, and this test is about the
+    fallback, not about how a credential is loaded."""
+
+    plow_api_base = "https://api.example.test"
+    bearer = "tok"  # pragma: allowlist secret — synthetic test credential
+
+
+def _credentials():
+    return _Creds()
+
+
+def _raise(error):
+    def raiser(*_args, **_kwargs):
+        raise error
+    return raiser
+
+
+def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
+    """A socket that will not open costs the interval, never the boot.
+
+    Every way this can fail -- no ticket, a refused upgrade, no aiohttp in the
+    venv -- lands here, and the contract is the one the poll had before it:
+    return after `timeout`, having said why once.
+    """
+    slept = []
+    monkeypatch.setattr(plow_init.time, "sleep", slept.append)
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(plow_init.asyncio, "run", _raise(RuntimeError("no socket")))
+
+    plow_init.wait_for_chat_event(_credentials(), 3)
+
+    assert slept == [3]
+    assert "falling back to the poll" in capsys.readouterr().err
+
+
+def test_chat_event_wait_returns_early_on_a_frame(monkeypatch):
+    """A frame ends the wait immediately -- the point of the socket."""
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: pytest.fail("a frame must not be slept off"))
+    monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
+    monkeypatch.setattr(plow_init.asyncio, "run", lambda awaitable: awaitable.close())
+    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: coro)
+
+    plow_init.wait_for_chat_event(_credentials(), 3)

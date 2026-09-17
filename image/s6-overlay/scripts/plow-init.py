@@ -48,6 +48,10 @@ CREDENTIALS = "/var/lib/plow/credentials"
 HOST_SETUP = "/exe.dev/setup"
 CREDENTIALS_WAIT_S = 60
 CONTAINER_ENV = "/run/s6/container_environment"
+# The zone an agent's clock reads when nothing else names one. Plow holds no
+# timezone for an owner, and the box's own is UTC -- a day ahead of a Pacific
+# owner every evening, in the message stamps and the prompt's date line alike.
+DEFAULT_TIMEZONE = "America/Los_Angeles"
 PARK_MARKER = "/run/plow-init.parked"
 
 RETRIES = 10
@@ -541,6 +545,33 @@ def export(values: dict[str, str]) -> None:
             handle.write(value)
 
 
+def default_timezone() -> dict[str, str]:
+    """HERMES_TIMEZONE for this boot, or nothing when a zone is already named.
+
+    Any zone wins over the default: HERMES_TIMEZONE, a process TZ -- UTC
+    included, which a variant sets on purpose before its owner has said where
+    they live -- or the agent's own `timezone` in config.yaml. Published per
+    boot and never written to the config, so the default can never outrank a
+    zone a variant sets later: Hermes reads config.yaml over the process TZ.
+
+    Read as root, so the config is opened without following a link and only
+    if it is a regular file; anything else reads as no zone.
+    """
+    if os.environ.get("HERMES_TIMEZONE", "").strip() or os.environ.get("TZ", "").strip():
+        return {}
+    try:
+        descriptor = os.open(CONFIG, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(descriptor) as handle:
+            if stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                config = yaml.safe_load(handle) or {}
+                zone = config.get("timezone") if isinstance(config, dict) else None
+                if isinstance(zone, str) and zone.strip():
+                    return {}
+    except (OSError, yaml.YAMLError):
+        pass
+    return {"HERMES_TIMEZONE": DEFAULT_TIMEZONE}
+
+
 def configure(identity: Identity, seed: dict) -> None:
     """Point the agent at its inference provider and its relay.
 
@@ -550,7 +581,8 @@ def configure(identity: Identity, seed: dict) -> None:
     for, so the two move together: HERMES_MODEL when one is named, the seed's
     otherwise, and only under Plow -- another provider's model is nothing this
     image knows how to guess. The provider entry, the display section, the
-    retry budget, the tool_search switch and the working directory are the seed's on every boot:
+    retry budget, the tool_search switch, the message timestamps and the
+    working directory are the seed's on every boot:
     cont-init seeds only an absent config.yaml, so a home that predates a seed
     change would otherwise keep the old shape for good.
     """
@@ -576,6 +608,8 @@ def configure(identity: Identity, seed: dict) -> None:
         ("display",): seed["display"],
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
         ("terminal", "cwd"): seed["terminal"]["cwd"],
+        # Enforced even over an owner's `false`: the stamps are how the model knows today.
+        ("gateway", "message_timestamps"): seed["gateway"]["message_timestamps"],
     }
     # Prompt caching, declared here and nowhere else.
     #
@@ -1015,6 +1049,7 @@ def main() -> None:
         values["AGENT_ID"] = credentials.agent_id
     if identity.mcp_url:
         values["PLOW_MCP_URL"] = identity.mcp_url
+    values.update(default_timezone())
     export(values)
     os.environ.update(values)
     own_home_dotenv(values["API_SERVER_KEY"])

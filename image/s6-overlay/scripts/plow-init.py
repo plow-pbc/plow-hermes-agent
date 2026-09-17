@@ -61,7 +61,12 @@ RETRY_DELAY_S = 3
 # and the restart that follows a rotation is exactly what lands inside that
 # window -- measured at about 50 seconds.
 AUTH_WAIT_S = 120
-HOME_POLL_INTERVAL_S = 30
+# Three seconds, not thirty: this wait sits inside the owner's first
+# impression. The chat is created by their first text, and every second
+# between that text and the gateway starting is silence they are watching.
+# The cost is one conditional GET against `/v1/agents/cloud/me` per tick on a
+# VM that is otherwise idle, and the wait ends the moment the chat exists.
+HOME_POLL_INTERVAL_S = 3
 HOME_WAIT_LOG_INTERVAL_S = 3600
 TIMEOUT_S = 10
 # The one entry in `mcp_servers` this image manages. Any other belongs to

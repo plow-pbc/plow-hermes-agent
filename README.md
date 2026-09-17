@@ -111,7 +111,7 @@ With that, `plow-init` asks Plow who this agent is:
 chats it is in, and a relay endpoint. Plow does not name a home channel, so the
 image picks one: the active chat holding exactly this agent and exactly one
 member, who is the owner. Zero matches waits for first contact, polling every
-30 seconds until a home chat appears. Several matches still park, printing the
+3 seconds until a home chat appears. Several matches still park, printing the
 roster it saw — the wrong home is an agent talking to the wrong people. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every

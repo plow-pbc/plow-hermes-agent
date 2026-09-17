@@ -407,7 +407,8 @@ such VM has been re-provisioned.
 (`env_file`), pointed straight at Plow:
 
 ```sh
-plow-agents login --new-line   # once per account
+plow-agents login              # once per account
+plow-agents lines
 plow-agents mint <line-uid>    # writes ./plow-credentials
 docker compose up --build -d
 ```

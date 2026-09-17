@@ -594,6 +594,13 @@ def configure(identity: Identity, seed: dict) -> None:
         ("display",): seed["display"],
         ("tools", "tool_search", "enabled"): seed["tools"]["tool_search"]["enabled"],
         ("terminal", "cwd"): seed["terminal"]["cwd"],
+        # Enforced, not seeded, because every agent that matters already has a
+        # config.yaml: a key that only lands in a home with none would reach no
+        # existing agent, and this one is a spend ceiling. Hermes compresses at
+        # 50% of the window it resolves, GLM-5.2's is 1M, and a turn re-reads
+        # its whole prefix -- so the cap is what keeps a long conversation from
+        # settling at half a million tokens a turn.
+        ("compression", "threshold_tokens"): seed["compression"]["threshold_tokens"],
         # Enforced even over an owner's `false`: the stamps are how the model knows today.
         ("gateway", "message_timestamps"): seed["gateway"]["message_timestamps"],
     }

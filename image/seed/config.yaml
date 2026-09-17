@@ -73,8 +73,17 @@ tools:
   tool_search:
     enabled: "off"
 
+# Measured on this fleet's own traffic 2026-09-17, warm turns through a live
+# gateway: GLM-5.2 bills $0.117 per million prompt tokens against Sonnet 5's
+# $0.222, and Plow's proxy caches it as readily (a 38k-token agent prompt came
+# back 38,208 cached on the second turn). It is the cheapest model that is still
+# an agent: Artificial Analysis scores it 34 to Sonnet's 38, and the models
+# cheaper than it fall off a cliff on tool use -- Kimi K2.5 is 23 there, and
+# half GLM's Terminal-Bench, for a further third off the bill. What the agent
+# does all day is drive twelve relay tools over a long conversation, so that is
+# the axis the choice is made on, not price alone.
 model:
-  default: anthropic/claude-sonnet-5
+  default: z-ai/glm-5.2
   provider: plow
   base_url: "${PLOW_API_BASE}/v1"
   key_env: HERMES_CUSTOM_PLOW_API_KEY
@@ -85,7 +94,21 @@ providers:
     key_env: HERMES_CUSTOM_PLOW_API_KEY
     stale_timeout_seconds: 55
     models:
-      anthropic/claude-sonnet-5: {}
+      z-ai/glm-5.2: {}
+
+# Hermes compresses at 50% of whatever window it resolves, and it resolves
+# GLM-5.2's as 1,048,576 -- so left alone an agent grows to half a million
+# tokens before it summarizes anything. That is where the money is: across
+# 10,701 turns in a week, the third of them above 200k carried 63% of the bill,
+# because every turn re-reads its whole prefix. It is also the half of the
+# window nobody should trust an open-weight model in.
+#
+# 200k is a ceiling, not a target: `threshold_tokens` applies as the LOWER of it
+# and the ratio, two thirds of turns never reach it, and Hermes protects the
+# head and the last 20 messages either way, so what a summary replaces is the
+# middle of a long conversation rather than anything recent.
+compression:
+  threshold_tokens: 200000
 # Hermes announces every memory write, and that is noise to an owner who asked
 # one question over iMessage -- but the plow_chat plugin already drops that
 # announcement, and every other prefixed diagnostic, unless the owner's

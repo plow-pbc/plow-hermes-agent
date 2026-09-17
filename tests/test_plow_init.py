@@ -740,6 +740,7 @@ SEED = {
     "tools": {"tool_search": {"enabled": "off"}},
     "terminal": {"backend": "local", "cwd": "/var/lib/hermes"},
     "gateway": {"message_timestamps": {"enabled": True}},
+    "compression": {"threshold_tokens": 200000},
 }
 
 
@@ -803,7 +804,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # timestamps before 2026-09-16 -- until configure() reconciles it on boot.
     monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
     config = tmp_path / "config.yaml"
-    stale = {**{k: v for k, v in SEED.items() if k not in ("tools", "cron", "gateway")},
+    stale = {**{k: v for k, v in SEED.items() if k not in ("tools", "cron", "gateway", "compression")},
              "agent": {"api_max_retries": 3},
              "mcp_servers": {"plow": {"enabled": True}, "theirs": SEED["mcp_servers"]["theirs"]},
              "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
@@ -821,6 +822,8 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     assert after["cron"]["model_provider"] == after["model"]["provider"]
     assert after["terminal"]["cwd"] == "/var/lib/hermes"
     assert after["gateway"]["message_timestamps"] == {"enabled": True}
+    # The ceiling is worth nothing seeded: every agent already has a config.
+    assert after["compression"]["threshold_tokens"] == 200000
     assert "timezone" not in after
     # Prompt caching: Hermes matches the declaration on the endpoint and the
     # model id, and the seed's `${PLOW_API_BASE}` reference never equals the URL

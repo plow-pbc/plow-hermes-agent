@@ -546,29 +546,15 @@ def export(values: dict[str, str]) -> None:
 
 
 def default_timezone() -> dict[str, str]:
-    """HERMES_TIMEZONE for this boot, or nothing when a zone is already named.
+    """HERMES_TIMEZONE for this boot, or nothing when the environment names a zone.
 
-    Any zone wins over the default: HERMES_TIMEZONE, a process TZ -- UTC
-    included, which a variant sets on purpose before its owner has said where
-    they live -- or the agent's own `timezone` in config.yaml. Published per
-    boot and never written to the config, so the default can never outrank a
-    zone a variant sets later: Hermes reads config.yaml over the process TZ.
-
-    Read as root, so the config is opened without following a link and only
-    if it is a regular file; anything else reads as no zone.
+    Any TZ wins, UTC included -- a variant sets that on purpose before its
+    owner has said where they live. A `timezone` in config.yaml needs no check
+    here: the gateway copies it over HERMES_TIMEZONE when it starts. Published
+    per boot and never written to the config, which Hermes reads over TZ.
     """
-    if os.environ.get("HERMES_TIMEZONE", "").strip() or os.environ.get("TZ", "").strip():
+    if any(os.environ.get(name, "").strip() for name in ("HERMES_TIMEZONE", "TZ")):
         return {}
-    try:
-        descriptor = os.open(CONFIG, os.O_RDONLY | os.O_NOFOLLOW)
-        with os.fdopen(descriptor) as handle:
-            if stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-                config = yaml.safe_load(handle) or {}
-                zone = config.get("timezone") if isinstance(config, dict) else None
-                if isinstance(zone, str) and zone.strip():
-                    return {}
-    except (OSError, yaml.YAMLError):
-        pass
     return {"HERMES_TIMEZONE": DEFAULT_TIMEZONE}
 
 

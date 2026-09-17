@@ -259,8 +259,9 @@ rewrite it — so the agent can delete it or put something else in its place, an
 copy — cont-init writes one when the home has none, which is what stops the
 runtime seeding a default with no chat platform in it. A **damaged** one is not
 repaired: `plow-init` reads it only to re-assert what the image owns — Plow's
-endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch and cron provider, the `tool_search` switch, the `terminal.cwd`, and every
-seeded `display` value — on
+endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch and cron provider, the `tool_search` switch, the `terminal.cwd`, every
+seeded `display` value, and `gateway.message_timestamps` — enforced even over an
+owner's `false`, since the stamps are how the model knows today — on
 every boot, and touches nothing else, so whatever else the agent leaves at that
 path is its own to answer for. A deleted
 skill is the same — the runtime records that deletion and honours it.
@@ -315,10 +316,12 @@ A variant that needs a background job adds its own s6 longrun under
 `/etc/s6-overlay/s6-rc.d/`, with `plow-init` in its `dependencies.d/` and its
 name in `user/contents.d/`.
 
-A variant that needs environment of its own — a timezone, say, which is a
-property of the tenant rather than of the credential — adds an s6 oneshot that
-writes `/run/s6/container_environment/<NAME>`, the same way `plow-init`
-publishes the values it owns.
+A variant that needs environment of its own adds an s6 oneshot that writes
+`/run/s6/container_environment/<NAME>`, the same way `plow-init` publishes the
+values it owns. A timezone is the exception: write `TZ` from a
+`/etc/cont-init.d/` script instead, so it exists before `plow-init` runs —
+`plow-init` publishes a Pacific `HERMES_TIMEZONE` when it finds no `TZ`, and
+Hermes reads that over a `TZ` written later.
 
 Don't fight the init: nothing starts the gateway by hand — the dependency
 already orders it after first boot — no credentials in `config.yaml`, no

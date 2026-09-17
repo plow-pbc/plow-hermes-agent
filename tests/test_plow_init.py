@@ -774,46 +774,26 @@ def test_an_owners_message_timestamps_off_is_turned_back_on(tmp_path):
     assert yaml.safe_load(config.read_text())["gateway"]["message_timestamps"] == {"enabled": True}
 
 
-def zone_for_boot(tmp_path, monkeypatch, env, config=None):
+def zone_for_boot(monkeypatch, env):
     monkeypatch.delenv("TZ", raising=False)
     monkeypatch.delenv("HERMES_TIMEZONE", raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
-    path = tmp_path / "config.yaml"
-    if config is not None:
-        path.write_text(yaml.safe_dump(config))
-    monkeypatch.setattr(plow_init, "CONFIG", str(path))
     return plow_init.default_timezone()
 
 
-def test_an_agent_with_no_zone_anywhere_gets_the_pacific_default(tmp_path, monkeypatch):
-    assert zone_for_boot(tmp_path, monkeypatch, {}, config=SEED) == {"HERMES_TIMEZONE": "America/Los_Angeles"}
+def test_an_agent_with_no_zone_anywhere_gets_the_pacific_default(monkeypatch):
+    assert zone_for_boot(monkeypatch, {}) == {"HERMES_TIMEZONE": "America/Los_Angeles"}
 
 
-@pytest.mark.parametrize("env, config", [
-    ({"TZ": "America/Chicago"}, SEED),
-    ({"HERMES_TIMEZONE": "Europe/Berlin"}, SEED),
-    ({}, {**SEED, "timezone": "Asia/Tokyo"}),
+@pytest.mark.parametrize("env", [
+    # A variant's explicit UTC, set before its owner has said where they live.
+    {"TZ": "UTC"},
+    {"TZ": "America/Chicago"},
+    {"HERMES_TIMEZONE": "Europe/Berlin"},
 ])
-def test_a_zone_already_named_beats_the_default(tmp_path, monkeypatch, env, config):
-    assert zone_for_boot(tmp_path, monkeypatch, env, config=config) == {}
-
-
-def test_a_life_home_follows_its_household_zone_from_first_boot_to_setup(tmp_path, monkeypatch):
-    # Life's cont-init sets TZ=UTC until onboarding has asked where the household
-    # lives, then the household's zone. Neither boot may be answered with the
-    # default, and nothing may be left in config.yaml to outrank the later TZ.
-    assert zone_for_boot(tmp_path, monkeypatch, {"TZ": "UTC"}, config=SEED) == {}
-    assert zone_for_boot(tmp_path, monkeypatch, {"TZ": "America/Chicago"}, config=SEED) == {}
-    plow_init.configure(identity(), SEED)
-    assert "timezone" not in yaml.safe_load((tmp_path / "config.yaml").read_text())
-
-
-def test_a_config_that_is_a_link_is_not_followed(tmp_path, monkeypatch):
-    target = tmp_path / "elsewhere.yaml"
-    target.write_text(yaml.safe_dump({"timezone": "Asia/Tokyo"}))
-    (tmp_path / "config.yaml").symlink_to(target)
-    assert zone_for_boot(tmp_path, monkeypatch, {}) == {"HERMES_TIMEZONE": "America/Los_Angeles"}
+def test_a_zone_already_named_beats_the_default(monkeypatch, env):
+    assert zone_for_boot(monkeypatch, env) == {}
 
 
 def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path, monkeypatch):

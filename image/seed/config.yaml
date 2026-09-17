@@ -98,17 +98,24 @@ providers:
 
 # Hermes compresses at 50% of whatever window it resolves, and it resolves
 # GLM-5.2's as 1,048,576 -- so left alone an agent grows to half a million
-# tokens before it summarizes anything. That is where the money is: across
-# 10,701 turns in a week, the third of them above 200k carried 63% of the bill,
-# because every turn re-reads its whole prefix. It is also the half of the
-# window nobody should trust an open-weight model in.
+# tokens before it summarizes anything, and every turn re-reads that whole
+# prefix. Cost is linear in prompt size, so it argues only for "lower"; the
+# number itself has to come from where the model stops being reliable.
 #
-# 200k is a ceiling, not a target: `threshold_tokens` applies as the LOWER of it
-# and the ratio, two thirds of turns never reach it, and Hermes protects the
-# head and the last 20 messages either way, so what a summary replaces is the
-# middle of a long conversation rather than anything recent.
+# 128k is the top of what GLM-5.2's own report evidences. It measures a
+# retrieval gap there -- RULER@128K -5.69, RepoQA@128K -7.33 against its
+# short-context self, the price of the sparse attention that buys the 1M
+# window -- and its flat-retrieval demonstration covers 25k to 50k only.
+# Past 128k there is no published measurement to stand on, which is the real
+# argument against the half-million the default would pick: not that it is
+# expensive, but that nobody has shown the model still works there.
+#
+# It is a ceiling, not a target: `threshold_tokens` applies as the LOWER of it
+# and the ratio, most turns never reach it, and Hermes protects the head and
+# the last 20 messages either way, so what a summary replaces is the middle of
+# a long conversation rather than anything recent.
 compression:
-  threshold_tokens: 200000
+  threshold_tokens: 128000
 # Hermes announces every memory write, and that is noise to an owner who asked
 # one question over iMessage -- but the plow_chat plugin already drops that
 # announcement, and every other prefixed diagnostic, unless the owner's

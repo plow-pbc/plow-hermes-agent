@@ -1174,28 +1174,19 @@ def _socket(monkeypatch, *, says=None, raises=None):
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
 
 
-def test_chat_event_wait_returns_early_on_a_frame(monkeypatch):
-    """A frame ends the wait immediately -- the point of the socket."""
-    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: pytest.fail("a frame must not be slept off"))
-    _socket(monkeypatch, says=True)
-
-    plow_init.wait_for_chat_event(_credentials(), 3)
-
-
-def test_a_closed_socket_is_not_a_frame(monkeypatch):
-    """A socket that ends without saying anything still owes the interval.
-
-    A clean close reads identically to a frame from the caller's side unless
-    the two are told apart -- and reading it as news drops the sleep and spins
-    the poll loop as fast as the server can close a socket.
-    """
+@pytest.mark.parametrize(("frame_received", "expected_sleep"), [
+    (True, []),
+    (False, [3]),
+], ids=["frame-ends-wait", "closed-socket-sleeps-remaining-interval"])
+def test_chat_event_wait_result_controls_sleep(monkeypatch, frame_received, expected_sleep):
+    """A frame ends the wait; a clean close still owes the polling interval."""
     slept = []
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
-    _socket(monkeypatch, says=False)
+    _socket(monkeypatch, says=frame_received)
 
     plow_init.wait_for_chat_event(_credentials(), 3)
 
-    assert slept == [3]
+    assert slept == expected_sleep
 
 
 def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys):

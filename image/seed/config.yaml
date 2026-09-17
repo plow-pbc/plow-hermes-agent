@@ -95,6 +95,30 @@ providers:
     stale_timeout_seconds: 55
     models:
       z-ai/glm-5.2: {}
+      anthropic/claude-sonnet-5: {}
+
+# GLM-5.2 cannot see. OpenRouter answers an image part on that route with
+# `404 No endpoints found that support image input`, and an owner sending a
+# receipt over iMessage is the ordinary case here, not an edge one -- so the
+# cheap text model needs a lane that can look at pictures.
+#
+# Hermes already owns this seam: `decide_image_input_mode` attaches images
+# inline for a model that sees, and otherwise runs `vision_analyze` first and
+# prepends the description. That second path needs a backend named, and on a
+# `custom` provider it has no default to fall back to. Naming one is what keeps
+# a photo turn from arriving as a 404 instead of an answer.
+#
+# Sonnet 5 rather than the cheaper multimodal Kimi: a photo here is usually a
+# receipt or a screenshot the owner expects read back accurately, images are a
+# small share of turns, and a misread costs more than the tokens save. It is
+# the one place in this config where the expensive model is still the right
+# one. Note this also routes images through description when the main model
+# CAN see (Hermes forces `text` whenever a vision backend is explicit) --
+# accepted: it is one rule for every model this image might be pointed at.
+auxiliary:
+  vision:
+    provider: plow
+    model: anthropic/claude-sonnet-5
 
 # Hermes compresses at 50% of whatever window it resolves, and it resolves
 # GLM-5.2's as 1,048,576 -- so left alone an agent grows to half a million

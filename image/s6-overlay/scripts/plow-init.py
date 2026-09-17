@@ -601,6 +601,9 @@ def configure(identity: Identity, seed: dict) -> None:
         # its whole prefix -- so the cap is what keeps a long conversation from
         # settling at half a million tokens a turn.
         ("compression", "threshold_tokens"): seed["compression"]["threshold_tokens"],
+        # Same reason, and the sharper one: without it an owner's photo reaches
+        # a text-only model and comes back a 404.
+        ("auxiliary", "vision"): seed["auxiliary"]["vision"],
         # Enforced even over an owner's `false`: the stamps are how the model knows today.
         ("gateway", "message_timestamps"): seed["gateway"]["message_timestamps"],
     }

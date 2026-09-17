@@ -804,6 +804,11 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # display defaults, and no tool_search switch, before 2026-09-03; no message
     # timestamps before 2026-09-16 -- until configure() reconciles it on boot.
     monkeypatch.setenv("PLOW_API_BASE", "https://api.test.invalid")
+    # This is the Plow boot. Said out loud because `configure()` leaves whatever
+    # provider its caller asked for in os.environ, so a test that switched away
+    # earlier in the file would otherwise decide what this one reconciles.
+    monkeypatch.delenv("HERMES_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
     config = tmp_path / "config.yaml"
     stale = {**{k: v for k, v in SEED.items() if k not in ("tools", "cron", "gateway", "compression", "auxiliary")},
              "agent": {"api_max_retries": 3},
@@ -855,6 +860,8 @@ def test_switching_away_from_plow_takes_plows_endpoint_with_it(tmp_path):
     after = configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
     assert "base_url" not in after["model"]
     assert "key_env" not in after["model"]
+    # The vision route names Plow too, and an owner's photos are the traffic.
+    assert "vision" not in after.get("auxiliary", {})
 
 
 def test_switching_back_restores_it_from_the_seed(tmp_path):

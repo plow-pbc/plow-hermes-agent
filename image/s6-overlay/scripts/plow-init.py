@@ -602,8 +602,11 @@ def configure(identity: Identity, seed: dict) -> None:
         # settling at half a million tokens a turn.
         ("compression", "threshold_tokens"): seed["compression"]["threshold_tokens"],
         # Same reason, and the sharper one: without it an owner's photo reaches
-        # a text-only model and comes back a 404.
-        ("auxiliary", "vision"): seed["auxiliary"]["vision"],
+        # a text-only model and comes back a 404. It names Plow, so it follows
+        # Plow's own endpoint keys below -- removed when the operator switches
+        # inference away, or an owner's receipts keep crossing Plow after they
+        # deliberately moved off it.
+        ("auxiliary", "vision"): seed["auxiliary"]["vision"] if provider == "plow" else None,
         # Enforced even over an owner's `false`: the stamps are how the model knows today.
         ("gateway", "message_timestamps"): seed["gateway"]["message_timestamps"],
     }

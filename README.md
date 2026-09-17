@@ -110,8 +110,12 @@ With that, `plow-init` asks Plow who this agent is:
 `GET $PLOW_API_BASE/v1/agents/cloud/me` answers with this agent's line, the
 chats it is in, and a relay endpoint. Plow does not name a home channel, so the
 image picks one: the active chat holding exactly this agent and exactly one
-member, who is the owner. Zero matches waits for first contact, polling every
-3 seconds until a home chat appears. Several matches still park, printing the
+member, who is the owner. Zero matches waits for first contact: the image holds
+Plow's websocket open on the agent credential, and a chat born on this line
+wakes it within milliseconds, so the wait ends when the owner texts rather than
+on a tick. A 3-second poll sits behind the socket and is what actually decides
+-- it covers a chat that already existed, a socket that will not open or closes
+with nothing to say, and a runtime with no `aiohttp`. Several matches still park, printing the
 roster it saw — the wrong home is an agent talking to the wrong people. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every

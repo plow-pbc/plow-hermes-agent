@@ -1138,12 +1138,6 @@ def _credentials():
     return _Creds()
 
 
-def _raise(error):
-    def raiser(*_args, **_kwargs):
-        raise error
-    return raiser
-
-
 def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
     """A socket that will not open costs the interval, never the boot.
 
@@ -1156,9 +1150,7 @@ def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
     # rather than inheriting whatever ran before it.
     monkeypatch.setattr(plow_init, "_next_socket_log", 0.0, raising=False)
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
-    monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
-    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: (coro.close(), coro)[1])
-    monkeypatch.setattr(plow_init.asyncio, "run", _raise(RuntimeError("no socket")))
+    _socket(monkeypatch, raises=RuntimeError("no socket"))
 
     plow_init.wait_for_chat_event(_credentials(), 3)
 
@@ -1166,17 +1158,26 @@ def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
     assert "falling back to the poll" in capsys.readouterr().err
 
 
-def _socket_says(monkeypatch, heard):
-    """Stand in for the socket, answering exactly what it heard."""
-    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: (coro.close(), coro)[1])
-    monkeypatch.setattr(plow_init.asyncio, "run", lambda _coro: heard)
+def _socket(monkeypatch, *, says=None, raises=None):
+    """Stand in for the socket itself, not for the asyncio that drives it.
+
+    Replacing `_await_chat_frame` leaves `asyncio.run` and `wait_for` real, so
+    the control flow under test is the real one and no coroutine is created
+    only to be closed unawaited."""
+
+    async def frame(_base, _bearer):
+        if raises is not None:
+            raise raises
+        return says
+
+    monkeypatch.setattr(plow_init, "_await_chat_frame", frame)
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
 
 
 def test_chat_event_wait_returns_early_on_a_frame(monkeypatch):
     """A frame ends the wait immediately -- the point of the socket."""
     monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: pytest.fail("a frame must not be slept off"))
-    _socket_says(monkeypatch, True)
+    _socket(monkeypatch, says=True)
 
     plow_init.wait_for_chat_event(_credentials(), 3)
 
@@ -1190,7 +1191,7 @@ def test_a_closed_socket_is_not_a_frame(monkeypatch):
     """
     slept = []
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
-    _socket_says(monkeypatch, False)
+    _socket(monkeypatch, says=False)
 
     plow_init.wait_for_chat_event(_credentials(), 3)
 
@@ -1205,10 +1206,9 @@ def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys)
     """
     monkeypatch.setattr(plow_init, "_next_socket_log", 0.0, raising=False)
     monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
+    _socket(monkeypatch, raises=RuntimeError("no socket"))
     clock = [0.0]
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: clock[0])
-    monkeypatch.setattr(plow_init.asyncio, "wait_for", lambda coro, timeout: (coro.close(), coro)[1])
-    monkeypatch.setattr(plow_init.asyncio, "run", _raise(RuntimeError("no socket")))
 
     spoke = []
     for _ in range(40):

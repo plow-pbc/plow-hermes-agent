@@ -30,6 +30,34 @@ def test_no_agent_id_stands_down_rather_than_exiting():
     assert "exec sleep 86400" in run
 
 
+def test_every_invocation_is_told_where_plow_is():
+    """The client's own fallback is a compiled-in https://api.plow.co.
+
+    A cloud agent holds a placeholder token and reaches Plow through a proxy
+    that swaps the real one in. Left to the fallback, the register pass sends
+    that placeholder straight past the proxy to production, is refused, and the
+    agent never registers -- while the service logs one refused pass and looks
+    like an ordinary bad network.
+    """
+    run = SERVICE.joinpath("run").read_text()
+    invocations = run.count("/opt/plow/agent-index-client.py")
+    assert invocations == 3
+    assert run.count('PLOW_API_BASE="$PLOW_API_BASE"') == invocations
+    assert "container_environment/PLOW_API_BASE" in run
+
+
+def test_the_pass_interval_is_five_minutes():
+    """Every stand-off sleeps the same interval as a good pass.
+
+    Three of them -- no key, unreadable state, and the ordinary loop -- and a
+    longer one on a failure path is a reporter that falls behind exactly when
+    something is already wrong.
+    """
+    run = SERVICE.joinpath("run").read_text()
+    assert run.count("/bin/sleep 300") == 3
+    assert "sleep 3600" not in run
+
+
 def test_opt_plow_is_traversable():
     """`COPY --chmod=` applies that mode to the parent directories it creates,
     so the mode of /opt/plow has to be set on its own.

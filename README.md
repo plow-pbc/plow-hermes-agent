@@ -229,11 +229,14 @@ the model you were on before you left.
 Set `AGENT_ID=<your agent index id>` in compose to report to the Agent Index.
 With it set, the `agent-index` service registers this agent on its first pass —
 exchanging `PLOW_AGENT_TOKEN` for an Index-issued key, once — and thereafter
-reports the token usage it reads from `$HERMES_HOME/state.db` every hour; the
-registration pass is the only invocation given the Plow bearer, so the reporter
-itself never holds it. With `AGENT_ID` unset the service says why on stderr and
-stands down, which is what an image built from this base does until its builder
-chooses an id. The service lives at `/etc/s6-overlay/s6-rc.d/agent-index/`, the
+reports the token usage it reads from `$HERMES_HOME/state.db` every five
+minutes; the registration pass is the only invocation given the Plow bearer, so
+the reporter itself never holds it. Every pass is handed `PLOW_API_BASE`,
+because the client's own fallback is a compiled-in `https://api.plow.co` — an
+agent whose token is a placeholder its host swaps in at a proxy would otherwise
+send that placeholder straight past the proxy and never register. With
+`AGENT_ID` unset the service says why on stderr and stands down, which is what
+an image built from this base does until its builder chooses an id. The service lives at `/etc/s6-overlay/s6-rc.d/agent-index/`, the
 same name and path `life-assistant-hermes-agent` uses, so a variant image that
 still copies its own reporter in overrides this one rather than running a second
 one beside it. The client is not tracked here: `vendor/client.pin` names a

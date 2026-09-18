@@ -79,6 +79,8 @@ carry `amd64` alone.
 | `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads `PLOW_API_BASE`, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
 | `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none |
 | `/etc/s6-overlay/s6-rc.d/hermes-gateway/` | longrun: the gateway as `hermes`, depending on `plow-init` |
+| `/opt/plow/agent-index-client.py` | the Agent Index usage client, fetched at build from the commit and sha256 in `vendor/client.pin` and root-owned, outside every home |
+| `/etc/s6-overlay/s6-rc.d/agent-index/` | longrun, depending on `plow-init`: registers and reports usage when `AGENT_ID` is set, stands down when it is not |
 | `/etc/s6-overlay/s6-rc.d/home-guard/` | longrun, as root, depending on `plow-init`: every 10s puts `/var/lib/hermes` and `skills/` back to `3770 root:hermes`, and logs what it found whenever something else changed them |
 
 ## The environment, and the bearer
@@ -221,6 +223,23 @@ with `HERMES_PROVIDER=plow` and no `HERMES_MODEL`, the model is restored from
 the image's own seed, along with the endpoint and key that describe Plow. That
 is what keeps a switch back from being an edit — you do not have to remember
 the model you were on before you left.
+
+## The Agent Index reporter
+
+Set `AGENT_ID=<your agent index id>` in compose to report to the Agent Index.
+With it set, the `agent-index` service registers this agent on its first pass —
+exchanging `PLOW_AGENT_TOKEN` for an Index-issued key, once — and thereafter
+reports the token usage it reads from `$HERMES_HOME/state.db` every hour; the
+registration pass is the only invocation given the Plow bearer, so the reporter
+itself never holds it. With `AGENT_ID` unset the service says why on stderr and
+stands down, which is what an image built from this base does until its builder
+chooses an id. The service lives at `/etc/s6-overlay/s6-rc.d/agent-index/`, the
+same name and path `life-assistant-hermes-agent` uses, so a variant image that
+still copies its own reporter in overrides this one rather than running a second
+one beside it. The client is not tracked here: `vendor/client.pin` names a
+commit of `plow-pbc/agent-index-client` and the sha256 the build checks the
+fetched file against, because this runs inside an agent holding a live
+credential and a moving reference would substitute unreviewed code under it.
 
 ## Prompt caching
 

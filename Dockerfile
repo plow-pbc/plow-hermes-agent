@@ -172,6 +172,33 @@ COPY --chmod=0644 image/seed/SOUL.md /opt/hermes/plow-seed/SOUL.md
 # home that has none -- one with no chat platform and no provider in it.
 COPY --chmod=0755 image/cont-init.d/ /etc/cont-init.d/
 
+# The Agent Index usage reporter, fetched at build from the commit
+# vendor/client.pin names and checked against the hash beside it. Fetched
+# rather than committed because plow-pbc/agent-index-client owns that file;
+# pinned rather than tracked from a branch because this runs inside an agent
+# holding a live credential, and a moving reference would substitute unreviewed
+# code under it. The checksum is the second half: a sha in a URL is only as
+# good as the host serving it.
+#
+# Root-owned under /opt/plow, outside every home: the agent's own home belongs
+# to uid 10000 in a running container, so a copy scheduled from there would run
+# whatever a turn last wrote.
+# The directory in its own step: a `COPY --chmod=` applies that mode to the
+# parent directories it creates as well, and 0644 on /opt/plow is a directory
+# the agent cannot traverse -- the reporter then fails to open the client it
+# is standing right next to.
+RUN install -d -m 0755 /opt/plow
+COPY --chmod=0644 vendor/client.pin /opt/plow/agent-index-client.pin
+RUN set -eu; \
+    sha="$(sed -n 's/^sha=//p' /opt/plow/agent-index-client.pin)"; \
+    want="$(sed -n 's/^sha256=//p' /opt/plow/agent-index-client.pin)"; \
+    path="$(sed -n 's/^path=//p' /opt/plow/agent-index-client.pin)"; \
+    curl -fsS --max-time 60 -o /opt/plow/agent-index-client.py \
+      "https://raw.githubusercontent.com/plow-pbc/agent-index-client/${sha}/${path}"; \
+    got="$(sha256sum /opt/plow/agent-index-client.py | cut -d' ' -f1)"; \
+    [ "$got" = "$want" ] || { echo "agent-index client is $got, pin says $want" >&2; exit 1; }; \
+    chmod 0644 /opt/plow/agent-index-client.py
+
 # The boot layer. s6-overlay is already in the upstream image — /init, the
 # supervision tree and the s6-rc database are all there — so this adds two
 # service definitions to it and installs no init of its own:

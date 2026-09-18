@@ -224,8 +224,19 @@ the model you were on before you left.
 
 ## Prompt caching
 
-Plow's `/v1/chat/completions` is a LiteLLM proxy in front of Anthropic and
-honours `cache_control`, but Hermes will not infer that: on the OpenAI wire it
+Plow's `/v1/chat/completions` is a LiteLLM proxy, and which half of this section
+applies depends on the model behind it. The seed's own — GLM-5.2, routed to
+OpenRouter — caches by itself: the provider matches the prefix and bills the
+repeat at a tenth, with nothing asked for in the request. Measured 2026-09-17
+against a live gateway, a 38k-token agent prompt came back 38,208 cached on the
+second turn, $0.0045 against $0.0285 cold. A prompt has to be large enough to
+cross the provider's floor before any of that shows: a 2.8k probe caches nothing
+and reads exactly like a route that cannot cache at all.
+
+The paragraph below is what an *Anthropic* model needs, and it still applies the
+moment `HERMES_MODEL` names one, which is why the mechanism stays.
+
+Anthropic honours `cache_control`, but Hermes will not infer that: on the OpenAI wire it
 grants caching only to a route whose provider id or hostname reads as LiteLLM,
 and a config-defined provider is `custom` at runtime whatever this image's
 config calls it — so neither signal can match, and every turn re-billed the
@@ -263,7 +274,7 @@ rewrite it — so the agent can delete it or put something else in its place, an
 copy — cont-init writes one when the home has none, which is what stops the
 runtime seeding a default with no chat platform in it. A **damaged** one is not
 repaired: `plow-init` reads it only to re-assert what the image owns — Plow's
-endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch and cron provider, the `tool_search` switch, the `terminal.cwd`, every
+endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch and cron provider, the `tool_search` switch, the `terminal.cwd`, the compaction ceiling, the vision route (which follows the endpoint off Plow when the provider switches), every
 seeded `display` value, and `gateway.message_timestamps` — enforced even over an
 owner's `false`, since the stamps are how the model knows today — on
 every boot, and touches nothing else, so whatever else the agent leaves at that

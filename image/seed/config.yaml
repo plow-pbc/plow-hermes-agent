@@ -73,8 +73,17 @@ tools:
   tool_search:
     enabled: "off"
 
+# Measured on this fleet's own traffic 2026-09-17, warm turns through a live
+# gateway: GLM-5.2 bills $0.117 per million prompt tokens against Sonnet 5's
+# $0.222, and Plow's proxy caches it as readily (a 38k-token agent prompt came
+# back 38,208 cached on the second turn). It is the cheapest model that is still
+# an agent: Artificial Analysis scores it 34 to Sonnet's 38, and the models
+# cheaper than it fall off a cliff on tool use -- Kimi K2.5 is 23 there, and
+# half GLM's Terminal-Bench, for a further third off the bill. What the agent
+# does all day is drive twelve relay tools over a long conversation, so that is
+# the axis the choice is made on, not price alone.
 model:
-  default: anthropic/claude-sonnet-5
+  default: z-ai/glm-5.2
   provider: plow
   base_url: "${PLOW_API_BASE}/v1"
   key_env: HERMES_CUSTOM_PLOW_API_KEY
@@ -85,7 +94,52 @@ providers:
     key_env: HERMES_CUSTOM_PLOW_API_KEY
     stale_timeout_seconds: 55
     models:
+      z-ai/glm-5.2: {}
       anthropic/claude-sonnet-5: {}
+
+# GLM-5.2 cannot see. OpenRouter answers an image part on that route with
+# `404 No endpoints found that support image input`, and an owner sending a
+# receipt over iMessage is the ordinary case here, not an edge one -- so the
+# cheap text model needs a lane that can look at pictures.
+#
+# Hermes already owns this seam: `decide_image_input_mode` attaches images
+# inline for a model that sees, and otherwise runs `vision_analyze` first and
+# prepends the description. That second path needs a backend named, and on a
+# `custom` provider it has no default to fall back to. Naming one is what keeps
+# a photo turn from arriving as a 404 instead of an answer.
+#
+# Sonnet 5 rather than the cheaper multimodal Kimi: a photo here is usually a
+# receipt or a screenshot the owner expects read back accurately, images are a
+# small share of turns, and a misread costs more than the tokens save. It is
+# the one place in this config where the expensive model is still the right
+# one. Note this also routes images through description when the main model
+# CAN see (Hermes forces `text` whenever a vision backend is explicit) --
+# accepted: it is one rule for every model this image might be pointed at.
+auxiliary:
+  vision:
+    provider: plow
+    model: anthropic/claude-sonnet-5
+
+# Hermes compresses at 50% of whatever window it resolves, and it resolves
+# GLM-5.2's as 1,048,576 -- so left alone an agent grows to half a million
+# tokens before it summarizes anything, and every turn re-reads that whole
+# prefix. Cost is linear in prompt size, so it argues only for "lower"; the
+# number itself has to come from where the model stops being reliable.
+#
+# 128k is the top of what GLM-5.2's own report evidences. It measures a
+# retrieval gap there -- RULER@128K -5.69, RepoQA@128K -7.33 against its
+# short-context self, the price of the sparse attention that buys the 1M
+# window -- and its flat-retrieval demonstration covers 25k to 50k only.
+# Past 128k there is no published measurement to stand on, which is the real
+# argument against the half-million the default would pick: not that it is
+# expensive, but that nobody has shown the model still works there.
+#
+# It is a ceiling, not a target: `threshold_tokens` applies as the LOWER of it
+# and the ratio, most turns never reach it, and Hermes protects the head and
+# the last 20 messages either way, so what a summary replaces is the middle of
+# a long conversation rather than anything recent.
+compression:
+  threshold_tokens: 128000
 # Hermes announces every memory write, and that is noise to an owner who asked
 # one question over iMessage -- but the plow_chat plugin already drops that
 # announcement, and every other prefixed diagnostic, unless the owner's

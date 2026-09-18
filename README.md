@@ -443,6 +443,11 @@ echo AGENT_ID=my-agent >> ./plow-credentials
 docker compose up --build -d
 ```
 
+Replace `ln_xxx` with a line `plow-agents lines` shows as `free`, and
+`my-agent` with the Agent Index id you want — letters, digits, `.`, `_` or `-`,
+starting with a letter or digit, at most 64 characters, and case is kept, so
+`My-Agent` and `my-agent` are two different agents.
+
 The `AGENT_ID` line is optional and is the whole of publishing usage — see
 [The Agent Index reporter](#the-agent-index-reporter).
 

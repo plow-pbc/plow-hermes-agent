@@ -34,7 +34,7 @@ change if this fact changed?** One owner, one place.
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
-deprecated Docker fleet runner. `plow-agents deploy --local --line <line-uid>`
+deprecated Docker fleet runner. `plow-agents deploy --local --line ln_xxx`
 now runs an image in a container with compose, so agent-mgr is not how a new
 agent gets run; the plugin and seed-skill SHAs it still pins describe its own
 fleet, not this image.
@@ -226,21 +226,24 @@ the model you were on before you left.
 
 ## The Agent Index reporter
 
-Set `AGENT_ID=<your agent index id>` in compose to report to the Agent Index.
-With it set, the `agent-index` service registers this agent on its first pass —
-exchanging `PLOW_AGENT_TOKEN` for an Index-issued key, once — and thereafter
-reports the token usage it reads from `$HERMES_HOME/state.db` every five
-minutes; the registration pass is the only invocation given the Plow bearer, so
-the reporter itself never holds it. Every pass is handed `PLOW_API_BASE`,
-because the client's own fallback is a compiled-in `https://api.plow.co` — an
-agent whose token is a placeholder its host swaps in at a proxy would otherwise
-send that placeholder straight past the proxy and never register. With
-`AGENT_ID` unset the service says why on stderr and stands down, which is what
-an image built from this base does until its builder chooses an id. The service lives at `/etc/s6-overlay/s6-rc.d/agent-index/`, the
+Set `AGENT_ID=<your agent index id>` to report to the Agent Index: in the
+`compose.yml` this repo ships, or as a line in the `./plow-credentials` that
+`plow-agents mint` writes, which that file loads as the container's
+environment. With it set, the `agent-index` service registers this agent on its
+first pass — exchanging `PLOW_AGENT_TOKEN` for an Index-issued key, once — and
+thereafter reports the token usage it reads from `$HERMES_HOME/state.db` every
+five minutes; the registration pass is the only invocation given the Plow
+bearer, so the reporter itself never holds it. Every pass is handed
+`PLOW_API_BASE`, because the client's own fallback is a compiled-in
+`https://api.plow.co` — an agent whose token is a placeholder its host swaps in
+at a proxy would otherwise send that placeholder straight past the proxy and
+never register. With `AGENT_ID` unset the service says why on stderr and stands
+down, which is what an image built from this base does until its builder
+chooses an id. The service lives at `/etc/s6-overlay/s6-rc.d/agent-index/`, the
 same name and path `life-assistant-hermes-agent` uses, so a variant image that
-still copies its own reporter in overrides this one rather than running a second
-one beside it. The client is not tracked here: `vendor/client.pin` names a
-commit of `plow-pbc/agent-index-client` and the sha256 the build checks the
+still copies its own reporter in overrides this one rather than running a
+second one beside it. The client is not tracked here: `vendor/client.pin` names
+a commit of `plow-pbc/agent-index-client` and the sha256 the build checks the
 fetched file against, because this runs inside an agent holding a live
 credential and a moving reference would substitute unreviewed code under it.
 
@@ -435,9 +438,13 @@ such VM has been re-provisioned.
 ```sh
 plow-agents login              # once per account
 plow-agents lines
-plow-agents mint <line-uid>    # writes ./plow-credentials
+plow-agents mint ln_xxx        # writes ./plow-credentials
+echo AGENT_ID=my-agent >> ./plow-credentials
 docker compose up --build -d
 ```
+
+The `AGENT_ID` line is optional and is the whole of publishing usage — see
+[The Agent Index reporter](#the-agent-index-reporter).
 
 ## Tests
 

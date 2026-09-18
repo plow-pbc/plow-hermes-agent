@@ -229,7 +229,9 @@ the model you were on before you left.
 Set `AGENT_ID=<your agent index id>` to report to the Agent Index: in the
 `compose.yml` this repo ships, or as a line in the `./plow-credentials` that
 `plow-agents mint` writes, which that file loads as the container's
-environment. With it set, the `agent-index` service registers this agent on its
+environment; `AGENT_NAME` and `AGENT_BLURB` go beside it and are optional, and
+without them the Index stores the agent id as the name and an empty blurb.
+With `AGENT_ID` set, the `agent-index` service registers this agent on its
 first pass — exchanging `PLOW_AGENT_TOKEN` for an Index-issued key, once — and
 thereafter reports the token usage it reads from `$HERMES_HOME/state.db` every
 five minutes; the registration pass is the only invocation given the Plow
@@ -440,15 +442,18 @@ plow-agents login              # once per account
 plow-agents lines
 plow-agents mint ln_xxx        # writes ./plow-credentials
 echo AGENT_ID=my-agent >> ./plow-credentials
+echo AGENT_NAME='My Agent' >> ./plow-credentials
+echo AGENT_BLURB='One line about it' >> ./plow-credentials
 docker compose up --build -d
 ```
 
 Replace `ln_xxx` with a line `plow-agents lines` shows as `free`, and
 `my-agent` with the Agent Index id you want — letters, digits, `.`, `_` or `-`,
 starting with a letter or digit, at most 64 characters, and case is kept, so
-`My-Agent` and `my-agent` are two different agents.
+`My-Agent` and `my-agent` are two different agents — and `My Agent` and
+`One line about it` with how you want the agent to read on its Index page.
 
-The `AGENT_ID` line is optional and is the whole of publishing usage — see
+Those three lines are optional and are the whole of publishing usage — see
 [The Agent Index reporter](#the-agent-index-reporter).
 
 ## Tests

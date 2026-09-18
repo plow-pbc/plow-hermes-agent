@@ -33,6 +33,15 @@ export AGENT_ID
 PLOW_API_BASE=$(cat /run/s6/container_environment/PLOW_API_BASE 2>/dev/null || true)
 export PLOW_API_BASE
 
+# How this agent reads on its Index page. Optional, and the same source as the
+# rest: a builder sets them where they set AGENT_ID, or sets neither.
+#
+# Unset is not a blank page -- the Index stores the agent id as the name and an
+# empty blurb, so an agent registered without these is on the board under its
+# slug forever, which is a thing its builder cannot discover from in here.
+AGENT_NAME=$(cat /run/s6/container_environment/AGENT_NAME 2>/dev/null || true)
+AGENT_BLURB=$(cat /run/s6/container_environment/AGENT_BLURB 2>/dev/null || true)
+
 # The agent's home is where its usage store lives, and the client keeps its
 # ledger beside that store. Fixed, not overridable: this image puts the home
 # there, and a second way to say where it is only creates the case where the
@@ -45,6 +54,22 @@ if [ -z "$AGENT_ID" ]; then
   echo "agent to report for -- standing down. Set it where this container is" >&2
   echo "started (plow-agents compose.yml)." >&2
   exec sleep 86400
+fi
+
+# The register pass's arguments, built once.
+#
+# Positional parameters rather than a string: a blurb is a sentence, and a
+# sentence in an unquoted variable is a dozen arguments. Each optional flag is
+# added only when its value is there, because the client sends what it is given
+# and the Index treats an absent field as "leave what is on record alone" --
+# passing an empty --name would not clear the name, it would just be dropped,
+# and passing one every boot would overwrite an edit the owner made on the page.
+set -- --register --agent "$AGENT_ID"
+if [ -n "$AGENT_NAME" ]; then
+  set -- "$@" --name "$AGENT_NAME"
+fi
+if [ -n "$AGENT_BLURB" ]; then
+  set -- "$@" --blurb "$AGENT_BLURB"
 fi
 
 while :; do
@@ -76,7 +101,7 @@ while :; do
         env HOME="$HERMES_HOME" HERMES_HOME="$HERMES_HOME" AGENT_ID="$AGENT_ID" \
         PLOW_API_BASE="$PLOW_API_BASE" PLOW_AGENT_TOKEN="$PLOW_AGENT_TOKEN" \
         /opt/hermes/.venv/bin/python3 /opt/plow/agent-index-client.py \
-        --register --agent "$AGENT_ID" >/dev/null || {
+        "$@" >/dev/null || {
       echo "agent-index: no index key this pass, not reporting" >&2
       /bin/sleep 300
       continue

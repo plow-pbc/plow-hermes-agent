@@ -63,12 +63,14 @@ RETRY_DELAY_S = 3
 # and the restart that follows a rotation is exactly what lands inside that
 # window -- measured at about 50 seconds.
 AUTH_WAIT_S = 120
-# Three seconds, not thirty: this wait sits inside the owner's first
-# impression. The chat is created by their first text, and every second
-# between that text and the gateway starting is silence they are watching.
-# The cost is one conditional GET against `/v1/agents/cloud/me` per tick on a
-# VM that is otherwise idle, and the wait ends the moment the chat exists.
-HOME_POLL_INTERVAL_S = 3
+# Sixty seconds, and the owner's first text still ends the wait at once: each
+# tick holds the chat socket open for the whole interval, and any frame on it
+# returns immediately (wait_for_chat_event). The interval is only the fallback
+# when the socket cannot open. It is paid by every VM that is installed and
+# never texted, forever: at three seconds each such VM cost Plow a /me GET plus
+# a ticket and a socket handshake every tick, and thirty idle installs were
+# enough to pin the API's CPU until it ran out of memory (19 Sep).
+HOME_POLL_INTERVAL_S = 60
 HOME_WAIT_LOG_INTERVAL_S = 3600
 # When the socket's own failure may next be said out loud. Module state, like
 # the wait log it borrows its cadence from: one boot, one running commentary.

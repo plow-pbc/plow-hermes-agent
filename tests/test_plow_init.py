@@ -1068,26 +1068,6 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     assert all(b - a >= 3600 for a, b in zip(waiting_logs, waiting_logs[1:]))
 
 
-def test_a_boot_with_no_socket_backs_off_instead_of_retrying_forever(boot, monkeypatch):
-    """A transport that is not coming back costs a minute, not three seconds.
-
-    The fallback starts where the old poll did, so first contact is still
-    found quickly when the socket is merely slow to come up, then doubles to
-    the cap rather than re-asking at boot cadence for the life of the VM.
-    """
-    _checkpoint, _dropped, exported = boot
-    answers = iter([identity()] * 8 + [identity(chat("cht_home"))])
-    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
-    fallbacks = []
-    monkeypatch.setattr(plow_init, "wait_for_chat_event", _records(fallbacks, held=False))
-
-    plow_init.main()
-
-    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
-    assert fallbacks[:5] == [3, 6, 12, 24, 48]
-    assert fallbacks[5:] == [plow_init.HOME_POLL_MAX_INTERVAL_S] * 3
-
-
 def test_a_failed_ask_re_asks_soon_rather_than_holding_a_socket(boot, monkeypatch):
     """An outage over the owner's first text must not cost ten minutes.
 
@@ -1111,24 +1091,30 @@ def test_a_failed_ask_re_asks_soon_rather_than_holding_a_socket(boot, monkeypatc
     assert slept == [plow_init.HOME_POLL_INTERVAL_S], "the unanswered pass re-asks on the short wait"
 
 
-def test_a_socket_that_keeps_working_never_leaves_the_floor(boot, monkeypatch):
-    """The backoff counts consecutive failures, not loop passes.
+@pytest.mark.parametrize(("held", "expected"), [
+    (False, [3, 6, 12, 24, 48] + [plow_init.HOME_POLL_MAX_INTERVAL_S] * 3),
+    (True, [plow_init.HOME_POLL_INTERVAL_S] * 8),
+], ids=["no-socket-backs-off-to-the-cap", "held-socket-never-leaves-the-floor"])
+def test_the_backoff_counts_consecutive_failures_not_loop_passes(boot, monkeypatch, held, expected):
+    """What grows is a run of failures, not a count of passes.
 
-    Every held window is a working transport, so the fallback it would use if
-    the transport died next is the one a fresh boot would use. Growing it on a
-    success would have an agent that waited an hour reach the cap before its
-    first actual failure -- backing off from nothing.
+    A transport that is not coming back must stop costing three seconds a
+    time, which is the first row. But every HELD window is a working
+    transport, so the fallback it would use if that transport died next is the
+    one a fresh boot would use -- an agent that waited an hour must not reach
+    the cap before its first actual failure. That is the second row, and
+    growing on success is how it was wrong.
     """
     _checkpoint, _dropped, exported = boot
     answers = iter([identity()] * 8 + [identity(chat("cht_home"))])
     monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
     fallbacks = []
-    monkeypatch.setattr(plow_init, "wait_for_chat_event", _records(fallbacks, held=True))
+    monkeypatch.setattr(plow_init, "wait_for_chat_event", _records(fallbacks, held=held))
 
     plow_init.main()
 
     assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
-    assert fallbacks == [plow_init.HOME_POLL_INTERVAL_S] * 8
+    assert fallbacks == expected
 
 
 def _records(fallbacks, *, held):
@@ -1299,6 +1285,25 @@ def test_a_quiet_socket_is_held_for_the_whole_window(monkeypatch):
     plow_init.wait_for_chat_event(_credentials(), 0.01, 3)
 
     assert slept == []
+
+
+def test_a_setup_timeout_is_a_transport_failure_not_a_held_socket(monkeypatch):
+    """aiohttp's timeouts subclass `asyncio.TimeoutError` -- the caller's word
+    for "the window expired with a socket held open".
+
+    Nothing is held when setup times out, so letting that through would skip
+    the fallback and reset the backoff, and a timing-out endpoint would be
+    re-dialled every ten seconds with a committed ticket each time -- the
+    churn this whole change removes, arriving during an incident.
+    """
+    def session(**_kwargs):
+        raise asyncio.TimeoutError()
+
+    monkeypatch.setitem(sys.modules, "aiohttp", types.SimpleNamespace(
+        ClientSession=session, ClientTimeout=lambda **_kwargs: None))
+
+    with pytest.raises(ConnectionError):
+        asyncio.run(plow_init._await_chat_frame("https://api.example.test", "tok"))
 
 
 def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys):

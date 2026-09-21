@@ -1067,24 +1067,35 @@ async def _await_chat_frame(base: str, bearer: str) -> bool:
     # minutes of no discovery where the old code cost three seconds, and,
     # worse, the window ending would report as a held socket and reset a
     # backoff that had never once succeeded.
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, connect=TIMEOUT_S)) as http:
-        async with http.post(
-            f"{base}/v1/ws/ticket", json={}, headers=headers, timeout=aiohttp.ClientTimeout(total=TIMEOUT_S)
-        ) as resp:
-            resp.raise_for_status()
-            ticket = (await resp.json(content_type=None))["ticket"]
-        url = f"{base.replace('http', 'ws', 1)}/v1/ws?ticket={urllib.parse.quote(ticket, safe='')}"
-        async with http.ws_connect(url, heartbeat=30) as socket:
-            async for frame in socket:
-                if frame.type is not aiohttp.WSMsgType.TEXT:
-                    continue
-                try:
-                    if frame.json().get("type") == "connected":
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, connect=TIMEOUT_S)) as http:
+            async with http.post(
+                f"{base}/v1/ws/ticket", json={}, headers=headers, timeout=aiohttp.ClientTimeout(total=TIMEOUT_S)
+            ) as resp:
+                resp.raise_for_status()
+                ticket = (await resp.json(content_type=None))["ticket"]
+            url = f"{base.replace('http', 'ws', 1)}/v1/ws?ticket={urllib.parse.quote(ticket, safe='')}"
+            async with http.ws_connect(url, heartbeat=30) as socket:
+                async for frame in socket:
+                    if frame.type is not aiohttp.WSMsgType.TEXT:
                         continue
-                except ValueError:
-                    pass
-                return True
-    return False
+                    try:
+                        if frame.json().get("type") == "connected":
+                            continue
+                    except ValueError:
+                        pass
+                    return True
+        return False
+    except asyncio.TimeoutError as timeout:
+        # aiohttp's connect and read timeouts SUBCLASS asyncio.TimeoutError,
+        # and the caller spends that exception on its one OTHER meaning: the
+        # window expired with a socket held open. Nothing was held here --
+        # setup never finished -- so letting it through would skip the
+        # fallback and reset the backoff, and a timing-out endpoint would be
+        # re-dialled every ten seconds, minting a committed ticket each time.
+        # That is the churn this change exists to remove, arriving exactly
+        # during an incident. Only `wait_for`'s own expiry may mean `True`.
+        raise ConnectionError("chat socket setup timed out") from timeout
 
 
 def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_sleep: float) -> bool:

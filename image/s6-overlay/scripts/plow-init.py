@@ -1058,8 +1058,16 @@ async def _await_chat_frame(base: str, bearer: str) -> bool:
     import aiohttp
 
     headers = {"Authorization": f"Bearer {bearer}"}
+    # `total=None` is for the socket, which is held for the whole window by
+    # design. The ticket POST must NOT inherit it: a request that hangs rather
+    # than refusing would otherwise be bounded only by that window, so a
+    # wedged endpoint would cost ten minutes of discovery instead of the
+    # fallback. It gets the same short timeout as every other call this script
+    # makes.
     async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as http:
-        async with http.post(f"{base}/v1/ws/ticket", json={}, headers=headers) as resp:
+        async with http.post(
+            f"{base}/v1/ws/ticket", json={}, headers=headers, timeout=aiohttp.ClientTimeout(total=TIMEOUT_S)
+        ) as resp:
             resp.raise_for_status()
             ticket = (await resp.json(content_type=None))["ticket"]
         url = f"{base.replace('http', 'ws', 1)}/v1/ws?ticket={urllib.parse.quote(ticket, safe='')}"
@@ -1076,8 +1084,13 @@ async def _await_chat_frame(base: str, bearer: str) -> bool:
     return False
 
 
-def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_sleep: float) -> None:
+def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_sleep: float) -> bool:
     """Hold a socket for `socket_wait`, or sleep `fallback_sleep` without one.
+
+    Returns whether the socket carried the wait. The caller backs off on
+    `False`, so what grows is a run of consecutive failures rather than a
+    count of loop passes -- an agent whose socket works for an hour and then
+    loses it starts its fallback where a fresh boot would, not at the cap.
 
     The two must not be one number. `socket_wait` is spent inside a single
     open connection that Plow pushes to, so it costs one ticket however long
@@ -1100,7 +1113,7 @@ def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_s
     except asyncio.TimeoutError:
         # The window passed with the socket open and quiet: exactly the wait
         # the poll wanted, already spent. Ask again now.
-        return
+        return True
     except Exception as error:  # noqa: BLE001 - the poll is the fallback; a socket that will not open must not stop the boot
         heard = False
         # Once, then at the same hourly cadence as the wait itself. A line per
@@ -1114,12 +1127,13 @@ def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_s
         # A frame returns immediately -- sleeping off the rest of the fallback
         # after being told something happened would give back every second
         # this function exists to save.
-        return
+        return True
     # Everything else owes the caller the wait it asked for: a failure, and a
     # socket that closed with nothing to say.
     remaining = fallback_sleep - (time.monotonic() - started)
     if remaining > 0:
         time.sleep(remaining)
+    return False
 
 
 def main() -> None:
@@ -1141,8 +1155,8 @@ def main() -> None:
         if now >= next_wait_log:
             print(f"plow-init: waiting for a home chat on {waiting_line}", file=sys.stderr)
             next_wait_log = now + HOME_WAIT_LOG_INTERVAL_S
-        wait_for_chat_event(credentials, HOME_SOCKET_WAIT_S, fallback)
-        fallback = min(fallback * 2, HOME_POLL_MAX_INTERVAL_S)
+        held = wait_for_chat_event(credentials, HOME_SOCKET_WAIT_S, fallback)
+        fallback = HOME_POLL_INTERVAL_S if held else min(fallback * 2, HOME_POLL_MAX_INTERVAL_S)
     write_latch_instructions(identity, credentials.bearer)
     values = {
         # Re-published even when the environment already holds it: the

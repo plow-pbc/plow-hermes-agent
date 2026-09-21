@@ -1079,14 +1079,45 @@ def test_a_boot_with_no_socket_backs_off_instead_of_retrying_forever(boot, monke
     answers = iter([identity()] * 8 + [identity(chat("cht_home"))])
     monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
     fallbacks = []
-    monkeypatch.setattr(plow_init, "wait_for_chat_event",
-                        lambda credentials, socket_wait, fallback_sleep: fallbacks.append(fallback_sleep))
+    monkeypatch.setattr(plow_init, "wait_for_chat_event", _records(fallbacks, held=False))
 
     plow_init.main()
 
     assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
     assert fallbacks[:5] == [3, 6, 12, 24, 48]
     assert fallbacks[5:] == [plow_init.HOME_POLL_MAX_INTERVAL_S] * 3
+
+
+def test_a_socket_that_keeps_working_never_leaves_the_floor(boot, monkeypatch):
+    """The backoff counts consecutive failures, not loop passes.
+
+    Every held window is a working transport, so the fallback it would use if
+    the transport died next is the one a fresh boot would use. Growing it on a
+    success would have an agent that waited an hour reach the cap before its
+    first actual failure -- backing off from nothing.
+    """
+    _checkpoint, _dropped, exported = boot
+    answers = iter([identity()] * 8 + [identity(chat("cht_home"))])
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
+    fallbacks = []
+    monkeypatch.setattr(plow_init, "wait_for_chat_event", _records(fallbacks, held=True))
+
+    plow_init.main()
+
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert fallbacks == [plow_init.HOME_POLL_INTERVAL_S] * 8
+
+
+def _records(fallbacks, *, held):
+    """Stand in for the wait, recording the fallback it was handed.
+
+    `held` is the socket's verdict -- what the real wait returns when the
+    window carried it (True) or when it fell through to the sleep (False) --
+    and is the only thing the caller's backoff reads."""
+    def wait(_credentials, _socket_wait, fallback_sleep):
+        fallbacks.append(fallback_sleep)
+        return held
+    return wait
 
 
 @pytest.mark.parametrize("existing", [None, "", "msg_already_handled\n"])

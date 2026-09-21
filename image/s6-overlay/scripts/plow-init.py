@@ -1059,12 +1059,15 @@ async def _await_chat_frame(base: str, bearer: str) -> bool:
 
     headers = {"Authorization": f"Bearer {bearer}"}
     # `total=None` is for the socket, which is held for the whole window by
-    # design. The ticket POST must NOT inherit it: a request that hangs rather
-    # than refusing would otherwise be bounded only by that window, so a
-    # wedged endpoint would cost ten minutes of discovery instead of the
-    # fallback. It gets the same short timeout as every other call this script
-    # makes.
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None)) as http:
+    # design -- capping it would cap the thing this function exists to do.
+    # Everything BEFORE the socket is open is bounded instead: `connect`
+    # covers TCP and TLS for both calls below, and the ticket POST overrides
+    # `total` outright. Without those, an endpoint that accepts a connection
+    # and then says nothing is bounded only by `HOME_SOCKET_WAIT_S` -- ten
+    # minutes of no discovery where the old code cost three seconds, and,
+    # worse, the window ending would report as a held socket and reset a
+    # backoff that had never once succeeded.
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, connect=TIMEOUT_S)) as http:
         async with http.post(
             f"{base}/v1/ws/ticket", json={}, headers=headers, timeout=aiohttp.ClientTimeout(total=TIMEOUT_S)
         ) as resp:

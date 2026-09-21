@@ -12,10 +12,15 @@ gateway config seed, the base persona, and the pin of the `plow_chat` plugin.
 map; this file does not restate them. Flag drift between that prose and the
 code, in either direction.
 
-**Stage:** pre-PMF, one operator, a handful of tenants booting this image as a
-VM rootfs on exe.dev or as a container. Iteration speed beats hardening for
-scale: prefer loud failures to fallbacks, and don't guard edge cases a fleet
-this size cannot reach.
+**Stage:** pre-PMF, one operator, ~390 tenants (2026-09-21) booting this image
+as a VM rootfs on exe.dev or as a container -- a count that has roughly doubled
+each week since early September, so read it as a floor rather than a figure.
+Iteration speed still beats hardening for scale: prefer loud failures to
+fallbacks, and don't guard edge cases this fleet cannot reach. But every
+request this image makes to a shared API -- at boot, on a poll interval, or on
+a timer -- is multiplied by that count, so price it against the fleet rather
+than against one VM. The multiplier is the request, not the loop: `home-guard`
+wakes every ten seconds and costs nothing shared.
 
 **Distribution model:** one immutable `base-<full-sha>` tag per commit,
 published by CI in `plow-pbc/plow`, which also pins which tag a tenant boots.

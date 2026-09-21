@@ -63,12 +63,22 @@ RETRY_DELAY_S = 3
 # and the restart that follows a rotation is exactly what lands inside that
 # window -- measured at about 50 seconds.
 AUTH_WAIT_S = 120
-# Three seconds, not thirty: this wait sits inside the owner's first
-# impression. The chat is created by their first text, and every second
-# between that text and the gateway starting is silence they are watching.
-# The cost is one conditional GET against `/v1/agents/cloud/me` per tick on a
-# VM that is otherwise idle, and the wait ends the moment the chat exists.
+# How long one socket is held before the identity endpoint is asked again.
+# Plow delivers a chat born on this line to a socket that is already open, so
+# holding one IS the mechanism -- the re-ask is a backstop against a socket
+# that is up but silent when it should not be, not the thing that finds the
+# chat. This was HOME_POLL_INTERVAL_S, which made every interval mint a
+# ticket and open a connection: for an agent whose owner never texts, a
+# committed row and a socket lifecycle every three seconds for the life of
+# the VM. At 75 such agents that was 15 tickets a second against the API.
+HOME_SOCKET_WAIT_S = 600
+# The sleep-only fallback, for a boot with no socket to hold -- no ticket, a
+# refused upgrade, a venv without aiohttp. It starts at the old interval so
+# first contact is still found quickly when the transport is merely slow to
+# come up, then doubles to the cap: a transport that is not coming back must
+# not be retried at three-second cadence forever.
 HOME_POLL_INTERVAL_S = 3
+HOME_POLL_MAX_INTERVAL_S = 60
 HOME_WAIT_LOG_INTERVAL_S = 3600
 # When the socket's own failure may next be said out loud. Module state, like
 # the wait log it borrows its cadence from: one boot, one running commentary.
@@ -1066,22 +1076,29 @@ async def _await_chat_frame(base: str, bearer: str) -> bool:
     return False
 
 
-def wait_for_chat_event(credentials: Credentials, timeout: float) -> None:
-    """Sleep until Plow reports activity on this line, or `timeout` elapses.
+def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_sleep: float) -> None:
+    """Hold a socket for `socket_wait`, or sleep `fallback_sleep` without one.
+
+    The two must not be one number. `socket_wait` is spent inside a single
+    open connection that Plow pushes to, so it costs one ticket however long
+    it is; `fallback_sleep` is spent blind and has to stay short at first, so
+    a transport that is only slow to come up is not waited out for ten
+    minutes. Passing one value for both is what made an idle agent mint a
+    committed row and a socket every three seconds.
 
     The socket is an optimisation over the sleep it replaces, never a
     requirement: every failure -- no ticket, a refused upgrade, a dropped
     connection, an image whose venv has no aiohttp -- falls back to sleeping
-    out the rest of the interval, so the poll above remains the thing that
+    out the rest of the fallback, so the poll above remains the thing that
     actually decides. A boot must not hang on a transport that is merely
     faster when it works.
     """
     global _next_socket_log
     started = time.monotonic()
     try:
-        heard = asyncio.run(asyncio.wait_for(_await_chat_frame(credentials.plow_api_base.rstrip("/"), credentials.bearer), timeout))
+        heard = asyncio.run(asyncio.wait_for(_await_chat_frame(credentials.plow_api_base.rstrip("/"), credentials.bearer), socket_wait))
     except asyncio.TimeoutError:
-        # The interval passed with the socket open and quiet: exactly the wait
+        # The window passed with the socket open and quiet: exactly the wait
         # the poll wanted, already spent. Ask again now.
         return
     except Exception as error:  # noqa: BLE001 - the poll is the fallback; a socket that will not open must not stop the boot
@@ -1094,13 +1111,13 @@ def wait_for_chat_event(credentials: Credentials, timeout: float) -> None:
             print(f"plow-init: chat socket unavailable, falling back to the poll ({type(error).__name__})", file=sys.stderr)
             _next_socket_log = now + HOME_WAIT_LOG_INTERVAL_S
     if heard:
-        # A frame returns immediately -- sleeping off the rest of the interval
+        # A frame returns immediately -- sleeping off the rest of the fallback
         # after being told something happened would give back every second
         # this function exists to save.
         return
     # Everything else owes the caller the wait it asked for: a failure, and a
     # socket that closed with nothing to say.
-    remaining = timeout - (time.monotonic() - started)
+    remaining = fallback_sleep - (time.monotonic() - started)
     if remaining > 0:
         time.sleep(remaining)
 
@@ -1112,6 +1129,7 @@ def main() -> None:
     credentials = read_credentials()
     next_wait_log = time.monotonic()
     waiting_line = None
+    fallback = HOME_POLL_INTERVAL_S
     while True:
         identity = ask_plow(credentials, waiting=waiting_line is not None)
         home = home_chat(identity) if identity is not None else None
@@ -1123,7 +1141,8 @@ def main() -> None:
         if now >= next_wait_log:
             print(f"plow-init: waiting for a home chat on {waiting_line}", file=sys.stderr)
             next_wait_log = now + HOME_WAIT_LOG_INTERVAL_S
-        wait_for_chat_event(credentials, HOME_POLL_INTERVAL_S)
+        wait_for_chat_event(credentials, HOME_SOCKET_WAIT_S, fallback)
+        fallback = min(fallback * 2, HOME_POLL_MAX_INTERVAL_S)
     write_latch_instructions(identity, credentials.bearer)
     values = {
         # Re-published even when the environment already holds it: the

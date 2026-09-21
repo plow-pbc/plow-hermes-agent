@@ -7,6 +7,7 @@ reads Plow's endpoint from, what it does with each answer from Plow, and
 which settings it writes into the agent's config.
 """
 
+import asyncio
 import contextlib
 import http.client
 import importlib.util
@@ -1055,7 +1056,8 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     # The wait is a socket with a sleep behind it; this test is about the loop
     # that surrounds both, so it stands in for the pair with the sleep alone.
     # `test_chat_event_wait_falls_back_to_sleeping` covers the socket itself.
-    monkeypatch.setattr(plow_init, "wait_for_chat_event", lambda credentials, timeout: plow_init.time.sleep(timeout))
+    monkeypatch.setattr(plow_init, "wait_for_chat_event",
+                        lambda credentials, socket_wait, fallback_sleep: plow_init.time.sleep(socket_wait))
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: elapsed)
     plow_init.main()
     assert not parking.exists()
@@ -1064,6 +1066,27 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     assert waiting_logs[0] == 0
     assert 1 < len(waiting_logs) <= 3
     assert all(b - a >= 3600 for a, b in zip(waiting_logs, waiting_logs[1:]))
+
+
+def test_a_boot_with_no_socket_backs_off_instead_of_retrying_forever(boot, monkeypatch):
+    """A transport that is not coming back costs a minute, not three seconds.
+
+    The fallback starts where the old poll did, so first contact is still
+    found quickly when the socket is merely slow to come up, then doubles to
+    the cap rather than re-asking at boot cadence for the life of the VM.
+    """
+    _checkpoint, _dropped, exported = boot
+    answers = iter([identity()] * 8 + [identity(chat("cht_home"))])
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
+    fallbacks = []
+    monkeypatch.setattr(plow_init, "wait_for_chat_event",
+                        lambda credentials, socket_wait, fallback_sleep: fallbacks.append(fallback_sleep))
+
+    plow_init.main()
+
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert fallbacks[:5] == [3, 6, 12, 24, 48]
+    assert fallbacks[5:] == [plow_init.HOME_POLL_MAX_INTERVAL_S] * 3
 
 
 @pytest.mark.parametrize("existing", [None, "", "msg_already_handled\n"])
@@ -1165,7 +1188,7 @@ def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
     _socket(monkeypatch, raises=RuntimeError("no socket"))
 
-    plow_init.wait_for_chat_event(_credentials(), 3)
+    plow_init.wait_for_chat_event(_credentials(), 600, 3)
 
     assert slept == [3]
     assert "falling back to the poll" in capsys.readouterr().err
@@ -1197,9 +1220,31 @@ def test_chat_event_wait_result_controls_sleep(monkeypatch, frame_received, expe
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
     _socket(monkeypatch, says=frame_received)
 
-    plow_init.wait_for_chat_event(_credentials(), 3)
+    plow_init.wait_for_chat_event(_credentials(), 600, 3)
 
     assert slept == expected_sleep
+
+
+def test_a_quiet_socket_is_held_for_the_whole_window(monkeypatch):
+    """A window that ends quiet owes no sleep -- the socket already was the wait.
+
+    Holding one socket is the whole saving: it is what makes a single ticket
+    cover the window instead of one interval. A wait that slept the fallback
+    on top of a quiet window, or that re-asked at fallback cadence, is what
+    minted a row and a connection every three seconds for the life of a VM
+    whose owner never texts.
+    """
+    slept = []
+    monkeypatch.setattr(plow_init.time, "sleep", slept.append)
+
+    async def quiet(_base, _bearer):
+        await asyncio.sleep(1)
+
+    monkeypatch.setattr(plow_init, "_await_chat_frame", quiet)
+
+    plow_init.wait_for_chat_event(_credentials(), 0.01, 3)
+
+    assert slept == []
 
 
 def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys):
@@ -1216,7 +1261,7 @@ def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys)
 
     spoke = []
     for _ in range(40):
-        plow_init.wait_for_chat_event(_credentials(), 3)
+        plow_init.wait_for_chat_event(_credentials(), 600, 3)
         if capsys.readouterr().err:
             spoke.append(clock[0])
         clock[0] += 3

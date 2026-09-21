@@ -1088,6 +1088,29 @@ def test_a_boot_with_no_socket_backs_off_instead_of_retrying_forever(boot, monke
     assert fallbacks[5:] == [plow_init.HOME_POLL_MAX_INTERVAL_S] * 3
 
 
+def test_a_failed_ask_re_asks_soon_rather_than_holding_a_socket(boot, monkeypatch):
+    """An outage over the owner's first text must not cost ten minutes.
+
+    The socket ends this loop by carrying a chat being born. If the ask fails
+    while that frame is in flight, the frame is spent and the next window has
+    nothing left to announce -- so a boot that opened one would sit quiet over
+    a home chat that already existed. The ask is what retries here.
+    """
+    _checkpoint, _dropped, exported = boot
+    answers = iter([identity(), None, identity(chat("cht_home"))])
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
+    slept = []
+    monkeypatch.setattr(plow_init.time, "sleep", slept.append)
+    waits = []
+    monkeypatch.setattr(plow_init, "wait_for_chat_event", _records(waits, held=True))
+
+    plow_init.main()
+
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert waits == [plow_init.HOME_POLL_INTERVAL_S], "only the answered pass holds a socket"
+    assert slept == [plow_init.HOME_POLL_INTERVAL_S], "the unanswered pass re-asks on the short wait"
+
+
 def test_a_socket_that_keeps_working_never_leaves_the_floor(boot, monkeypatch):
     """The backoff counts consecutive failures, not loop passes.
 

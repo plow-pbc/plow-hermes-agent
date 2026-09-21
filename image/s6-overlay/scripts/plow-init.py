@@ -1158,6 +1158,15 @@ def main() -> None:
         if now >= next_wait_log:
             print(f"plow-init: waiting for a home chat on {waiting_line}", file=sys.stderr)
             next_wait_log = now + HOME_WAIT_LOG_INTERVAL_S
+        if identity is None:
+            # The ASK failed, not the wait -- and the two want opposite
+            # waits. A socket ends this loop by announcing a chat being born,
+            # so if the owner's text landed during the outage that frame is
+            # already spent: a fresh ten-minute window would sit quiet over a
+            # home chat that is right there. Re-ask soon instead, which is the
+            # short wait this constant has always been.
+            time.sleep(HOME_POLL_INTERVAL_S)
+            continue
         held = wait_for_chat_event(credentials, HOME_SOCKET_WAIT_S, fallback)
         fallback = HOME_POLL_INTERVAL_S if held else min(fallback * 2, HOME_POLL_MAX_INTERVAL_S)
     write_latch_instructions(identity, credentials.bearer)

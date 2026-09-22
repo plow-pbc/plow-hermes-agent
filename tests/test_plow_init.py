@@ -1240,9 +1240,9 @@ def test_chat_event_wait_falls_back_to_sleeping(monkeypatch, capsys):
 def _socket(monkeypatch, *, says=None, raises=None):
     """Stand in for the socket itself, not for the asyncio that drives it.
 
-    Replacing `_await_chat_frame` leaves `asyncio.run` and `wait_for` real, so
-    the control flow under test is the real one and no coroutine is created
-    only to be closed unawaited."""
+    Replacing `_await_chat_frame` leaves `asyncio.run` real, so the control
+    flow under test is the real one and no coroutine is created only to be
+    closed unawaited."""
 
     async def frame(_base, _bearer, _settled=None):
         if raises is not None:
@@ -1253,19 +1253,15 @@ def _socket(monkeypatch, *, says=None, raises=None):
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: 0)
 
 
-@pytest.mark.parametrize(("frame_received", "expected_sleep"), [
-    (True, []),
-    (False, [3]),
-], ids=["frame-ends-wait", "closed-socket-sleeps-remaining-interval"])
-def test_chat_event_wait_result_controls_sleep(monkeypatch, frame_received, expected_sleep):
-    """A frame ends the wait; a clean close still owes the polling interval."""
+def test_chat_event_wait_frame_returns_without_sleep(monkeypatch):
+    """A frame ends the wait, and the caller owes no polling interval."""
     slept = []
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
-    _socket(monkeypatch, says=frame_received)
+    _socket(monkeypatch, says=True)
 
-    plow_init.wait_for_chat_event(_credentials(), 3)
+    assert plow_init.wait_for_chat_event(_credentials(), 3) is True
 
-    assert slept == expected_sleep
+    assert slept == []
 
 
 def test_a_quiet_socket_is_held_rather_than_timed_out(monkeypatch):

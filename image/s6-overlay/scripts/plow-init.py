@@ -762,9 +762,9 @@ def own_home_dotenv(api_server_key: str) -> None:
     grammar of this image's own -- `export`, leading whitespace and quoted
     keys come free, and so does the case a line-at-a-time filter gets wrong
     in the dangerous direction: a quoted operator value spanning several
-    lines whose continuation opens with `PLOW_AGENT_TOKEN=` is one binding of
-    the operator's name, and split into lines it reads as an owned one this
-    function would then delete.
+    lines whose continuation opens with the owned name followed by an equals
+    sign is one binding of the operator's name, and split into lines it
+    reads as an owned one this function would then delete.
 
     A cloud tenant's home holds nothing else in this file, so dropping the
     owned names and appending API_SERVER_KEY is indistinguishable from the

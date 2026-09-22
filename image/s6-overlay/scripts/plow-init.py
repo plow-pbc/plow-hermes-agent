@@ -79,6 +79,10 @@ AUTH_WAIT_S = 120
 # heartbeat is what notices a connection that died without saying so.
 HOME_SOCKET_RECONNECT_S = 3
 HOME_SOCKET_RECONNECT_MAX_S = 60
+# How long a connection must last before it counts as healthy, so the backoff
+# resets for a socket that worked and not for one that was accepted and closed
+# at once. The plugin's own transport draws the same line at 30s.
+HOME_SOCKET_HEALTHY_S = 30
 HOME_POLL_INTERVAL_S = 3
 HOME_POLL_MAX_INTERVAL_S = 60
 HOME_WAIT_LOG_INTERVAL_S = 3600
@@ -1088,8 +1092,8 @@ async def _await_chat_frame(base: str, bearer: str, settled=None) -> bool:
             pause = HOME_SOCKET_RECONNECT_S
             while True:
                 socket = await asyncio.wait_for(setup(http), TIMEOUT_S)
+                opened = time.monotonic()
                 async with socket:
-                    pause = HOME_SOCKET_RECONNECT_S   # this one opened; the next close starts fresh
                     async for frame in socket:
                         if frame.type is not aiohttp.WSMsgType.TEXT:
                             continue
@@ -1103,7 +1107,13 @@ async def _await_chat_frame(base: str, bearer: str, settled=None) -> bool:
                             continue
                         return True
                 # The socket ended without saying anything. Re-open it: that is
-                # the normal path across a deploy, not a failure.
+                # the normal path across a deploy, not a failure. The backoff
+                # resets only for a connection that LASTED -- an upgrade that
+                # succeeds and closes at once is the churn this change removes,
+                # and resetting on the open alone would dial it every three
+                # seconds forever with the cap never reached.
+                if time.monotonic() - opened >= HOME_SOCKET_HEALTHY_S:
+                    pause = HOME_SOCKET_RECONNECT_S
                 await asyncio.sleep(pause)
                 pause = min(pause * 2, HOME_SOCKET_RECONNECT_MAX_S)
     except asyncio.TimeoutError as timeout:

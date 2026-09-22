@@ -1396,48 +1396,6 @@ def test_a_home_chat_born_before_the_socket_subscribed_ends_the_wait(monkeypatch
     assert asked == [True], "asked once, at the handshake, not per frame"
 
 
-def test_the_handshake_is_re_asked_on_every_connection_and_alone_is_not_news(monkeypatch):
-    """The re-ask is what closes the race, so it belongs to every subscribe --
-    a reconnect after a deploy opens the same gap the first connect did. A
-    handshake whose re-ask says no is not news either: the socket keeps
-    waiting rather than reporting a frame that says nothing about a home chat.
-    """
-    asked = []
-    opened = []
-
-    def socket():
-        opened.append(True)
-        return _frames({"type": "connected"})     # handshake, then close
-
-    _aiohttp(monkeypatch, socket)
-    monkeypatch.setattr(plow_init, "HOME_SOCKET_RECONNECT_S", 0.01)
-    monkeypatch.setattr(plow_init, "HOME_SOCKET_RECONNECT_MAX_S", 0.01)
-
-    async def hold():
-        return await plow_init._await_chat_frame(
-            "https://api.example.test", "tok", lambda: asked.append(True) or False)
-
-    async def bounded():
-        with contextlib.suppress(asyncio.TimeoutError):
-            await asyncio.wait_for(hold(), 1)
-
-    asyncio.run(bounded())
-
-    assert len(opened) > 1, "a closed socket was not re-opened"
-    assert len(asked) == len(opened), "identity is asked once per subscribe, reconnects included"
-
-
-def test_a_chat_that_arrives_after_a_reconnect_still_ends_the_wait(monkeypatch):
-    """The socket a deploy closed is re-opened, and the chat born meanwhile is
-    found by that connection's own re-ask -- not by a timer, which is gone."""
-    answers = iter([False, True])
-    _aiohttp(monkeypatch, lambda: _frames({"type": "connected"}))
-    monkeypatch.setattr(plow_init, "HOME_SOCKET_RECONNECT_S", 0.01)
-
-    assert asyncio.run(plow_init._await_chat_frame(
-        "https://api.example.test", "tok", lambda: next(answers))) is True
-
-
 def test_an_upgrade_that_never_answers_is_bounded_by_setup_not_the_hold(monkeypatch):
     """`connect` bounds acquiring the connection, not the upgrade response. A
     server that accepts TCP and then says nothing would otherwise spend the
@@ -1467,3 +1425,51 @@ def test_the_boot_hands_the_wait_only_its_fallback(monkeypatch, boot):
 
     assert spent == [plow_init.HOME_POLL_INTERVAL_S]
     assert not hasattr(plow_init, "HOME_SOCKET_WAIT_S"), "the window is gone, not merely unused"
+
+
+def test_every_subscribe_re_asks_and_a_reconnect_can_be_what_finds_the_chat(monkeypatch):
+    """The re-ask belongs to every subscribe, reconnects included: a deploy
+    closes the socket and the next one opens the same gap the first did. A
+    handshake whose re-ask says no is not news either -- the socket keeps
+    waiting rather than reporting a frame that says nothing about a home chat.
+    """
+    answers = iter([False, True])
+    opened, asked = [], []
+
+    def socket():
+        opened.append(True)
+        return _frames({"type": "connected"})     # handshake, then close
+
+    _aiohttp(monkeypatch, socket)
+    monkeypatch.setattr(plow_init, "HOME_SOCKET_RECONNECT_S", 0.01)
+    monkeypatch.setattr(plow_init, "HOME_SOCKET_HEALTHY_S", 0)
+
+    def settled():
+        asked.append(True)
+        return next(answers)
+
+    assert asyncio.run(plow_init._await_chat_frame("https://api.example.test", "tok", settled)) is True
+    assert len(opened) == 2, "the first handshake was not news, so the socket re-opened"
+    assert len(asked) == 2, "identity is asked once per subscribe, reconnects included"
+
+
+def test_the_backoff_resets_only_for_a_socket_that_lasted(monkeypatch):
+    """An upgrade that succeeds and closes at once is the churn this change
+    removes; resetting on the open alone would dial it every three seconds
+    forever and the cap would never be reached."""
+    pauses = []
+
+    async def sleep(seconds):
+        pauses.append(seconds)
+        if len(pauses) >= 5:
+            raise RuntimeError("stop")     # end the reconnect loop from the test
+
+    _aiohttp(monkeypatch, lambda: _frames({"type": "connected"}))
+    monkeypatch.setattr(plow_init.asyncio, "sleep", sleep)
+    monkeypatch.setattr(plow_init, "HOME_SOCKET_RECONNECT_S", 1)
+    monkeypatch.setattr(plow_init, "HOME_SOCKET_RECONNECT_MAX_S", 8)
+
+    with contextlib.suppress(RuntimeError):
+        asyncio.run(plow_init._await_chat_frame("https://api.example.test", "tok", lambda: False))
+
+    assert pauses == [1, 2, 4, 8, 8], "a socket that closed at once reset the backoff"

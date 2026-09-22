@@ -115,9 +115,16 @@ image picks one: the active chat holding exactly this agent and exactly one
 member, who is the owner. Zero matches waits for first contact: the image holds
 Plow's websocket open on the agent credential, and a chat born on this line
 wakes it within milliseconds, so the wait ends when the owner texts rather than
-on a tick. A 3-second poll sits behind the socket and is what actually decides
--- it covers a chat that already existed, a socket that will not open or closes
-with nothing to say, and a runtime with no `aiohttp`. Several matches still park, printing the
+on a tick. One socket is held for as long as it stays up, with no window and no
+periodic re-ask: `/v1/agents/cloud/me` is asked when the socket speaks and once
+at every subscribe, reconnects included. So an agent nobody has texted yet
+costs one ticket and one connection for as long as that socket lives, rather
+than one per tick. A socket that closes -- a deploy, most often -- is re-opened
+after three seconds, doubling to sixty until one lasts thirty seconds, and the
+heartbeat is what notices a connection that died without saying so. A boot with no socket to hold -- no ticket, a refused upgrade, a
+runtime with no `aiohttp` -- sleeps instead, starting at three seconds and
+doubling to sixty; that sleep is also what covers a chat that already existed
+and a socket that closes with nothing to say. Several matches still park, printing the
 roster it saw — the wrong home is an agent talking to the wrong people. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every

@@ -17,6 +17,7 @@ import os
 import pathlib
 import stat
 import sys
+import time
 import types
 import urllib.error
 import urllib.request
@@ -1057,7 +1058,8 @@ def test_boot_waits_reasks_then_seeds_only_an_absent_checkpoint(
     # that surrounds both, so it stands in for the pair with the sleep alone.
     # `test_chat_event_wait_falls_back_to_sleeping` covers the socket itself.
     monkeypatch.setattr(plow_init, "wait_for_chat_event",
-                        lambda credentials, socket_wait, fallback_sleep: plow_init.time.sleep(socket_wait))
+                        lambda credentials, socket_wait, fallback_sleep, settled=None:
+                        plow_init.time.sleep(socket_wait))
     monkeypatch.setattr(plow_init.time, "monotonic", lambda: elapsed)
     plow_init.main()
     assert not parking.exists()
@@ -1123,7 +1125,7 @@ def _records(fallbacks, *, held):
     `held` is the socket's verdict -- what the real wait returns when the
     window carried it (True) or when it fell through to the sleep (False) --
     and is the only thing the caller's backoff reads."""
-    def wait(_credentials, _socket_wait, fallback_sleep):
+    def wait(_credentials, _socket_wait, fallback_sleep, _settled=None):
         fallbacks.append(fallback_sleep)
         return held
     return wait
@@ -1241,7 +1243,7 @@ def _socket(monkeypatch, *, says=None, raises=None):
     the control flow under test is the real one and no coroutine is created
     only to be closed unawaited."""
 
-    async def frame(_base, _bearer):
+    async def frame(_base, _bearer, _settled=None):
         if raises is not None:
             raise raises
         return says
@@ -1277,7 +1279,7 @@ def test_a_quiet_socket_is_held_for_the_whole_window(monkeypatch):
     slept = []
     monkeypatch.setattr(plow_init.time, "sleep", slept.append)
 
-    async def quiet(_base, _bearer):
+    async def quiet(_base, _bearer, _settled=None):
         await asyncio.sleep(1)
 
     monkeypatch.setattr(plow_init, "_await_chat_frame", quiet)
@@ -1328,3 +1330,118 @@ def test_the_socket_failure_is_said_once_not_every_interval(monkeypatch, capsys)
     assert spoke[0] == 0
     assert all(b - a >= plow_init.HOME_WAIT_LOG_INTERVAL_S for a, b in zip(spoke, spoke[1:]))
     assert len(spoke) == 1, "two minutes of failures is one line, not forty"
+
+
+def _frames(*payloads):
+    """A socket that yields `payloads` as TEXT frames, then closes."""
+    class Frame:
+        type = "TEXT"
+        def __init__(self, payload): self._payload = payload
+        def json(self): return self._payload
+    class Socket:
+        def __init__(self): self.frames = [Frame(p) for p in payloads]
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        def __aiter__(self): return self._iter()
+        async def _iter(self):
+            for frame in self.frames:
+                yield frame
+    return Socket()
+
+
+def _aiohttp(monkeypatch, socket, *, ws_hangs=False):
+    """Stand in for aiohttp with a session whose socket is `socket`."""
+    class Response:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        def raise_for_status(self): return None
+        async def json(self, **_kwargs): return {"ticket": "tkt"}
+    class Session:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *_): return False
+        def post(self, *_a, **_k): return Response()
+        async def ws_connect(self, *_a, **_k):
+            if ws_hangs:
+                await asyncio.sleep(3600)   # accepted, never upgraded
+            return socket
+    module = types.SimpleNamespace(
+        ClientSession=lambda **_kwargs: Session(),
+        ClientTimeout=lambda **_kwargs: None,
+        WSMsgType=types.SimpleNamespace(TEXT="TEXT"))
+    monkeypatch.setitem(sys.modules, "aiohttp", module)
+
+
+def test_a_home_chat_born_before_the_socket_subscribed_ends_the_wait(monkeypatch):
+    """The caller asks, then opens a socket. A chat created in that gap gets no
+    frame -- the API pushes to sockets registered at the time and replays
+    nothing -- so without asking again the wait sits quiet over a home chat
+    that already exists, for the whole window."""
+    asked = []
+    _aiohttp(monkeypatch, _frames({"type": "connected"}))
+
+    def settled():
+        asked.append(True)
+        return True
+
+    assert asyncio.run(plow_init._await_chat_frame("https://api.example.test", "tok", settled)) is True
+    assert asked == [True], "asked once, at the handshake, not per frame"
+
+
+def test_the_handshake_alone_is_not_news_when_no_chat_exists(monkeypatch):
+    """The re-ask answers False: the socket keeps waiting rather than reporting
+    a frame that says nothing about a home chat."""
+    _aiohttp(monkeypatch, _frames({"type": "connected"}))
+    assert asyncio.run(plow_init._await_chat_frame("https://api.example.test", "tok", lambda: False)) is False
+
+
+def test_an_upgrade_that_never_answers_is_bounded_by_setup_not_the_hold(monkeypatch):
+    """`connect` bounds acquiring the connection, not the upgrade response. A
+    server that accepts TCP and then says nothing would otherwise spend the
+    whole hold here -- and the window ending would report as a held socket and
+    reset the backoff."""
+    _aiohttp(monkeypatch, None, ws_hangs=True)
+    monkeypatch.setattr(plow_init, "TIMEOUT_S", 0.05)
+
+    started = time.monotonic()
+    with pytest.raises(ConnectionError):
+        asyncio.run(plow_init._await_chat_frame("https://api.example.test", "tok"))
+    assert time.monotonic() - started < 1, "setup timed out on its own bound"
+
+
+def test_the_hold_window_is_the_one_the_caller_asked_for(monkeypatch):
+    """The quiet-socket test substitutes `asyncio.sleep`, so it passes with the
+    window set to anything. This pins the number the caller spends: a socket
+    that says nothing is held for `socket_wait`, not for the fallback."""
+    held = []
+
+    async def quiet(_base, _bearer, _settled=None):
+        await asyncio.sleep(5)
+
+    monkeypatch.setattr(plow_init, "_await_chat_frame", quiet)
+    monkeypatch.setattr(plow_init.time, "sleep", held.append)
+
+    started = time.monotonic()
+    assert plow_init.wait_for_chat_event(_credentials(), 0.2, 3) is True
+    spent = time.monotonic() - started
+
+    assert 0.2 <= spent < 1.5, f"the hold was {spent:.2f}s, not the 0.2s window"
+    assert held == [], "a quiet window owes no sleep"
+
+
+def test_the_boot_spends_the_socket_window_not_the_poll_interval(monkeypatch, boot):
+    """What the loop hands the wait is the SOCKET window. Nothing else pins
+    that number: put the poll interval there instead and every other assertion
+    here still passes, which is how a ten-minute hold could quietly become the
+    three-second poll again."""
+    spent = []
+    answers = iter([identity(), identity(chat("cht_home"))])
+    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: next(answers))
+    monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(plow_init, "wait_for_chat_event",
+                        lambda _credentials, socket_wait, _fallback, _settled=None:
+                        (spent.append(socket_wait), True)[1])
+
+    plow_init.main()
+
+    assert spent == [plow_init.HOME_SOCKET_WAIT_S]
+    assert plow_init.HOME_SOCKET_WAIT_S >= 60, "a window this short is the poll it replaced"

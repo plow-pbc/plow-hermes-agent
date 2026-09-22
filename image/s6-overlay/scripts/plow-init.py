@@ -71,12 +71,14 @@ AUTH_WAIT_S = 120
 # ticket and open a connection: for an agent whose owner never texts, a
 # committed row and a socket lifecycle every three seconds for the life of
 # the VM. At 75 such agents that was 15 tickets a second against the API.
-HOME_SOCKET_WAIT_S = 600
-# The sleep-only fallback, for a boot with no socket to hold -- no ticket, a
-# refused upgrade, a venv without aiohttp. It starts at the old interval so
-# first contact is still found quickly when the transport is merely slow to
-# come up, then doubles to the cap: a transport that is not coming back must
-# not be retried at three-second cadence forever.
+#
+# There is no window any more. One socket is held for as long as it stays up,
+# and the wait ends when Plow says something happened -- not when a timer
+# expires. A socket that closes (a deploy, most often) is re-opened, paced by
+# the delay below so a server that is down is not dialled in a tight loop; the
+# heartbeat is what notices a connection that died without saying so.
+HOME_SOCKET_RECONNECT_S = 3
+HOME_SOCKET_RECONNECT_MAX_S = 60
 HOME_POLL_INTERVAL_S = 3
 HOME_POLL_MAX_INTERVAL_S = 60
 HOME_WAIT_LOG_INTERVAL_S = 3600
@@ -1032,23 +1034,30 @@ def own_session_reset() -> None:
 
 
 async def _await_chat_frame(base: str, bearer: str, settled=None) -> bool:
-    """Whether Plow said something happened on this credential's line.
+    """Hold a socket until Plow says something happened on this line.
 
     A ticket, then the socket. The grant is a line grant, and the API's
     fan-out matches a granted-scope socket on the chat's line as well as its
     frozen chat ids -- so a chat born after this connect is delivered here,
     which is the whole point: the wait ends on the owner's first text rather
-    than on the next tick.
+    than on a tick. There is no window: the only clock left is the heartbeat,
+    which is what notices a connection that died without closing.
 
-    What the frame SAYS is deliberately not read. The identity endpoint is the
-    authority on whether a home chat exists; this only decides when to ask it
-    again, so any frame but the handshake is reason enough. That keeps this
-    function ignorant of the event vocabulary, which is the API's to change.
+    What a frame SAYS is deliberately not read. The identity endpoint is the
+    authority on whether a home chat exists; a frame only decides when to ask
+    it again, which keeps this function ignorant of a vocabulary that is the
+    API's to change.
 
-    False means the socket ended without ever saying anything -- a clean close,
-    a revoked ticket, the server going away. That is not news, and the caller
-    must not read it as news: returning True there would drop the sleep and
-    spin the poll loop as fast as the server can close a socket.
+    `settled` is asked at every subscribe, reconnects included, and it is what
+    closes the discovery race: the caller's ask predates this socket, and a
+    home chat born in between is announced to nobody, because the API pushes
+    to the sockets registered at the time and replays nothing.
+
+    A close is not news -- a deploy, a revoked ticket, a server going away --
+    so it reconnects rather than returning, paced so a server that is down is
+    not dialled in a tight loop. Only a frame, or `settled`, ends the hold.
+    Setup failures propagate: the caller owns the fallback for a boot that
+    cannot open a socket at all.
     """
     # Imported here, not at module scope: this whole path is an optimisation
     # with a sleep behind it, and a boot script that will not even start
@@ -1058,15 +1067,7 @@ async def _await_chat_frame(base: str, bearer: str, settled=None) -> bool:
     import aiohttp
 
     headers = {"Authorization": f"Bearer {bearer}"}
-    # `total=None` is for the socket, which is held for the whole window by
-    # design -- capping it would cap the thing this function exists to do.
-    # Everything BEFORE the socket is open is bounded instead: `connect`
-    # covers TCP and TLS for both calls below, and the ticket POST overrides
-    # `total` outright. Without those, an endpoint that accepts a connection
-    # and then says nothing is bounded only by `HOME_SOCKET_WAIT_S` -- ten
-    # minutes of no discovery where the old code cost three seconds, and,
-    # worse, the window ending would report as a held socket and reset a
-    # backoff that had never once succeeded.
+
     async def setup(http):
         """Mint a ticket and get an open socket back, or raise trying."""
         async with http.post(
@@ -1077,82 +1078,64 @@ async def _await_chat_frame(base: str, bearer: str, settled=None) -> bool:
         url = f"{base.replace('http', 'ws', 1)}/v1/ws?ticket={urllib.parse.quote(ticket, safe='')}"
         return await http.ws_connect(url, heartbeat=30)
 
+    # `total=None` is for the socket, which is held indefinitely by design --
+    # capping it would cap the thing this function exists to do. Setup is
+    # bounded separately below, because `connect` covers TCP and TLS but NOT
+    # the upgrade response: a server that accepts a connection and then says
+    # nothing would otherwise hold this open forever with nothing behind it.
     try:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, connect=TIMEOUT_S)) as http:
-            # `connect` bounds getting the connection, NOT the upgrade response
-            # that follows it, so a server that accepts TCP and then says
-            # nothing would spend the whole hold here -- and the window ending
-            # would report as a socket successfully held. Setup gets its own
-            # bound; only what happens on an OPEN socket may spend the hold.
-            socket = await asyncio.wait_for(setup(http), TIMEOUT_S)
-            async with socket:
-                async for frame in socket:
-                    if frame.type is not aiohttp.WSMsgType.TEXT:
-                        continue
-                    try:
-                        handshake = frame.json().get("type") == "connected"
-                    except ValueError:
-                        handshake = False
-                    if handshake:
-                        # Only now is this socket subscribed. A home chat born
-                        # between the caller's ask and this moment has no frame
-                        # coming -- the API pushes to sockets registered at the
-                        # time, and replays nothing -- so the wait would sit
-                        # quiet over a chat that already exists. Ask once, here,
-                        # where the answer is authoritative.
-                        if settled is not None and await asyncio.to_thread(settled):
-                            return True
-                        continue
-                    return True
-        return False
+            pause = HOME_SOCKET_RECONNECT_S
+            while True:
+                socket = await asyncio.wait_for(setup(http), TIMEOUT_S)
+                async with socket:
+                    pause = HOME_SOCKET_RECONNECT_S   # this one opened; the next close starts fresh
+                    async for frame in socket:
+                        if frame.type is not aiohttp.WSMsgType.TEXT:
+                            continue
+                        try:
+                            handshake = frame.json().get("type") == "connected"
+                        except ValueError:
+                            handshake = False
+                        if handshake:
+                            if settled is not None and await asyncio.to_thread(settled):
+                                return True
+                            continue
+                        return True
+                # The socket ended without saying anything. Re-open it: that is
+                # the normal path across a deploy, not a failure.
+                await asyncio.sleep(pause)
+                pause = min(pause * 2, HOME_SOCKET_RECONNECT_MAX_S)
     except asyncio.TimeoutError as timeout:
         # aiohttp's connect and read timeouts SUBCLASS asyncio.TimeoutError,
-        # and the caller spends that exception on its one OTHER meaning: the
-        # window expired with a socket held open. Nothing was held here --
-        # setup never finished -- so letting it through would skip the
-        # fallback and reset the backoff, and a timing-out endpoint would be
-        # re-dialled every ten seconds, minting a committed ticket each time.
-        # That is the churn this change exists to remove, arriving exactly
-        # during an incident. Only `wait_for`'s own expiry may mean `True`.
+        # and a bare one would read to the caller as something this function
+        # never means any more. Setup failing is a transport failure, and the
+        # caller's fallback is what answers it.
         raise ConnectionError("chat socket setup timed out") from timeout
 
 
-def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_sleep: float,
-                        settled=None) -> bool:
-    """Hold a socket for `socket_wait`, or sleep `fallback_sleep` without one.
+def wait_for_chat_event(credentials: Credentials, fallback_sleep: float, settled=None) -> bool:
+    """Hold a socket until there is news, or sleep `fallback_sleep` without one.
 
     Returns whether the socket carried the wait. The caller backs off on
     `False`, so what grows is a run of consecutive failures rather than a
     count of loop passes -- an agent whose socket works for an hour and then
     loses it starts its fallback where a fresh boot would, not at the cap.
 
-    `settled` is asked once the socket is subscribed: the caller's own ask
-    predates that, and a home chat born in the gap has no frame coming. True
-    from it means the wait is already over.
-
-    The two must not be one number. `socket_wait` is spent inside a single
-    open connection that Plow pushes to, so it costs one ticket however long
-    it is; `fallback_sleep` is spent blind and has to stay short at first, so
-    a transport that is only slow to come up is not waited out for ten
-    minutes. Passing one value for both is what made an idle agent mint a
-    committed row and a socket every three seconds.
+    `settled` is asked at every subscribe; True from it means the wait is
+    already over.
 
     The socket is an optimisation over the sleep it replaces, never a
-    requirement: every failure -- no ticket, a refused upgrade, a dropped
-    connection, an image whose venv has no aiohttp -- falls back to sleeping
-    out the rest of the fallback, so the poll above remains the thing that
-    actually decides. A boot must not hang on a transport that is merely
-    faster when it works.
+    requirement: every failure -- no ticket, a refused upgrade, an image whose
+    venv has no aiohttp -- falls back to sleeping out the fallback, so the poll
+    above remains the thing that actually decides. A boot must not hang on a
+    transport that is merely faster when it works.
     """
     global _next_socket_log
     started = time.monotonic()
     try:
-        heard = asyncio.run(asyncio.wait_for(
-            _await_chat_frame(credentials.plow_api_base.rstrip("/"), credentials.bearer, settled), socket_wait))
-    except asyncio.TimeoutError:
-        # The window passed with the socket open and quiet: exactly the wait
-        # the poll wanted, already spent. Ask again now.
-        return True
+        heard = asyncio.run(_await_chat_frame(
+            credentials.plow_api_base.rstrip("/"), credentials.bearer, settled))
     except Exception as error:  # noqa: BLE001 - the poll is the fallback; a socket that will not open must not stop the boot
         heard = False
         # Once, then at the same hourly cadence as the wait itself. A line per
@@ -1163,12 +1146,7 @@ def wait_for_chat_event(credentials: Credentials, socket_wait: float, fallback_s
             print(f"plow-init: chat socket unavailable, falling back to the poll ({type(error).__name__})", file=sys.stderr)
             _next_socket_log = now + HOME_WAIT_LOG_INTERVAL_S
     if heard:
-        # A frame returns immediately -- sleeping off the rest of the fallback
-        # after being told something happened would give back every second
-        # this function exists to save.
         return True
-    # Everything else owes the caller the wait it asked for: a failure, and a
-    # socket that closed with nothing to say.
     remaining = fallback_sleep - (time.monotonic() - started)
     if remaining > 0:
         time.sleep(remaining)
@@ -1207,7 +1185,7 @@ def main() -> None:
         # asked again once it is subscribed, and it is the only thing that sees
         # a home chat born in between.
         held = wait_for_chat_event(
-            credentials, HOME_SOCKET_WAIT_S, fallback,
+            credentials, fallback,
             lambda: home_chat(ask_plow(credentials, waiting=True)) is not None)
         fallback = HOME_POLL_INTERVAL_S if held else min(fallback * 2, HOME_POLL_MAX_INTERVAL_S)
     write_latch_instructions(identity, credentials.bearer)

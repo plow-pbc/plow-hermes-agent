@@ -4,3 +4,4 @@ README.md
 **/*.pyc
 .env
 plow-credentials
+tests/test_plow_init.py

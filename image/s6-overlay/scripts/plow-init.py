@@ -666,9 +666,14 @@ def configure(identity: Identity, seed: dict) -> None:
         # The whole entry is the image's, so it is written whole: a key the
         # seed gained reaches a home seeded before it (2026-09-04: `key_env`
         # missing, every call sent `Bearer no-key-required`), and a key the
-        # seed dropped leaves. Two keys are the boot's to add on top.
+        # seed dropped leaves. Two keys are the boot's to add on top, and the
+        # caching flag joins the selected model's entry rather than replacing
+        # it: a derived seed's `context_length` there is Hermes' only source
+        # for the window (2026-09-25: dropped, it fell back to 256K).
         entry = {**seed["providers"][provider_key], "base_url": os.path.expandvars(seed_model.get("base_url", ""))}
-        entry["models"] = {**entry.get("models", {}), plow_model or seed_model.get("default"): {"prompt_caching": True}}
+        model_id = plow_model or seed_model.get("default")
+        models = entry.get("models", {})
+        entry["models"] = {**models, model_id: {**(models.get(model_id) or {}), "prompt_caching": True}}
         wanted[("providers", provider_key)] = entry
     if os.environ.get("HERMES_MODEL"):
         wanted[("model", "default")] = os.environ["HERMES_MODEL"]

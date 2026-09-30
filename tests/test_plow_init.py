@@ -732,7 +732,7 @@ SEED = {
               "base_url": "${PLOW_API_BASE}/v1", "key_env": "HERMES_CUSTOM_PLOW_API_KEY"},
     "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
                            "key_env": "HERMES_CUSTOM_PLOW_API_KEY", "stale_timeout_seconds": 55,
-                           "models": {"seeded/model": {}}}},
+                           "models": {"seeded/model": {"context_length": 1050000}}}},
     "mcp_servers": {"plow": {"url": "${PLOW_MCP_URL}", "headers": {"Authorization": "Bearer ${PLOW_AGENT_TOKEN}"},
                              "enabled": False},
                     "theirs": {"enabled": True}},
@@ -842,10 +842,12 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
     # The entry is the seed's, whole: the credential a pre-key_env home never
     # got (the 2026-09-04 outage), minus the entry-level `model` an older seed
     # wrote (a second selector Hermes' auxiliary path preferred), plus the
-    # expanded endpoint and the caching flag under the selected model.
+    # expanded endpoint and the caching flag beside the seed's own keys for the
+    # selected model (a window dropped there fell back to 256K, 2026-09-25).
     assert after["providers"]["plow"] == {**SEED["providers"]["plow"],
                                           "base_url": "https://api.test.invalid/v1",
-                                          "models": {"seeded/model": {"prompt_caching": True}}}
+                                          "models": {"seeded/model": {"context_length": 1050000,
+                                                                      "prompt_caching": True}}}
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
     # The relay entry the same way (#45): a home with only `enabled` gets the
     # seed's `url` and `headers` back, and `theirs` is untouched.

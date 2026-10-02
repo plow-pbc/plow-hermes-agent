@@ -29,7 +29,7 @@ change if this fact changed?** One owner, one place.
 | this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
 | [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
-| [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
+| [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the `agent_images` catalog that pins which image new agents boot | anything about the inside of an image; any branch on which assistant this is |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to the cloud host directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
@@ -424,9 +424,10 @@ of the commit in the repository that built it** — this one for the base image,
 the variant's own for a variant. The tag does not name the variant, and there is
 no `latest`.
 
-Which image a given agent runs is not recorded here. Plow pins it per provider
-in `api/cloud-agents/agents.json` in `plow-pbc/plow`; publishing an image makes
-it available, that file is what makes it live.
+Which image a new agent boots is recorded in Plow's `agent_images` catalog.
+An authorized `PUT /v1/agent-images/{slug}` promotes its `image` field to the
+published `repository@sha256:<index-digest>` reference. Publishing alone does
+not activate the digest, and running agents keep their current image.
 
 The tags that exist are readable from the registry itself. On the web:
 <https://gallery.ecr.aws/e1h7x4a2/plow-cloud-agents>. From a shell with no AWS

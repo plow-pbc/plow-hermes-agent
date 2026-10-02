@@ -29,7 +29,7 @@ change if this fact changed?** One owner, one place.
 | this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
 | [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
-| [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the registry `api/cloud-agents/agents.json` that pins which image tenants boot | anything about the inside of an image; any branch on which assistant this is |
+| [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the `agent_images` catalog that pins which image new agents boot | anything about the inside of an image; any branch on which assistant this is |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to the cloud host directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
 | [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
 
@@ -66,8 +66,9 @@ workaround.
   in the canonical copy: two PRs for one text change, in the repo that does not
   own the text: https://github.com/plow-pbc/plow-hermes-agent/pull/21
 
-`docker build` produces the architecture you are on; the tags published so far
-carry `amd64` alone.
+`docker build` produces the architecture you are on. This base supports
+`linux/amd64` and `linux/arm64`; [Publishing](#publishing) builds both together
+so cloud agents and Apple Silicon Macs can run the same image natively.
 
 ## What is in the image
 
@@ -338,7 +339,7 @@ A variant is a persona plus skills — a separate repository whose Dockerfile
 starts from this image and adds nothing else:
 
 ```dockerfile
-FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<sha>
+FROM public.ecr.aws/e1h7x4a2/plow-cloud-agents@sha256:<index-digest>
 
 # Identity: only what is specific to this agent. plow-init writes the home's
 # SOUL.md on every boot as the base persona followed by this file. Do not COPY
@@ -374,8 +375,7 @@ Hermes reads that over a `TZ` written later.
 
 Don't fight the init: nothing starts the gateway by hand — the dependency
 already orders it after first boot — no credentials in `config.yaml`, no
-inbound listener, and pin this image by digest or by an immutable `base-<sha>`
-tag.
+inbound listener, and pin this image by its combined index digest as above.
 
 ## The first USER.md
 
@@ -407,10 +407,16 @@ ARG PLOW_CHAT_PLUGIN_SHA=<40-character commit sha>
 ## Publishing
 
 Published by CI in `plow-pbc/plow` (`.github/workflows/build-agent-image.yml`),
-triggered by a revision bump in `api/cloud-agents/agents.json`, or by a manual
-run of that same workflow — never by a push from a developer's machine. The
-tag is `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>`, one
-immutable tag per commit.
+manually dispatched on `main` with `repo=plow-pbc/plow-hermes-agent`,
+`revision=<full commit sha>` and `multiarch=true`. Native amd64 and arm64
+runners each build and probe the image before publishing one combined index.
+The tag is `public.ecr.aws/e1h7x4a2/plow-cloud-agents:base-<full commit sha>`,
+one immutable tag per commit.
+
+Variants pin the combined index digest returned by the workflow, as in the
+`FROM` above, rather than an architecture's child digest: Docker selects
+amd64 in the cloud and arm64 on an Apple Silicon Mac. Existing amd64-only tags
+are not overwritten; publishing both architectures requires a new revision.
 
 One repository holds this image and every variant image built from it, so a tag
 has to say which commit it came from: `base-` plus the **full 40-character SHA
@@ -418,10 +424,10 @@ of the commit in the repository that built it** — this one for the base image,
 the variant's own for a variant. The tag does not name the variant, and there is
 no `latest`.
 
-Which SHA a given agent runs is not recorded here. Plow pins it per provider in
-`api/cloud-agents/agents.json` in `plow-pbc/plow`, and composes the image
-reference from it; publishing a tag makes it available, that file is what makes
-it live.
+Which image a new agent boots is recorded in Plow's `agent_images` catalog.
+An authorized `PUT /v1/agent-images/{slug}` promotes its `image` field to the
+published `repository@sha256:<index-digest>` reference. Publishing alone does
+not activate the digest, and running agents keep their current image.
 
 The tags that exist are readable from the registry itself. On the web:
 <https://gallery.ecr.aws/e1h7x4a2/plow-cloud-agents>. From a shell with no AWS

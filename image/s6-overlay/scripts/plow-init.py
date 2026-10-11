@@ -284,13 +284,15 @@ def home_chat(identity: Identity) -> Chat | None:
     """The one chat that is this agent talking to the person it belongs to.
 
     Plow does not name it, so the image picks it, by the same rule Plow uses:
-    an active chat on this agent's own line holding exactly one member -- the
-    owner -- and this agent. Anything else in a chat makes it a group, or
+    the oldest active chat on this agent's own line holding exactly one member
+    -- the owner -- and this agent. Anything else in a chat makes it a group, or
     somebody else's. The line check is load-bearing: a mailbox carrying this
     agent's persona is another line whose threads the credential also opens,
     and an owner alone with the mailbox reads as owner-plus-self too. Zero
-    matches means the owner has not made contact yet. Several still refuse:
-    the wrong home is an agent talking to the wrong people.
+    matches means the owner has not made contact yet. Several mean the owner
+    reaches this line on more than one channel (iMessage and WhatsApp); every
+    one holds only the owner, so the oldest -- Plow lists chats oldest first --
+    is home, and none of them is the wrong people.
     """
     def is_home(chat: Chat) -> bool:
         members = [p for p in chat.participants if isinstance(p, MemberParticipant)]
@@ -307,20 +309,7 @@ def home_chat(identity: Identity) -> Chat | None:
             and members[0].role == "owner"
         )
 
-    matches = [chat for chat in identity.chats if is_home(chat)]
-    if not matches:
-        return None
-    if len(matches) > 1:
-        seen = "; ".join(
-            f"{chat.uid} status={chat.status} "
-            + ",".join(
-                f"{p.relationship}@{p.line.uid}" if isinstance(p, AgentParticipant) else p.role
-                for p in chat.participants
-            )
-            for chat in identity.chats
-        ) or "no chats at all"
-        park(f"cannot tell which chat is home -- {len(matches)} of {len(identity.chats)} qualify: {seen}")
-    return matches[0]
+    return next((chat for chat in identity.chats if is_home(chat)), None)
 
 
 def verify_boot_preconditions() -> None:

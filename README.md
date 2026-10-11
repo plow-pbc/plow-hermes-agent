@@ -169,7 +169,9 @@ which is not how Plow's general chat and line endpoints serialize — so the
 image requires all three and treats a body missing any of them as not an
 identity. `line` is this agent's own line, and the home chat has to be on it:
 a mailbox carrying the agent's persona is another line the credential opens,
-and an owner alone with it looks like the home chat otherwise. `mcp_url` is
+and an owner alone with it looks like the home chat otherwise. `chats` come
+oldest first, so an owner who reaches the line on two channels (iMessage and
+WhatsApp) is home in the older chat. `mcp_url` is
 the relay endpoint, or null when the tenant has none.
 
 The identity is re-asked on every boot,

@@ -125,8 +125,7 @@ after three seconds, doubling to sixty until one lasts thirty seconds, and the
 heartbeat is what notices a connection that died without saying so. A boot with no socket to hold -- no ticket, a refused upgrade, a
 runtime with no `aiohttp` -- sleeps instead, starting at three seconds and
 doubling to sixty; that sleep is also what covers a chat that already existed
-and a socket that closes with nothing to say. Several matches still park, printing the
-roster it saw — the wrong home is an agent talking to the wrong people. From that, the image publishes the
+and a socket that closes with nothing to say. From that, the image publishes the
 tenant's environment
 itself — one file per name under `/run/s6/container_environment`, which every
 service inherits — adding the placeholder bearer and generating a fresh
@@ -169,7 +168,9 @@ which is not how Plow's general chat and line endpoints serialize — so the
 image requires all three and treats a body missing any of them as not an
 identity. `line` is this agent's own line, and the home chat has to be on it:
 a mailbox carrying the agent's persona is another line the credential opens,
-and an owner alone with it looks like the home chat otherwise. `mcp_url` is
+and an owner alone with it looks like the home chat otherwise. `chats` come
+oldest first, so an owner who reaches the line on two channels (iMessage and
+WhatsApp) is home in the older chat. `mcp_url` is
 the relay endpoint, or null when the tenant has none.
 
 The identity is re-asked on every boot,

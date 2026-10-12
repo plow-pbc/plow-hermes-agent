@@ -319,10 +319,11 @@ def test_without_a_qualifying_home_chat_returns_none(chats, parking):
     assert not parking.exists()
 
 
-def test_multiple_home_chats_park_and_say_what_they_saw(parking):
-    with pytest.raises(Parked):
-        plow_init.home_chat(identity(chat("a"), chat("b")))
-    assert "cannot tell which chat is home" in parking.read_text()
+def test_an_owner_on_two_channels_is_home_in_the_oldest_chat(parking):
+    """iMessage and WhatsApp to the same line are two chats holding only the
+    owner; refusing to choose would keep the agent from starting at all."""
+    assert plow_init.home_chat(identity(chat("cht_imessage"), chat("cht_whatsapp"))).uid == "cht_imessage"
+    assert not parking.exists()
 
 
 @pytest.mark.parametrize("mcp_url", [None, "https://relay.invalid/mcp"])
@@ -1146,16 +1147,6 @@ def test_immediate_home_leaves_checkpoint_untouched(boot, monkeypatch, existing)
         assert not checkpoint.exists()
     else:
         assert checkpoint.read_text() == existing
-
-
-def test_boot_parks_on_ambiguous_home_before_publishing_or_seeding(boot, monkeypatch):
-    checkpoint, dropped, exported = boot
-    monkeypatch.setattr(plow_init, "ask_plow", lambda credentials, **kwargs: identity(chat("a"), chat("b")))
-    with pytest.raises(Parked):
-        plow_init.main()
-    assert not checkpoint.exists()
-    assert not exported
-    assert not dropped
 
 
 @pytest.mark.parametrize("failure", [429, 503, "unreachable", "timeout"])

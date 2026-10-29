@@ -1,0 +1,32 @@
+#!/bin/sh
+# Installs the newest latch -- the command-line tool the agent reaches its
+# owner's machines with -- and writes the agent's latch skill from it.
+#
+# latch follows its newest release rather than a pin: the image build runs this
+# and fails when it fails, and every boot runs it again from the `latch` oneshot
+# before the gateway starts, which keeps the latch it has when this fails. The
+# install is latch's own published installer, which checks the release's
+# checksums, as a client only: it asks hosts and is never one.
+#
+# The binary goes to /usr/local/bin, root-owned and on every PATH in the image,
+# so the agent runs it and cannot replace it. The skill is the installed
+# binary's own `latch skill`, so the two always match. It goes to the bundled
+# skills, which the gateway reconciles into the agent's home when it starts:
+# updated there unless the agent has edited its copy.
+set -eu
+
+SKILL=/opt/hermes/skills/productivity/latch/SKILL.md
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+cd "$work"
+curl -fsSLO --proto '=https' https://releases.plow.co/latch-cli/install.sh
+# Its own state folder, never the agent's login, here and for the two latch
+# calls below: this runs as root, and a state folder root made in the agent's
+# home is one the agent cannot log in with.
+sh install.sh --client-only --non-interactive --no-modify-path \
+  --bin-dir /usr/local/bin --state-dir "$work/state" >&2
+mkdir -p "$(dirname "$SKILL")"
+latch --state-dir "$work/state" skill > "$SKILL.tmp"
+mv -f "$SKILL.tmp" "$SKILL"
+latch --state-dir "$work/state" --version

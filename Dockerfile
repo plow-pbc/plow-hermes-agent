@@ -14,7 +14,7 @@ ARG PLOW_CHAT_PLUGIN_SHA=a82e644fee2b7488341439bc89f5f6f323ba19e7
 # there, so this costs no extra upstream image and the fetch tooling never
 # reaches the shipped filesystem.
 #
-# Two of the seed skills come out of this same tarball rather than a tracked
+# One of the seed skills comes out of this same tarball rather than a tracked
 # copy: skill text and the plugin it describes then always come from one
 # commit, and a pin bump moves both together instead of drifting apart.
 FROM base AS plugin
@@ -30,11 +30,8 @@ RUN set -eu; \
     tar -xzf /tmp/plugin.tgz -C /staged/plow_chat --strip-components=2 "$top/plow-chat-platform"; \
     test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml; \
     tar -xzf /tmp/plugin.tgz -C /staged/seed-skills --strip-components=2 \
-      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace" \
-      "$top/seed-skills/productivity/owners-mac"; \
-    test -f /staged/seed-skills/growth/plow-invite/SKILL.md \
-      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md \
-      -a -f /staged/seed-skills/productivity/owners-mac/SKILL.md
+      "$top/seed-skills/growth/plow-invite"; \
+    test -f /staged/seed-skills/growth/plow-invite/SKILL.md
 
 FROM base
 
@@ -69,7 +66,7 @@ COPY image/seed/skills/ /var/lib/hermes/skills/
 
 # Staged from the plugin tarball, not tracked here — see the `plugin` stage.
 # Merges into the tree above rather than replacing it, so the tracked
-# plow-connectors skill survives alongside these two. Landed before the
+# plow-connectors skill survives alongside it. Landed before the
 # chown -R below so they get the same ownership as everything else under
 # the home.
 COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/
@@ -92,6 +89,22 @@ COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/
 # separately -- do not read the sticky bit as protecting the baked skills.
 COPY image/seed/skills/ /opt/hermes/skills/
 COPY --from=plugin /staged/seed-skills/ /opt/hermes/skills/
+
+# latch, the command-line tool the agent reaches its owner's machines with: the
+# newest release, installed by the same script every boot runs again (the
+# `latch` oneshot), with its skill written into the bundled tree and baked into
+# the home beside the others. Its login and key are made on the agent's first
+# command, in the home, so they outlive the image; its updates come from the
+# boot, not from latch itself.
+#
+# Upstream bundles a google-workspace skill that sets up Google OAuth on this
+# box. The agent holds no Google credential: Google is reached with latch, on
+# the owner's machine, so that skill only leads a turn to ask for one.
+ENV LATCH_STATE_DIR=/var/lib/hermes/latch LATCH_NO_UPDATE_CHECK=1
+COPY --chmod=0755 image/s6-overlay/scripts/latch-install /etc/s6-overlay/scripts/latch-install
+RUN rm -rf /opt/hermes/skills/productivity/google-workspace \
+ && /etc/s6-overlay/scripts/latch-install \
+ && cp -R /opt/hermes/skills/productivity/latch /var/lib/hermes/skills/productivity/
 
 ARG PLOW_REVISION
 LABEL org.opencontainers.image.revision="${PLOW_REVISION}"

@@ -27,11 +27,11 @@ change if this fact changed?** One owner, one place.
 | [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) | the runtime: gateway, tool schema, sessions, MCP client | anything Plow-shaped |
 | [`srosro/hermes-agent`](https://github.com/srosro/hermes-agent) | staging for changes going upstream — upstream-fit only; a generic fix or feature Hermes itself would take | anything only Plow needs; that is the plugin or the base |
 | this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
-| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
+| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the `plow-invite` seed skill | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the `agent_images` catalog that pins which image new agents boot | anything about the inside of an image; any branch on which assistant this is |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to the cloud host directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
-| [`plow-pbc/latch`](https://github.com/plow-pbc/latch) | the Mac side: the MCP tools, what they say about themselves, the gog grammar | the relay; that is plow |
+| [`plow-pbc/latch-cli`](https://github.com/plow-pbc/latch-cli) | `latch`, the command-line tool the agent reaches its owner's machines with, its installer, and the skill it prints (`latch skill`) | how this image installs it and when |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
 deprecated Docker fleet runner. `plow-agents deploy --local --line ln_xxx`
@@ -76,6 +76,8 @@ so cloud agents and Apple Silicon Macs can run the same image natively.
 |---|---|
 | `/var/lib/hermes/` | the agent's home (`HERMES_HOME` and `HERMES_WRITE_SAFE_ROOT`, set as image ENV so everything in the image agrees on it), `3770 root:hermes` — `config.yaml` (overrides only, every tenant value a `${...}` reference), `SOUL.md` (the identity, root-owned, composed at boot), `skills/` |
 | `/opt/hermes/plugins/plow_chat/` | the chat plugin, bundled rather than seeded into the home, so the agent's phone line does not live in a directory the agent can write |
+| `/usr/local/bin/latch` | the latch client, root-owned: the newest release at build, replaced by the newest at every boot (below) |
+| `/etc/s6-overlay/s6-rc.d/latch/` | oneshot, as root, before the gateway: installs the newest latch and writes its skill, keeping the installed one when that fails |
 | `/opt/hermes/skills/` | the same seed skills again, out of the agent's reach; the gateway seeds them into a home that lacks them and updates the ones the agent has not customised. A skill the agent deleted stays deleted — the runtime records that and honours it |
 | `/etc/s6-overlay/scripts/plow-init.py` | the oneshot: repairs the home's ownership, reads `PLOW_API_BASE`, asks Plow who this agent is, publishes the answer, and edits the config as the agent |
 | `/etc/cont-init.d/00-plow-sanitize` | seeds `config.yaml` if the home has none |
@@ -111,7 +113,7 @@ image passes it through untouched for a variant's index reporter.
 
 With that, `plow-init` asks Plow who this agent is:
 `GET $PLOW_API_BASE/v1/agents/cloud/me` answers with this agent's line, the
-chats it is in, and a relay endpoint. Plow does not name a home channel, so the
+chats it is in. Plow does not name a home channel, so the
 image picks one: the active chat holding exactly this agent and exactly one
 member, who is the owner. Zero matches waits for first contact: the image holds
 Plow's websocket open on the agent credential, and a chat born on this line
@@ -136,7 +138,7 @@ because it has to be:
 the runtime writes a key of its own into `$HERMES_HOME/.env` during cont-init
 and loads that file over its process environment, so `plow-init` sets that one
 name to the key it just published, `root:hermes 0640`. Every other name this
-boot publishes — its endpoint, its home channel, its relay URL — is dropped
+boot publishes — its endpoint, its home channel — is dropped
 from the file rather than carried across, since a
 persisted copy of any of them would be a stale shadow that wins the same
 precedence fight: a reused fleet
@@ -165,17 +167,17 @@ regenerated on every boot.
 
 Every key is always present and a nullable one is null rather than omitted,
 which is not how Plow's general chat and line endpoints serialize — so the
-image requires all three and treats a body missing any of them as not an
+image requires `line` and `chats` and treats a body missing either as not an
 identity. `line` is this agent's own line, and the home chat has to be on it:
 a mailbox carrying the agent's persona is another line the credential opens,
 and an owner alone with it looks like the home chat otherwise. `chats` come
 oldest first, so an owner who reaches the line on two channels (iMessage and
 WhatsApp) is home in the older chat. `mcp_url` is
-the relay endpoint, or null when the tenant has none.
+the old Mac relay's endpoint, and this image ignores it: the agent reaches its
+owner's machines with latch.
 
 The identity is re-asked on every boot,
-so a home channel or a relay that moved moves with it — and a relay that went
-away is switched off rather than left behind.
+so a home channel that moved moves with it.
 
 There is no fallback behind that fetch. Before identity is established, no
 connection, a timeout, a 429 or a 5xx gets bounded retries, then parks. Once
@@ -310,7 +312,7 @@ rewrite it — so the agent can delete it or put something else in its place, an
 copy — cont-init writes one when the home has none, which is what stops the
 runtime seeding a default with no chat platform in it. A **damaged** one is not
 repaired: `plow-init` reads it only to re-assert what the image owns — Plow's
-endpoint, model, provider entry and relay entry (the credential's variable name above all), the retry budget, the cron drift-guard switch and cron provider, the `tool_search` switch, the `terminal.cwd`, the compaction ceiling, the vision route (which follows the endpoint off Plow when the provider switches), every
+endpoint, model and provider entry (the credential's variable name above all), the removal of the old Mac relay's server entry, the retry budget, the cron drift-guard switch and cron provider, the `tool_search` switch, the `terminal.cwd`, the compaction ceiling, the vision route (which follows the endpoint off Plow when the provider switches), every
 seeded `display` value, and `gateway.message_timestamps` — enforced even over an
 owner's `false`, since the stamps are how the model knows today — on
 every boot, and touches nothing else, so whatever else the agent leaves at that
@@ -321,18 +323,33 @@ skill is the same — the runtime records that deletion and honours it.
 refuses starts nothing — better a box that visibly never came up than one
 answering with half its configuration.
 
-## Latch's instructions
+## latch
 
-When the account has a Mac, `plow-init` asks the relay for its MCP `initialize`
-result once per boot and writes its `instructions` whole to
-`$HERMES_HOME/HERMES.md`, root-owned 0644 — a plow-init-managed file, the way
-`SOUL.md` is written every boot, not the agent's to author. Hermes reads it from
-`terminal.cwd` (the seed points it at the home) into the prompt's context tier,
-above every plugin section — where Latch's own routing rule has to sit for a
-fresh agent to read the owner's Mac instead of reporting its own empty stores
-([#72](https://github.com/plow-pbc/plow-hermes-agent/issues/72)). No Mac, or a
-fetch that fails, removes the file so no stale routing survives; the fetch never
-stops the boot.
+The agent reaches its owner's machines — their files, programs, Google
+accounts and browser — with [latch](https://github.com/plow-pbc/latch-cli),
+run from its terminal. The image installs latch's newest release at build, and
+the `latch` oneshot installs the newest again on every boot, before the
+gateway starts, with latch's own published installer as a client only. A
+gateway that crashes and restarts does not reinstall; a boot does. An install
+that fails or takes over a minute is logged and the gateway starts on the latch
+already installed. latch checks for no updates of its own
+(`LATCH_NO_UPDATE_CHECK=1`).
+
+The agent's latch skill is the installed binary's own `latch skill`, written to
+the bundled `productivity/latch` on every install, so it always matches the
+binary; the gateway carries it into the home like the other seed skills.
+
+latch logs in on the agent's first command with the agent's own Plow
+credential (`PLOW_API_BASE`, and `PLOW_AGENT_TOKEN` where the host sets one)
+and keeps its key and login in `$HERMES_HOME/latch` (`LATCH_STATE_DIR`), so
+they outlive the image. Nothing is baked in.
+
+The Mac relay is gone. The boot registers no MCP server for it, publishes no
+`PLOW_MCP_URL` (from which the chat plugin turns its relay prompt on), and
+removes what an earlier image left in the home: the relay's server entry in
+`config.yaml`, `HERMES.md`, and the `owners-mac` and `google-workspace` skills.
+Upstream's own `google-workspace` skill, which sets up Google OAuth on this
+box, is removed from the image: Google is reached with latch.
 
 ## Building a variant image
 
@@ -387,9 +404,9 @@ only ever appears whole, and once one exists the link fails rather than
 overwrites: the owner's display name when Plow sends a real one (never the
 phone or email handle Plow falls back to), that other Plow lines and earlier
 agents left their work in Messages and mail on that Mac rather than in this
-agent's sessions ([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). Where the
-owner's world lives and how to reach it is Latch's own routing, carried once by
-`HERMES.md` (#74) rather than restated here. General wording, no owner history.
+agent's sessions ([#73](https://github.com/plow-pbc/plow-hermes-agent/issues/73)). How to
+reach the owner's machines is the latch skill's, rather than restated here.
+General wording, no owner history.
 An existing file is never touched, so a name change does not re-seed it.
 
 ## The plugin pin

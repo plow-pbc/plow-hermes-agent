@@ -1,0 +1,1 @@
+/command/with-contenv /bin/sh -c "timeout -s KILL 60 /etc/s6-overlay/scripts/latch-install || echo 'latch: not updated; keeping the installed one' >&2"

@@ -7,18 +7,6 @@
 # every tenant. The image owns each invariant config shape; first boot writes
 # the referenced values to Hermes' dotenv without copying a credential into
 # this file.
-# Named `plow`, and the name is enforced rather than cosmetic: provisioning
-# greps the installed config for this exact key and refuses the image without
-# it. Plow's own paste-ready snippet emits the same name (and `plow-<device>`
-# for the per-device form), so a provisioned agent and a hand-registered one
-# read alike,
-# and it is the prefix the relay's tools carry in the model's tool list.
-mcp_servers:
-  plow:
-    url: "${PLOW_MCP_URL}"
-    headers:
-      Authorization: "Bearer ${PLOW_AGENT_TOKEN}"
-    enabled: false
 # `clarify` is the tool behind the ❓ rows: it renders a blocking menu and stops
 # the turn until the owner answers it. Over iMessage there is nobody who can --
 # the menu has no rendering in the transport the owner is actually holding, so
@@ -36,9 +24,9 @@ agent:
     # `browser` is Hermes' own browser_* / browser_exec stack. Nothing on
     # this box can back it: the Browser Use harness needs a desktop Chrome and
     # the agent-browser CLI is not installed, so every call ends in
-    # chrome-not-running. Advertised anyway, a fresh agent picks it over the
-    # relay's own browser tools, fails, and tells the owner the browser is
-    # down. Browsing goes through the relay, on the owner's own machine.
+    # chrome-not-running. Advertised anyway, a fresh agent picks it over
+    # latch's browser, fails, and tells the owner the browser is down.
+    # Browsing goes through latch, on the owner's own machine.
     - browser
   # Incident 2026-09-03 07:50–08:20 PDT: the model provider answered 404/503 on
   # every attempt for ~30 min. The image default of 3 attempts gives up in ~14s,
@@ -60,15 +48,15 @@ agent:
 cron:
   model_drift_guard: false
 
-# The relay's tools are listed directly, not behind Hermes' tool_search bridge.
+# MCP tools are listed directly, not behind Hermes' tool_search bridge.
 # By default Hermes hides every MCP tool behind tool_search / tool_describe /
 # tool_call, and the model then has to nest a tool's real arguments inside
 # tool_call's `arguments` object. Measured live (2026-09-02, cloud agent on
 # claude-sonnet-5): every multi-parameter plow_run_command call put `argv`
 # inside `arguments` and left cwd / read_paths / goal beside it, the bridge
 # silently dropped them, and Latch ran sqlite3 in its scratch dir -- reported to
-# the owner as "iMessage needs Full Disk Access". Twelve relay tools are cheap
-# to list; a bridge that loses arguments is not.
+# the owner as "iMessage needs Full Disk Access". A dozen tools are cheap to
+# list; a bridge that loses arguments is not.
 tools:
   tool_search:
     enabled: "off"
@@ -80,8 +68,8 @@ tools:
 # an agent: Artificial Analysis scores it 34 to Sonnet's 38, and the models
 # cheaper than it fall off a cliff on tool use -- Kimi K2.5 is 23 there, and
 # half GLM's Terminal-Bench, for a further third off the bill. What the agent
-# does all day is drive twelve relay tools over a long conversation, so that is
-# the axis the choice is made on, not price alone.
+# does all day is drive tools over a long conversation, so that is the axis the
+# choice is made on, not price alone.
 model:
   default: z-ai/glm-5.2
   provider: plow
@@ -221,8 +209,7 @@ platforms:
 # on the box to hand a terminal to.
 terminal:
   backend: local
-  # Where Hermes looks for HERMES.md (plow-init writes it from Latch's
-  # instructions, #72); unset, it falls back to /opt/hermes and skips that.
+  # Where the agent's commands start; unset, it falls back to /opt/hermes.
   cwd: /var/lib/hermes
 group_sessions_per_user: false
 # A long-lived chat keeps the system prompt it was built with, and the only

@@ -9,7 +9,6 @@ which settings it writes into the agent's config.
 
 import asyncio
 import contextlib
-import http.client
 import importlib.util
 import io
 import json
@@ -22,7 +21,6 @@ import time
 import types
 import urllib.error
 import urllib.request
-import urllib.response
 
 import pytest
 import yaml
@@ -225,8 +223,8 @@ def chat(uid, status="active", roles=("owner",), agents=("self",), display_name=
     return {"uid": uid, "status": status, "participants": participants}
 
 
-def identity(*chats, mcp_url=None):
-    return plow_init.Identity.model_validate({"line": {"uid": "ln_own"}, "chats": list(chats), "mcp_url": mcp_url})
+def identity(*chats):
+    return plow_init.Identity.model_validate({"line": {"uid": "ln_own"}, "chats": list(chats)})
 
 
 @pytest.fixture
@@ -288,7 +286,7 @@ def test_a_missing_agent_or_malformed_identity_parks_immediately(monkeypatch, un
     assert reason in parking.read_text()
 
 
-@pytest.mark.parametrize("missing", ["line", "chats", "mcp_url"])
+@pytest.mark.parametrize("missing", ["line", "chats"])
 def test_an_answer_missing_a_key_is_not_an_identity(missing):
     body = {"line": {"uid": "ln_own"}, "chats": [], "mcp_url": None}
     del body[missing]
@@ -324,11 +322,6 @@ def test_an_owner_on_two_channels_is_home_in_the_oldest_chat(parking):
     owner; refusing to choose would keep the agent from starting at all."""
     assert plow_init.home_chat(identity(chat("cht_imessage"), chat("cht_whatsapp"))).uid == "cht_imessage"
     assert not parking.exists()
-
-
-@pytest.mark.parametrize("mcp_url", [None, "https://relay.invalid/mcp"])
-def test_a_relay_is_optional_however_it_is_spelled(mcp_url):
-    assert identity(mcp_url=mcp_url).mcp_url == mcp_url
 
 
 def test_a_symlinked_dotenv_is_refused_not_followed(tmp_path):
@@ -570,162 +563,39 @@ def test_a_failed_user_profile_write_leaves_no_file(tmp_path, monkeypatch):
         plow_init.seed_user_profile(plow_init.home_chat(identity(chat("cht_home", display_name="Ada"))))
     assert not (home / "memories" / "USER.md").exists()
     assert not list((home / "memories").glob(".USER.md.*"))
-INSTRUCTIONS = {"jsonrpc": "2.0", "id": 1, "result": {"instructions": "Use these.", "protocolVersion": "2025-06-18"}}
-WRITTEN = "# Your owner's Mac, in Latch's own words\n\nUse these.\n"
-PRIOR = "whatever a prior boot left here\n"  # HERMES.md is plow-init's, like SOUL.md; a prior file is overwritten
-
-
-@pytest.mark.parametrize(
-    "mcp_url, answer, before, after",
-    [
-        ("https://relay.invalid/mcp", json.dumps(INSTRUCTIONS), None, WRITTEN),
-        ("https://relay.invalid/mcp", f"event: message\ndata: {json.dumps(INSTRUCTIONS)}\n\n", PRIOR, WRITTEN),
-        ("https://relay.invalid/mcp", OSError("Mac is off"), PRIOR, None),
-        ("https://relay.invalid/mcp", OSError("Mac is off"), None, None),
-        ("https://relay.invalid/mcp", json.dumps({"result": {}}), PRIOR, None),
-        (None, json.dumps(INSTRUCTIONS), PRIOR, None),
-        (None, json.dumps(INSTRUCTIONS), None, None),
-    ],
-    ids=["writes-whole", "overwrites-any-prior", "failed-fetch-removes", "offline-first-boot",
-         "no-instructions-removes", "no-mac-removes", "no-mac-nothing"],
-)
-def test_latch_instructions_become_hermes_md(tmp_path, monkeypatch, mcp_url, answer, before, after):
-    """Latch's `initialize.instructions` is the routing rule Hermes drops on
-    connect (#72). HERMES.md is plow-init's, like SOUL.md: a Mac writes it whole
-    (overwriting any prior file), and no Mac or a failed fetch removes it so no
-    stale routing survives. The boot never stops."""
+def test_what_the_mac_relay_left_in_a_home_is_removed(tmp_path, monkeypatch, capsys):
+    """A home from before latch keeps the relay's prompt text: HERMES.md, read
+    into every prompt, and the skills that route through the relay's tools.
+    Each goes, and a home without them boots without a word."""
     home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    requests = []
-
-    def urlopen(request, timeout):
-        requests.append(request)
-        if isinstance(answer, Exception):
-            raise answer
-        return contextlib.nullcontext(types.SimpleNamespace(read=lambda: answer.encode()))
-
-    monkeypatch.setattr(plow_init._no_redirect_opener, "open", urlopen)
-    if before is not None:
-        (home / "HERMES.md").write_text(before)
-    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=mcp_url), "tok")
-    written = (home / "HERMES.md").read_text() if (home / "HERMES.md").exists() else None
-    assert written == after
-    assert not list(home.glob(".HERMES.md.*"))
-    if mcp_url is None:
-        assert requests == []
-    else:
-        assert json.loads(requests[0].data)["method"] == "initialize"
-        assert requests[0].get_header("Authorization") == "Bearer tok"
-    if after == WRITTEN:
-        assert stat.S_IMODE((home / "HERMES.md").stat().st_mode) == 0o644
+    leftovers = (home / "HERMES.md", home / "skills/productivity/owners-mac",
+                 home / "skills/productivity/google-workspace")
+    monkeypatch.setattr(plow_init, "RELAY_LEFTOVERS", tuple(map(str, leftovers)))
+    (home / "HERMES.md").write_text("# Your owner's Mac, in Latch's own words\n")
+    for skill in leftovers[1:]:
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text("Call `plow_list_skills`.\n")
+    (home / "skills/productivity/latch").mkdir()
+    plow_init.remove_relay_leftovers()
+    assert not any(path.exists() for path in leftovers)
+    assert (home / "skills/productivity/latch").is_dir()
+    assert capsys.readouterr().err.count("left by the Mac relay") == 3
+    plow_init.remove_relay_leftovers()
+    assert capsys.readouterr().err == ""
 
 
-@pytest.mark.parametrize("before", [None, PRIOR], ids=["no-prior-file", "prior-file-removed"])
-def test_a_write_that_fails_leaves_no_hermes_md(tmp_path, monkeypatch, capsys, before):
-    """A write that fails after a successful fetch leaves neither a staged temp
-    nor a HERMES.md: a prior file is removed rather than left active with stale
-    Mac-routing, and the failure is logged whether or not a prior file existed."""
+def test_a_leftover_that_cannot_be_removed_does_not_stop_the_boot(tmp_path, monkeypatch, capsys):
     home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    if before is not None:
-        (home / "HERMES.md").write_text(before)
-    monkeypatch.setattr(plow_init._no_redirect_opener, "open",
-                        lambda request, timeout: contextlib.nullcontext(
-                            types.SimpleNamespace(read=lambda: json.dumps(INSTRUCTIONS).encode())))
-
-    def replace(*_):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(plow_init.os, "replace", replace)
-    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
-    assert not (home / "HERMES.md").exists()  # fell to absent, not a stale prior file
-    assert not list(home.glob(".HERMES.md.*"))
-    assert "not written" in capsys.readouterr().err  # the failure is logged either way
-
-
-class _Relay302(urllib.request.BaseHandler):
-    """A relay that answers the POST with a cross-host 302, and records every
-    URL it is asked for -- so a test can prove the redirect target was never
-    requested (which is where the bearer token would have gone)."""
-
-    handler_order = 100  # ahead of the real HTTP(S) handlers, so no socket opens
-
-    def __init__(self):
-        self.requested = []
-
-    def _answer(self, req):
-        self.requested.append(req.full_url)
-        headers = http.client.HTTPMessage()
-        headers["Location"] = "https://attacker.invalid/steal"
-        response = urllib.response.addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
-        response.msg = "Found"
-        return response
-
-    http_open = https_open = _answer
-
-
-def test_a_stale_hermes_md_that_cannot_be_removed_does_not_stop_the_boot(tmp_path, monkeypatch, capsys):
-    """The no-Mac cleanup is non-fatal: an unlink that fails (a permission
-    error, not merely an absent file) logs and lets the boot continue."""
-    home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    (home / "HERMES.md").write_text(PRIOR)
+    monkeypatch.setattr(plow_init, "RELAY_LEFTOVERS", (str(home / "HERMES.md"),))
+    (home / "HERMES.md").write_text("stale\n")
 
     def denied(*_):
         raise PermissionError("denied")
 
     monkeypatch.setattr(plow_init.os, "unlink", denied)
-    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url=None), "tok")
+    plow_init.remove_relay_leftovers()
     assert "could not remove" in capsys.readouterr().err
-    assert (home / "HERMES.md").read_text() == PRIOR  # unlink failed -> file untouched
-
-
-def test_instructions_with_an_unpaired_surrogate_do_not_stop_the_boot(tmp_path, monkeypatch):
-    """A lone surrogate in the fetched instructions cannot be written to a
-    UTF-8 file; that is a non-fatal write failure, not a boot crash."""
-    home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    answer = '{"result": {"instructions": "\\ud800 lone surrogate"}}'  # json escapes it; loads to a real one
-    monkeypatch.setattr(plow_init._no_redirect_opener, "open",
-                        lambda request, timeout: contextlib.nullcontext(
-                            types.SimpleNamespace(read=lambda: answer.encode())))
-    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
-    assert not (home / "HERMES.md").exists()
-    assert not list(home.glob(".HERMES.md.*"))
-
-
-def test_a_relay_error_reason_phrase_cannot_forge_the_boot_log(tmp_path, monkeypatch, capsys):
-    """A hostile relay's HTTP error reason phrase reaches the fetch-failure log
-    line; terminal-control bytes in it must be stripped before they do."""
-    home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
-    (home / "HERMES.md").write_text(PRIOR)
-    esc, reason = chr(27), "boom" + chr(27) + "[2J" + chr(10) + "forged log line"  # ESC + embedded newline
-    crafted = plow_init.urllib.error.HTTPError(
-        "https://relay.invalid/mcp", 500, reason, http.client.HTTPMessage(), None)
-
-    def raise_crafted(request, timeout):
-        raise crafted
-
-    monkeypatch.setattr(plow_init._no_redirect_opener, "open", raise_crafted)
-    plow_init.write_latch_instructions(identity(chat("cht_home"), mcp_url="https://relay.invalid/mcp"), "tok")
-    err = capsys.readouterr().err
-    assert "the fetch failed" in err and "forged log line" in err  # the text survives, sanitized
-    assert esc not in err                # the real ESC byte was stripped
-    assert err.count(chr(10)) == 1       # one log line -- the embedded newline did not forge a second
-    assert not (home / "HERMES.md").exists()  # the stale managed file was still removed
-
-
-def test_a_relay_redirect_never_forwards_the_bearer_token(monkeypatch):
-    """A compromised Mac answering the transparent relay with a 302 must not
-    make plow-init re-send the line-scoped token to the redirect target."""
-    relay = _Relay302()
-    monkeypatch.setattr(plow_init, "_no_redirect_opener",
-                        urllib.request.build_opener(plow_init._RefuseRedirects, relay))
-    with pytest.raises(urllib.error.HTTPError) as excinfo:
-        plow_init.fetch_latch_instructions("https://relay.invalid/mcp", "line-token")
-    assert relay.requested == ["https://relay.invalid/mcp"]
-    assert "attacker.invalid" not in str(excinfo.value)  # the Mac-controlled Location never reaches the log
+    assert (home / "HERMES.md").exists()
 
 
 SEED = {
@@ -734,9 +604,7 @@ SEED = {
     "providers": {"plow": {"name": "plow", "base_url": "${PLOW_API_BASE}/v1",
                            "key_env": "HERMES_CUSTOM_PLOW_API_KEY", "stale_timeout_seconds": 55,
                            "models": {"seeded/model": {"context_length": 1050000}}}},
-    "mcp_servers": {"plow": {"url": "${PLOW_MCP_URL}", "headers": {"Authorization": "Bearer ${PLOW_AGENT_TOKEN}"},
-                             "enabled": False},
-                    "theirs": {"enabled": True}},
+    "mcp_servers": {"theirs": {"enabled": True}},
     "platforms": {"plow_chat": {"enabled": True}},
     "agent": {"api_max_retries": 9},
     "cron": {"model_drift_guard": False},
@@ -749,26 +617,24 @@ SEED = {
 }
 
 
-def configure(tmp_path, mcp_url=None, env=None):
+def configure(tmp_path, env=None):
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump(SEED))
     plow_init.CONFIG = str(config)
     os.environ.pop("HERMES_PROVIDER", None)
     os.environ.pop("HERMES_MODEL", None)
     os.environ.update(env or {})
-    plow_init.configure(identity(mcp_url=mcp_url), SEED)
+    plow_init.configure(SEED)
     return yaml.safe_load(config.read_text())
 
 
 def test_it_writes_the_settings_it_owns_and_nothing_else(tmp_path):
-    after = configure(tmp_path, mcp_url="https://relay.invalid/mcp",
-                      env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
+    after = configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "claude-sonnet-4-5"})
     assert after["model"]["provider"] == "anthropic"
     assert after["cron"]["model_provider"] == "anthropic"
     assert after["model"]["default"] == "claude-sonnet-4-5"
-    assert after["mcp_servers"]["plow"] == {**SEED["mcp_servers"]["plow"], "enabled": True}
     # Somebody else's MCP server, and everything else, untouched.
-    assert after["mcp_servers"]["theirs"] == SEED["mcp_servers"]["theirs"]
+    assert after["mcp_servers"] == SEED["mcp_servers"]
     assert after["platforms"] == SEED["platforms"]
 
 
@@ -776,7 +642,7 @@ def test_an_owners_message_timestamps_off_is_turned_back_on(tmp_path):
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump({**SEED, "gateway": {"message_timestamps": {"enabled": False}}}))
     plow_init.CONFIG = str(config)
-    plow_init.configure(identity(), SEED)
+    plow_init.configure(SEED)
     assert yaml.safe_load(config.read_text())["gateway"]["message_timestamps"] == {"enabled": True}
 
 
@@ -823,7 +689,7 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
              "display": {"busy_ack_enabled": True, "platforms": {"plow_chat": {"tool_progress": "all"}}}}
     config.write_text(yaml.safe_dump(stale))
     plow_init.CONFIG = str(config)
-    plow_init.configure(identity(), SEED)
+    plow_init.configure(SEED)
     after = yaml.safe_load(config.read_text())
     assert after["agent"]["api_max_retries"] == 9
     assert after["display"] == SEED["display"]
@@ -850,10 +716,9 @@ def test_a_home_that_predates_a_seed_change_takes_the_seeds_invariants(tmp_path,
                                           "models": {"seeded/model": {"context_length": 1050000,
                                                                       "prompt_caching": True}}}
     assert after["providers"]["theirs"] == {"base_url": "https://elsewhere.invalid"}
-    # The relay entry the same way (#45): a home with only `enabled` gets the
-    # seed's `url` and `headers` back, and `theirs` is untouched.
-    assert after["mcp_servers"]["plow"] == {**SEED["mcp_servers"]["plow"], "enabled": False}
-    assert after["mcp_servers"]["theirs"] == SEED["mcp_servers"]["theirs"]
+    # The Mac relay's server is gone, so no turn lists its tools; `theirs`
+    # is untouched.
+    assert after["mcp_servers"] == SEED["mcp_servers"]
 
 
 def test_a_model_is_written_only_when_one_is_asked_for(tmp_path):
@@ -874,7 +739,7 @@ def test_switching_back_restores_it_from_the_seed(tmp_path):
     configure(tmp_path, env={"HERMES_PROVIDER": "anthropic", "HERMES_MODEL": "m"})
     config = tmp_path / "config.yaml"
     os.environ.update({"HERMES_PROVIDER": "plow", "HERMES_MODEL": "seeded/model"})
-    plow_init.configure(identity(), SEED)
+    plow_init.configure(SEED)
     after = yaml.safe_load(config.read_text())
     assert after["model"]["base_url"] == SEED["model"]["base_url"]
     assert after["model"]["key_env"] == SEED["model"]["key_env"]
@@ -888,7 +753,7 @@ def test_a_switch_back_takes_the_other_providers_model_with_it(tmp_path):
     config = tmp_path / "config.yaml"
     os.environ.pop("HERMES_PROVIDER", None)
     os.environ.pop("HERMES_MODEL", None)
-    plow_init.configure(identity(), SEED)
+    plow_init.configure(SEED)
     after = yaml.safe_load(config.read_text())
     assert after["model"]["provider"] == "plow"
     assert after["model"]["default"] == "seeded/model"
@@ -907,7 +772,7 @@ def test_an_unchanged_config_is_not_rewritten(tmp_path):
     config = tmp_path / "config.yaml"
     configure(tmp_path)
     before = config.stat().st_mtime_ns
-    plow_init.configure(identity(), SEED)
+    plow_init.configure(SEED)
     assert config.stat().st_mtime_ns == before
 
 
@@ -1006,7 +871,7 @@ def test_the_home_guard_is_a_longrun_that_waits_for_plow_init():
 @pytest.fixture
 def boot(monkeypatch, tmp_path, image_user):
     """Run main with real home selection and checkpoint IO, without root operations."""
-    for name in ("verify_boot_preconditions", "harden_home", "write_latch_instructions",
+    for name in ("verify_boot_preconditions", "harden_home", "remove_relay_leftovers",
                  "own_home_dotenv", "seed_user_profile", "configure", "own_session_reset"):
         monkeypatch.setattr(plow_init, name, lambda *args: None)
     for name in ("setgroups", "setgid"):
@@ -1147,6 +1012,25 @@ def test_immediate_home_leaves_checkpoint_untouched(boot, monkeypatch, existing)
         assert not checkpoint.exists()
     else:
         assert checkpoint.read_text() == existing
+
+
+def test_a_relay_url_from_plow_reaches_no_part_of_the_agent(boot, monkeypatch):
+    """Plow still names the Mac relay for an account that has one. The agent
+    reaches its owner's machines with latch, so the boot publishes nothing for
+    the relay -- the chat plugin turns its relay prompt on from PLOW_MCP_URL --
+    clears what it left, and the seed registers no server for it."""
+    checkpoint, dropped, exported = boot
+    body = {"line": {"uid": "ln_own"}, "chats": [chat("cht_home")], "mcp_url": "https://relay.invalid/mcp"}
+    monkeypatch.setattr(plow_init, "ask_plow",
+                        lambda credentials, **kwargs: plow_init.Identity.model_validate(body))
+    cleared = []
+    monkeypatch.setattr(plow_init, "remove_relay_leftovers", lambda: cleared.append(not dropped))
+    plow_init.main()
+    assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
+    assert "PLOW_MCP_URL" not in exported
+    assert cleared == [True]  # once, as root
+    with open(plow_init.SEED_CONFIG) as handle:
+        assert "mcp_servers" not in yaml.safe_load(handle)
 
 
 @pytest.mark.parametrize("failure", [429, 503, "unreachable", "timeout"])

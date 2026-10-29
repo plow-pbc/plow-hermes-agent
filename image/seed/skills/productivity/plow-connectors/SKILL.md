@@ -7,10 +7,9 @@ allowed-tools: Bash(python3 /var/lib/hermes/skills/productivity/plow-connectors/
 # Plow connectors (Gmail · Google Calendar · Slack)
 
 > **Retiring.** This REST helper is the legacy path. The canonical route for
-> Gmail and Google Calendar is the `google-workspace` skill, which reaches
-> those accounts through the owner's Mac and handles every account, sending
-> included. When this agent has `google-workspace`, use it and leave this
-> helper for Slack.
+> Gmail and Google Calendar is `latch google` on the owner's machine, as the
+> `latch` skill describes; it handles every account, sending included. Use
+> it, and leave this helper for Slack.
 
 The owner has connected Google and/or Slack to their Plow account. You act on
 those accounts through one helper that calls the Plow connector REST API with
@@ -111,9 +110,7 @@ python3 .../plow_connector.py gmail messages.list '{"query":"is:unread","max_res
 
 This helper cannot send, reply to, forward, or fetch a single Gmail message —
 the API no longer exposes those routes to it. To act on Gmail beyond listing,
-use the `google-workspace` skill (Gmail through the owner's Mac) if this agent
-has it; if it doesn't, tell the user sending email isn't available from this
-agent — do not improvise another route.
+use `latch google`, as the `latch` skill describes.
 
 ## Google Calendar (under the `gmail` connector)
 

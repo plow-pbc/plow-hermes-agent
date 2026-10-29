@@ -18,7 +18,14 @@ DOCKERFILE = (ROOT / "Dockerfile").read_text()
 def test_the_persona_does_not_claim_to_run_on_the_owners_machine():
     for false_claim in ("own private machine", "one agent on one machine"):
         assert false_claim not in SOUL, f"SOUL.md still says {false_claim!r}"
-    assert "Plow Latch on their Mac" in SOUL
+    assert "the `latch` command is what reaches the machines they trust you with" in SOUL_FLOW
+
+
+def test_the_persona_carries_nothing_of_the_mac_relay():
+    """The agent reaches its owner's machines with the latch command alone, so
+    the persona names none of the relay's tools and no Latch app."""
+    for relay in ("plow_list_skills", "plow_read_skill", "plow_", "Plow Latch", "Mac"):
+        assert relay not in SOUL, f"SOUL.md still says {relay!r}"
 
 
 def test_the_persona_separates_its_own_lines_from_the_owners_accounts():
@@ -41,18 +48,11 @@ def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
     are the plugin's own; a tracked copy here is a second place for them to drift
     out of sync with the plugin they describe. The Dockerfile stages all three from
     the same tarball the plugin is built from, so a pin bump moves them together."""
-    for tracked in (
-        ROOT / "image" / "seed" / "skills" / "growth" / "plow-invite",
-        ROOT / "image" / "seed" / "skills" / "productivity" / "google-workspace",
-        ROOT / "image" / "seed" / "skills" / "productivity" / "owners-mac",
-    ):
-        assert not tracked.exists(), f"{tracked} is tracked; it should be staged from the plugin tarball instead"
-    for staged in (
-        "$top/seed-skills/growth/plow-invite",
-        "$top/seed-skills/productivity/google-workspace",
-        "$top/seed-skills/productivity/owners-mac",
-    ):
-        assert staged in DOCKERFILE, f"Dockerfile does not stage {staged} from the plugin archive"
+    for skill in ("growth/plow-invite", "productivity/google-workspace", "productivity/owners-mac"):
+        assert not (ROOT / "image" / "seed" / "skills" / skill).exists(), (
+            f"{skill} is tracked; it should be staged from the plugin tarball instead"
+        )
+        assert f"$top/seed-skills/{skill}" in DOCKERFILE, f"Dockerfile does not stage {skill} from the plugin archive"
     for skills_root in ("/var/lib/hermes/skills/", "/opt/hermes/skills/"):
         assert f"COPY --from=plugin /staged/seed-skills/ {skills_root}" in DOCKERFILE, (
             f"Dockerfile does not copy the staged seed skills into {skills_root}"

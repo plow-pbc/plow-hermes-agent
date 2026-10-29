@@ -17,5 +17,11 @@ export API_SERVER_PORT=8642
 # cannot write, where anything HOME-anchored silently lands.
 export HOME=/var/lib/hermes
 
+# The image's latch settings, said again here: a VM upgraded in place keeps the
+# environment it was created with, so the image's ENV alone would never reach
+# an existing agent's latch.
+export LATCH_STATE_DIR=/var/lib/hermes/latch
+export LATCH_NO_UPDATE_CHECK=1
+
 cd /opt/hermes
 exec /command/s6-setuidgid hermes /opt/hermes/.venv/bin/hermes gateway run --replace --no-supervise

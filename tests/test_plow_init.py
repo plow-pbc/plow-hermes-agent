@@ -563,37 +563,30 @@ def test_a_failed_user_profile_write_leaves_no_file(tmp_path, monkeypatch):
         plow_init.seed_user_profile(plow_init.home_chat(identity(chat("cht_home", display_name="Ada"))))
     assert not (home / "memories" / "USER.md").exists()
     assert not list((home / "memories").glob(".USER.md.*"))
-def test_what_the_mac_relay_left_in_a_home_is_removed(tmp_path, monkeypatch, capsys):
-    """A home from before latch keeps the relay's prompt text: HERMES.md, read
-    into every prompt, and the skills that route through the relay's tools.
-    Each goes, and a home without them boots without a word."""
+def test_the_mac_relays_hermes_md_is_removed(tmp_path, monkeypatch, capsys):
+    """A home from before latch keeps the relay's instructions in HERMES.md,
+    which Hermes reads into every prompt. It goes, and a home without it boots
+    without a word."""
     home = _seed(tmp_path, monkeypatch)
-    leftovers = (home / "HERMES.md", home / "skills/productivity/owners-mac",
-                 home / "skills/productivity/google-workspace")
-    monkeypatch.setattr(plow_init, "RELAY_LEFTOVERS", tuple(map(str, leftovers)))
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
     (home / "HERMES.md").write_text("# Your owner's Mac, in Latch's own words\n")
-    for skill in leftovers[1:]:
-        skill.mkdir(parents=True)
-        (skill / "SKILL.md").write_text("Call `plow_list_skills`.\n")
-    (home / "skills/productivity/latch").mkdir()
-    plow_init.remove_relay_leftovers()
-    assert not any(path.exists() for path in leftovers)
-    assert (home / "skills/productivity/latch").is_dir()
-    assert capsys.readouterr().err.count("left by the Mac relay") == 3
-    plow_init.remove_relay_leftovers()
+    plow_init.remove_hermes_md()
+    assert not (home / "HERMES.md").exists()
+    assert "left by the Mac relay" in capsys.readouterr().err
+    plow_init.remove_hermes_md()
     assert capsys.readouterr().err == ""
 
 
-def test_a_leftover_that_cannot_be_removed_does_not_stop_the_boot(tmp_path, monkeypatch, capsys):
+def test_a_hermes_md_that_cannot_be_removed_does_not_stop_the_boot(tmp_path, monkeypatch, capsys):
     home = _seed(tmp_path, monkeypatch)
-    monkeypatch.setattr(plow_init, "RELAY_LEFTOVERS", (str(home / "HERMES.md"),))
+    monkeypatch.setattr(plow_init, "HERMES_MD", str(home / "HERMES.md"))
     (home / "HERMES.md").write_text("stale\n")
 
     def denied(*_):
         raise PermissionError("denied")
 
     monkeypatch.setattr(plow_init.os, "unlink", denied)
-    plow_init.remove_relay_leftovers()
+    plow_init.remove_hermes_md()
     assert "could not remove" in capsys.readouterr().err
     assert (home / "HERMES.md").exists()
 
@@ -871,7 +864,7 @@ def test_the_home_guard_is_a_longrun_that_waits_for_plow_init():
 @pytest.fixture
 def boot(monkeypatch, tmp_path, image_user):
     """Run main with real home selection and checkpoint IO, without root operations."""
-    for name in ("verify_boot_preconditions", "harden_home", "remove_relay_leftovers",
+    for name in ("verify_boot_preconditions", "harden_home", "remove_hermes_md",
                  "own_home_dotenv", "seed_user_profile", "configure", "own_session_reset"):
         monkeypatch.setattr(plow_init, name, lambda *args: None)
     for name in ("setgroups", "setgid"):
@@ -1024,7 +1017,7 @@ def test_a_relay_url_from_plow_reaches_no_part_of_the_agent(boot, monkeypatch):
     monkeypatch.setattr(plow_init, "ask_plow",
                         lambda credentials, **kwargs: plow_init.Identity.model_validate(body))
     cleared = []
-    monkeypatch.setattr(plow_init, "remove_relay_leftovers", lambda: cleared.append(not dropped))
+    monkeypatch.setattr(plow_init, "remove_hermes_md", lambda: cleared.append(not dropped))
     plow_init.main()
     assert exported["PLOW_HOME_CHANNEL"] == "cht_home"
     assert "PLOW_MCP_URL" not in exported

@@ -8,13 +8,13 @@ FROM nousresearch/hermes-agent@sha256:66300578dbad1937e71288e26116219e7702da07fe
 # repository vendors no copy, it pins one commit. Moving the plugin is a
 # one-line change to the default below. The repository is public, so the fetch
 # needs no credential.
-ARG PLOW_CHAT_PLUGIN_SHA=357a60df6afebedf01b3b7fea64543ab962281b5
+ARG PLOW_CHAT_PLUGIN_SHA=f64e3a16b12bfb66743daea592b44ec5af8be592
 
 # Fetched in its own stage off the same pinned base — curl and tar are already
 # there, so this costs no extra upstream image and the fetch tooling never
 # reaches the shipped filesystem.
 #
-# One of the seed skills comes out of this same tarball rather than a tracked
+# Three of the seed skills come out of this same tarball rather than a tracked
 # copy: skill text and the plugin it describes then always come from one
 # commit, and a pin bump moves both together instead of drifting apart.
 FROM base AS plugin
@@ -30,8 +30,11 @@ RUN set -eu; \
     tar -xzf /tmp/plugin.tgz -C /staged/plow_chat --strip-components=2 "$top/plow-chat-platform"; \
     test -f /staged/plow_chat/__init__.py -a -f /staged/plow_chat/plugin.yaml; \
     tar -xzf /tmp/plugin.tgz -C /staged/seed-skills --strip-components=2 \
-      "$top/seed-skills/growth/plow-invite"; \
-    test -f /staged/seed-skills/growth/plow-invite/SKILL.md
+      "$top/seed-skills/growth/plow-invite" "$top/seed-skills/productivity/google-workspace" \
+      "$top/seed-skills/productivity/owners-mac"; \
+    test -f /staged/seed-skills/growth/plow-invite/SKILL.md \
+      -a -f /staged/seed-skills/productivity/google-workspace/SKILL.md \
+      -a -f /staged/seed-skills/productivity/owners-mac/SKILL.md
 
 FROM base
 
@@ -66,7 +69,7 @@ COPY image/seed/skills/ /var/lib/hermes/skills/
 
 # Staged from the plugin tarball, not tracked here — see the `plugin` stage.
 # Merges into the tree above rather than replacing it, so the tracked
-# plow-connectors skill survives alongside it. Landed before the
+# plow-connectors skill survives alongside these three. Landed before the
 # chown -R below so they get the same ownership as everything else under
 # the home.
 COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/
@@ -87,6 +90,13 @@ COPY --from=plugin /staged/seed-skills/ /var/lib/hermes/skills/
 # `chown -R` leaves every category and skill under it owned by uid 10000, so a
 # turn can still rename one out of the scan path. Pre-existing, tracked
 # separately -- do not read the sticky bit as protecting the baked skills.
+#
+# Upstream bundles a google-workspace skill of its own, with scripts that set
+# up Google OAuth on this box. The agent holds no Google credential -- Google
+# is reached with latch, on the owner's machine -- so it goes first, whole,
+# and the plugin's skill of that name takes its place rather than merging
+# into it.
+RUN rm -rf /opt/hermes/skills/productivity/google-workspace
 COPY image/seed/skills/ /opt/hermes/skills/
 COPY --from=plugin /staged/seed-skills/ /opt/hermes/skills/
 
@@ -96,14 +106,9 @@ COPY --from=plugin /staged/seed-skills/ /opt/hermes/skills/
 # the home beside the others. Its login and key are made on the agent's first
 # command, in the home, so they outlive the image; its updates come from the
 # boot, not from latch itself.
-#
-# Upstream bundles a google-workspace skill that sets up Google OAuth on this
-# box. The agent holds no Google credential: Google is reached with latch, on
-# the owner's machine, so that skill only leads a turn to ask for one.
 ENV LATCH_STATE_DIR=/var/lib/hermes/latch LATCH_NO_UPDATE_CHECK=1
 COPY --chmod=0755 image/s6-overlay/scripts/latch-install /etc/s6-overlay/scripts/latch-install
-RUN rm -rf /opt/hermes/skills/productivity/google-workspace \
- && /etc/s6-overlay/scripts/latch-install \
+RUN /etc/s6-overlay/scripts/latch-install \
  && cp -R /opt/hermes/skills/productivity/latch /var/lib/hermes/skills/productivity/
 
 ARG PLOW_REVISION

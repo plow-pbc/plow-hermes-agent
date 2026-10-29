@@ -23,7 +23,6 @@ import json
 import os
 import pwd
 import secrets
-import shutil
 import signal
 import stat
 import subprocess
@@ -108,14 +107,10 @@ SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 # (plow-hermes-agent#66, life-assistant-hermes-agent#168).
 SEED_SOUL = "/opt/hermes/plow-seed/SOUL.md"
 SEED_PERSONA = "/opt/hermes/plow-seed/persona.md"
-# What the Mac relay left in a home, from before the agent reached its owner's
-# machines with latch: the relay's instructions, which Hermes reads into every
-# prompt, and the two skills that routed through its tools.
-RELAY_LEFTOVERS = (
-    os.path.join(HOME_DIR, "HERMES.md"),
-    os.path.join(HOME_DIR, "skills/productivity/owners-mac"),
-    os.path.join(HOME_DIR, "skills/productivity/google-workspace"),
-)
+# The Mac relay's instructions, which an earlier image wrote here and Hermes
+# reads into every prompt, from before the agent reached its owner's machines
+# with latch.
+HERMES_MD = os.path.join(HOME_DIR, "HERMES.md")
 # What goes wherever a bearer has to be present -- the plugin requires
 # PLOW_AGENT_TOKEN, the config names the inference key by variable -- when the
 # host gave no token: the integration in front of PLOW_API_BASE replaces the
@@ -449,22 +444,18 @@ def ask_plow(credentials: Credentials, *, waiting: bool = False) -> Identity | N
         time.sleep(RETRY_DELAY_S)
 
 
-def remove_relay_leftovers() -> None:
-    """Remove what the Mac relay left in this home, as root: HERMES.md is
-    root-owned in a sticky home. Non-fatal -- a leftover that stays is stale
-    prompt text, not a reason to keep the owner from their agent."""
-    for path in RELAY_LEFTOVERS:
-        try:
-            if os.path.isdir(path) and not os.path.islink(path):
-                shutil.rmtree(path)
-            else:
-                os.unlink(path)
-        except FileNotFoundError:
-            continue
-        except OSError as error:
-            print(f"plow-init: could not remove {path} ({error})", file=sys.stderr)
-            continue
-        print(f"plow-init: removed {path}, left by the Mac relay", file=sys.stderr)
+def remove_hermes_md() -> None:
+    """Remove the Mac relay's HERMES.md, as root: it is root-owned in a sticky
+    home. Non-fatal -- a file that stays is stale prompt text, not a reason to
+    keep the owner from their agent."""
+    try:
+        os.unlink(HERMES_MD)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        print(f"plow-init: could not remove {HERMES_MD} ({error})", file=sys.stderr)
+        return
+    print(f"plow-init: removed {HERMES_MD}, left by the Mac relay", file=sys.stderr)
 
 
 def export(values: dict[str, str]) -> None:
@@ -1115,7 +1106,7 @@ def main() -> None:
             credentials, fallback,
             lambda: home_chat(ask_plow(credentials, waiting=True)) is not None)
         fallback = HOME_POLL_INTERVAL_S if held else min(fallback * 2, HOME_POLL_MAX_INTERVAL_S)
-    remove_relay_leftovers()
+    remove_hermes_md()
     values = {
         # Re-published even when the environment already holds it: the
         # pre-#2007 file is the one source the services cannot inherit.

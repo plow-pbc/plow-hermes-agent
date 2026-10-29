@@ -27,7 +27,7 @@ change if this fact changed?** One owner, one place.
 | [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) | the runtime: gateway, tool schema, sessions, MCP client | anything Plow-shaped |
 | [`srosro/hermes-agent`](https://github.com/srosro/hermes-agent) | staging for changes going upstream — upstream-fit only; a generic fix or feature Hermes itself would take | anything only Plow needs; that is the plugin or the base |
 | this repo | the base image: boot, `plow-init`, the gateway config seed, the base persona, the plugin pin | a persona, a skill for one agent, a Plow tool, the per-turn prompt framing |
-| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the `plow-invite` seed skill | chat data (plow), boot and config (base), grammar Latch already owns |
+| [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the `agent_images` catalog that pins which image new agents boot | anything about the inside of an image; any branch on which assistant this is |
 | [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to the cloud host directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
@@ -347,9 +347,12 @@ they outlive the image. Nothing is baked in.
 The Mac relay is gone. The boot registers no MCP server for it, publishes no
 `PLOW_MCP_URL` (from which the chat plugin turns its relay prompt on), and
 removes what an earlier image left in the home: the relay's server entry in
-`config.yaml`, `HERMES.md`, and the `owners-mac` and `google-workspace` skills.
-Upstream's own `google-workspace` skill, which sets up Google OAuth on this
-box, is removed from the image: Google is reached with latch.
+`config.yaml` and `HERMES.md`. The plugin's `owners-mac` and `google-workspace`
+seed skills reach the owner's machines through latch too, and a home's
+unedited copies take the new text from the bundled tree when the gateway
+starts. Upstream's own `google-workspace` skill, which sets up Google OAuth on
+this box, is removed from the image so the plugin's takes its place: Google is
+reached with latch.
 
 ## Building a variant image
 

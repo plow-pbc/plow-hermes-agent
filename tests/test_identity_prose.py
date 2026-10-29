@@ -44,18 +44,15 @@ def test_the_persona_separates_its_own_lines_from_the_owners_accounts():
 
 
 def test_the_seed_skills_are_staged_from_the_plugin_archive_not_tracked():
-    """growth/plow-invite is the plugin's own; a tracked copy here is a second
-    place for it to drift out of sync with the plugin it describes. The
-    Dockerfile stages it from the same tarball the plugin is built from, so a
-    pin bump moves them together. The plugin's two Mac relay skills,
-    productivity/google-workspace and productivity/owners-mac, are not staged:
-    the agent reaches its owner's machines with latch."""
-    assert not (ROOT / "image" / "seed" / "skills" / "growth" / "plow-invite").exists(), (
-        "growth/plow-invite is tracked; it should be staged from the plugin tarball instead"
-    )
-    assert "$top/seed-skills/growth/plow-invite" in DOCKERFILE
-    for relay in ("google-workspace", "owners-mac"):
-        assert f"$top/seed-skills/productivity/{relay}" not in DOCKERFILE
+    """growth/plow-invite, productivity/google-workspace and productivity/owners-mac
+    are the plugin's own; a tracked copy here is a second place for them to drift
+    out of sync with the plugin they describe. The Dockerfile stages all three from
+    the same tarball the plugin is built from, so a pin bump moves them together."""
+    for skill in ("growth/plow-invite", "productivity/google-workspace", "productivity/owners-mac"):
+        assert not (ROOT / "image" / "seed" / "skills" / skill).exists(), (
+            f"{skill} is tracked; it should be staged from the plugin tarball instead"
+        )
+        assert f"$top/seed-skills/{skill}" in DOCKERFILE, f"Dockerfile does not stage {skill} from the plugin archive"
     for skills_root in ("/var/lib/hermes/skills/", "/opt/hermes/skills/"):
         assert f"COPY --from=plugin /staged/seed-skills/ {skills_root}" in DOCKERFILE, (
             f"Dockerfile does not copy the staged seed skills into {skills_root}"

@@ -228,6 +228,16 @@ RUN set -eu; \
 # entries survive alongside ours.
 COPY image/s6-overlay/ /etc/s6-overlay/
 RUN chmod 0755 /etc/s6-overlay/scripts/plow-init.py
+# plow-init's refresh_session_prompts writes a column of a table Hermes owns.
+# Run it against a state.db this Hermes creates, so a release that moves the
+# schema fails the build rather than parking every boot.
+RUN set -eu; home=$(mktemp -d); \
+    HERMES_HOME="$home" /opt/hermes/.venv/bin/python -c 'import importlib.util, os; \
+from hermes_state import SessionDB; SessionDB(); \
+spec = importlib.util.spec_from_file_location("plow_init", "/etc/s6-overlay/scripts/plow-init.py"); \
+init = importlib.util.module_from_spec(spec); spec.loader.exec_module(init); \
+init.STATE_DB = os.path.join(os.environ["HERMES_HOME"], "state.db"); init.refresh_session_prompts()'; \
+    rm -rf "$home"
 
 # One gateway, and one supervisor that owns it.
 #

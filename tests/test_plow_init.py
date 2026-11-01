@@ -14,6 +14,7 @@ import io
 import json
 import os
 import pathlib
+import sqlite3
 import stat
 import sys
 import threading
@@ -820,6 +821,26 @@ def test_a_gateway_json_this_image_cannot_read_parks(tmp_path, parking):
     assert "not a file this image can rewrite" in parking.read_text()
 
 
+def test_every_open_session_composes_a_current_prompt_after_a_boot(tmp_path, monkeypatch):
+    """A stored prompt outlives the image that composed it: str's DM kept
+    sending the model to Mac relay tools a month after the image dropped them.
+    Open sessions lose the stored prompt and keep their history; an ended one
+    is a record and is left as it was."""
+    db_path = tmp_path / "state.db"
+    monkeypatch.setattr(plow_init, "STATE_DB", str(db_path))
+    plow_init.refresh_session_prompts()
+    assert not db_path.exists()
+
+    with contextlib.closing(sqlite3.connect(db_path)) as db, db:
+        db.execute("CREATE TABLE sessions (id TEXT, ended_at REAL, system_prompt_hash TEXT)")
+        db.executemany("INSERT INTO sessions VALUES (?, ?, ?)",
+                       [("open", None, "old"), ("ended", 1.0, "old"), ("fresh", None, None)])
+    plow_init.refresh_session_prompts()
+    with contextlib.closing(sqlite3.connect(db_path)) as db:
+        assert dict(db.execute("SELECT id, system_prompt_hash FROM sessions")) == {
+            "open": None, "ended": "old", "fresh": None}
+
+
 def test_upstream_main_hermes_waits_for_plow_init():
     dependency = SOURCE.parents[1] / "s6-rc.d/main-hermes/dependencies.d/plow-init"
     assert dependency.is_file()
@@ -865,7 +886,8 @@ def test_the_home_guard_is_a_longrun_that_waits_for_plow_init():
 def boot(monkeypatch, tmp_path, image_user):
     """Run main with real home selection and checkpoint IO, without root operations."""
     for name in ("verify_boot_preconditions", "harden_home", "remove_hermes_md",
-                 "own_home_dotenv", "seed_user_profile", "configure", "own_session_reset"):
+                 "own_home_dotenv", "seed_user_profile", "configure", "own_session_reset",
+                 "refresh_session_prompts"):
         monkeypatch.setattr(plow_init, name, lambda *args: None)
     for name in ("setgroups", "setgid"):
         monkeypatch.setattr(plow_init.os, name, lambda value: None)

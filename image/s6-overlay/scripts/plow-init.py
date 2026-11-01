@@ -19,11 +19,13 @@ and nothing starts.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import pwd
 import secrets
 import signal
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -99,6 +101,7 @@ HOME_DOTENV = "/var/lib/hermes/.env"
 # sets the single default for every session -- so the scoping below has no
 # expression in the seed, and this is the file that carries it.
 GATEWAY_JSON = "/var/lib/hermes/gateway.json"
+STATE_DB = "/var/lib/hermes/state.db"
 SEED_CONFIG = "/opt/hermes/plow-seed/config.yaml"
 # The identity, composed on every boot: the base persona this image ships,
 # then the variant's own, if it ships one. Composed rather than COPYed into the
@@ -945,6 +948,34 @@ def own_session_reset() -> None:
         raise
 
 
+def refresh_session_prompts() -> None:
+    """Have every open session compose a current system prompt on its next turn.
+
+    Hermes stores a session's composed prompt once and reuses it for the life
+    of the conversation, plugin sections included: a session with a stored
+    prompt parses its sections back out of it rather than rendering them
+    (`_frozen_plugin_prompt_sections`), and only compression rebuilds it. So a
+    new SOUL.md, skill or plugin section reaches new sessions only. Observed
+    2026-11-01 on str: after the plugin dropped the Mac relay, 16 of 17 open
+    sessions -- the owner's DM and the owners' group among them -- still sent
+    the model to `plow_` tools the image no longer had (plow-hermes-agent#125).
+
+    A boot is the one point any of those inputs can change, so every boot
+    clears the stored prompt of every open session. The history stays. This
+    runs as the agent, before the gateway starts, so no running process holds
+    a cached copy that would write the old prompt back. A home with no
+    state.db yet has no sessions to refresh.
+    """
+    if not os.path.exists(STATE_DB):
+        return
+    with contextlib.closing(sqlite3.connect(STATE_DB, timeout=30)) as db, db:
+        cleared = db.execute(
+            "UPDATE sessions SET system_prompt_hash = NULL"
+            " WHERE ended_at IS NULL AND system_prompt_hash IS NOT NULL"
+        ).rowcount
+    print(f"plow-init: {cleared} open session(s) will compose a current prompt on their next turn", file=sys.stderr)
+
+
 async def _await_chat_frame(base: str, bearer: str, settled=None) -> bool:
     """Hold a socket until Plow says something happened on this line.
 
@@ -1152,6 +1183,7 @@ def main() -> None:
     seed_user_profile(home)
     configure(seed)
     own_session_reset()
+    refresh_session_prompts()
     print(f"plow-init: configured from {credentials.plow_api_base} as {home.uid}", file=sys.stderr)
 
 

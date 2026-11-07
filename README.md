@@ -30,14 +30,14 @@ change if this fact changed?** One owner, one place.
 | [`plow-pbc/hermes-plugin-plow`](https://github.com/plow-pbc/hermes-plugin-plow) | the `plow_chat` plugin: how every turn is framed, the Plow tools, the three seed skills | chat data (plow), boot and config (base), grammar Latch already owns |
 | a variant, e.g. [`plow-pbc/life-assistant-hermes-agent`](https://github.com/plow-pbc/life-assistant-hermes-agent) | one assistant: its persona, its skills, its defaults | gateway config, trust policy, mount paths, clients for Plow or Latch, anything a second assistant would want |
 | [`plow-pbc/plow`](https://github.com/plow-pbc/plow) (private) | the API, the relay, the dashboard, and the `agent_images` catalog that pins which image new agents boot | anything about the inside of an image; any branch on which assistant this is |
-| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI around an image: minting, rotating and retiring its credential; building and publishing it; asking Plow to deploy it on a line; starting it locally with compose | anything that talks to the cloud host directly — a deploy is a request to Plow, which provisions; agent code, persona or skills; the compose file each image repo ships |
-| [`plow-pbc/latch-cli`](https://github.com/plow-pbc/latch-cli) | `latch`, the command-line tool the agent reaches its owner's machines with, its installer, and the skill it prints (`latch skill`) | how this image installs it and when |
+| [`plow-pbc/plow-agents`](https://github.com/plow-pbc/plow-agents) | the developer's CLI for publishing an image: building and pushing it, its profile | running agents (latch); agent code, persona or skills; the compose file each image repo ships |
+| [`plow-pbc/latch-cli`](https://github.com/plow-pbc/latch-cli) | `latch`, the command-line tool the agent reaches its owner's machines with, its installer, and the skill it prints (`latch skill`); for the developer, creating and removing an agent on a line and writing its credential | anything that talks to the cloud host directly — creating an agent is a request to Plow, which provisions; how this image installs it and when |
 
 [`plow-pbc/agent-mgr`](https://github.com/plow-pbc/agent-mgr) is the
-deprecated Docker fleet runner. `plow-agents deploy --local --line ln_xxx`
-now runs an image in a container with compose, so agent-mgr is not how a new
-agent gets run; the plugin and seed-skill SHAs it still pins describe its own
-fleet, not this image.
+deprecated Docker fleet runner. `latch agents new --own … --credential-file
+./plow-credentials` then `docker compose up` runs an image in a container, so
+agent-mgr is not how a new agent gets run; the plugin and seed-skill SHAs it
+still pins describe its own fleet, not this image.
 
 Two habits keep this map true. A variant that needs something from the base
 opens a PR on the base, then bumps its digest; it does not carry the fix
@@ -239,7 +239,7 @@ the model you were on before you left.
 
 Set `AGENT_ID=<your agent index id>` to report to the Agent Index: in the
 `compose.yml` this repo ships, or as a line in the `./plow-credentials` that
-`plow-agents mint` writes, which that file loads as the container's
+`latch agents new` writes, which that file loads as the container's
 environment; `AGENT_NAME` and `AGENT_BLURB` go beside it and are optional, and
 without them the Index stores the agent id as the name and an empty blurb.
 With `AGENT_ID` set, the `agent-index` service registers this agent on its
@@ -477,22 +477,22 @@ such VM has been re-provisioned.
 
 ## Try it
 
-[`plow-agents`](https://github.com/plow-pbc/plow-agents) writes
+[`latch`](https://github.com/plow-pbc/latch-cli#install) writes
 `./plow-credentials`, a `KEY=VALUE` file with `PLOW_API_BASE` and
 `PLOW_AGENT_TOKEN`, and `compose.yml` loads it as the container's environment
 (`env_file`), pointed straight at Plow:
 
 ```sh
-plow-agents login              # once per account
-plow-agents lines
-plow-agents mint ln_xxx        # writes ./plow-credentials
+latch login                    # once per machine
+latch agents lines
+latch agents new --own --name my-agent --line LINE --credential-file ./plow-credentials
 echo AGENT_ID=my-agent >> ./plow-credentials
 echo AGENT_NAME='My Agent' >> ./plow-credentials
 echo AGENT_BLURB='One line about it' >> ./plow-credentials
 docker compose up --build -d
 ```
 
-Replace `ln_xxx` with a line `plow-agents lines` shows as `free`, and
+Replace `LINE` with a line `latch agents lines` shows as free, and
 `my-agent` with the Agent Index id you want — letters, digits, `.`, `_` or `-`,
 starting with a letter or digit, at most 64 characters, and case is kept, so
 `My-Agent` and `my-agent` are two different agents — and `My Agent` and

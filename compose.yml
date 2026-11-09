@@ -7,7 +7,7 @@ services:
     # logout` and build again.
     build: .
     # Where Plow is and the agent's own token: the KEY=VALUE file
-    # `plow-agents mint <line>` writes, loaded as environment. exe.dev sets
+    # `latch agents new --own --credential-file` writes, loaded as environment. exe.dev sets
     # PLOW_API_BASE alone and injects the token at its proxy; here nothing
     # sits in between, so the token comes along. `PLOW_CREDENTIALS` points
     # env_file at a credential outside the checkout (a durable smoke keeps it

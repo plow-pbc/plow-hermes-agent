@@ -837,9 +837,11 @@ def test_the_home_guard_puts_a_chmodded_home_back_and_says_what_it_found(image_u
     for path in (home, home / "skills"):
         path.chmod(0o700)
     real_fstat = os.fstat
-    monkeypatch.setattr(plow_init.os, "fstat", lambda fd: types.SimpleNamespace(
-        st_mode=real_fstat(fd).st_mode, st_uid=0, st_gid=1000))
-    monkeypatch.setattr(plow_init.os, "fchown", lambda fd, uid, gid: None)
+    fake_os = types.SimpleNamespace(**vars(os))
+    fake_os.fstat = lambda fd: types.SimpleNamespace(
+        st_mode=real_fstat(fd).st_mode, st_uid=0, st_gid=1000)
+    fake_os.fchown = lambda fd, uid, gid: None
+    monkeypatch.setattr(plow_init, "os", fake_os)
     monkeypatch.setattr(plow_init.time, "sleep", lambda seconds: (_ for _ in ()).throw(Slept()))
 
     with pytest.raises(Slept):
